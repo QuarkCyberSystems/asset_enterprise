@@ -1,7 +1,6 @@
 # Asset Enterprise
 
-Enterprise Fixed Asset Management for Al Badia Cement — implementation of
-work package **GA-0005-01 v2.14** as a standalone Frappe app that overrides
+Enterprise Fixed Asset Management as a standalone Frappe app that overrides
 the erpnext asset module. Zero erpnext source edits.
 
 ## What this app adds
