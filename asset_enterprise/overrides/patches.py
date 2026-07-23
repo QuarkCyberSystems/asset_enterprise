@@ -104,11 +104,17 @@ def apply_patches():
 	def reschedule_depreciation(asset_doc, notes, disposal_date=None):
 		from asset_enterprise.depreciation import enterprise_enabled, supersede_and_regenerate
 
-		if enterprise_enabled():
+		has_active_schedule = frappe.db.exists(
+			"Asset Depreciation Schedule",
+			{"asset": asset_doc.name, "status": "Active", "docstatus": 1},
+		)
+		if enterprise_enabled() and has_active_schedule:
 			# GAP-031: supersede-not-cancel. as_of = disposal/reschedule date.
 			return supersede_and_regenerate(
 				asset_doc.name, as_of_date=disposal_date, reason=notes
 			)
+		# Non-depreciating assets (no Active schedule) fall through to
+		# core, which no-ops gracefully.
 		return core_resched(asset_doc, notes, disposal_date=disposal_date)
 
 	post_depreciation_entries._asset_enterprise_wrapper = True

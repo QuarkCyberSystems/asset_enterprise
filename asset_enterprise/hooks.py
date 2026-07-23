@@ -28,6 +28,19 @@ override_whitelisted_methods = {
 	"erpnext.assets.doctype.asset.depreciation.scrap_asset": "asset_enterprise.disposal.scrap_asset",
 }
 
+# GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
+doc_events = {
+	"Purchase Receipt": {
+		"on_submit": "asset_enterprise.invoice_diff.pr_on_submit",
+		"before_cancel": "asset_enterprise.invoice_diff.pr_before_cancel",
+	},
+	"Purchase Invoice": {
+		"validate": "asset_enterprise.invoice_diff.pi_validate",
+		"on_submit": "asset_enterprise.invoice_diff.pi_on_submit",
+		"on_cancel": "asset_enterprise.invoice_diff.pi_on_cancel",
+	},
+}
+
 # Upgrade guard (build plan §2.3 / §6): every bench migrate re-verifies
 # that erpnext still exposes our override targets with compatible
 # signatures. A bench update that moves a target fails the migrate
