@@ -33,7 +33,12 @@ override_doctype_class = {
 # that erpnext still exposes our override targets with compatible
 # signatures. A bench update that moves a target fails the migrate
 # loudly instead of silently dropping our behavior.
-after_migrate = ["asset_enterprise.overrides.patches.verify_patch_targets"]
+after_migrate = [
+	"asset_enterprise.overrides.patches.verify_patch_targets",
+	"asset_enterprise.setup.install.after_migrate",
+]
+
+after_install = "asset_enterprise.setup.install.after_install"
 
 # Each item in the list will be shown as an app in the apps page
 # add_to_apps_screen = [

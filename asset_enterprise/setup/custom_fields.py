@@ -1,0 +1,471 @@
+"""Custom fields on erpnext doctypes — GA-0005-01 v2.14 build plan §2.4.
+
+Applied idempotently on after_install and after_migrate via
+frappe.custom.doctype.custom_field.custom_field.create_custom_fields.
+"""
+
+ACCOUNT = {"fieldtype": "Link", "options": "Account"}
+
+
+def _acc(fieldname, label, insert_after, description=None):
+	f = dict(ACCOUNT, fieldname=fieldname, label=label, insert_after=insert_after)
+	if description:
+		f["description"] = description
+	return f
+
+
+CUSTOM_FIELDS = {
+	# ------------------------------------------------------------------ Asset
+	"Asset": [
+		{
+			"fieldname": "enterprise_tab",
+			"fieldtype": "Tab Break",
+			"label": "Enterprise",
+			"insert_after": "column_break_yeds",
+		},
+		{
+			"fieldname": "ledger_values_section",
+			"fieldtype": "Section Break",
+			"label": "Ledger-Derived Values",
+			"insert_after": "enterprise_tab",
+		},
+		{
+			"fieldname": "historical_asset_value",
+			"fieldtype": "Currency",
+			"label": "Historical Asset Value",
+			"read_only": 1,
+			"insert_after": "ledger_values_section",
+		},
+		{
+			"fieldname": "accumulated_depreciation_value",
+			"fieldtype": "Currency",
+			"label": "Accumulated Depreciation Value",
+			"read_only": 1,
+			"insert_after": "historical_asset_value",
+		},
+		{
+			"fieldname": "net_book_value",
+			"fieldtype": "Currency",
+			"label": "Net Book Value",
+			"read_only": 1,
+			"insert_after": "accumulated_depreciation_value",
+		},
+		{
+			"fieldname": "ledger_values_cb",
+			"fieldtype": "Column Break",
+			"insert_after": "net_book_value",
+		},
+		{
+			"fieldname": "remaining_useful_life_months",
+			"fieldtype": "Float",
+			"label": "Remaining Useful Life (Months)",
+			"precision": "2",
+			"read_only": 1,
+			"insert_after": "ledger_values_cb",
+		},
+		{
+			"fieldname": "remaining_useful_life_years",
+			"fieldtype": "Float",
+			"label": "Remaining Useful Life (Years)",
+			"precision": "2",
+			"read_only": 1,
+			"insert_after": "remaining_useful_life_months",
+		},
+		{
+			"fieldname": "traceability_section",
+			"fieldtype": "Section Break",
+			"label": "Traceability",
+			"insert_after": "remaining_useful_life_years",
+		},
+		{
+			"fieldname": "parent_asset",
+			"fieldtype": "Link",
+			"label": "Parent Asset",
+			"options": "Asset",
+			"insert_after": "traceability_section",
+			"description": "Asset Tree grouping (GAP-009). No GL impact.",
+		},
+		{
+			"fieldname": "replacement_of_asset",
+			"fieldtype": "Link",
+			"label": "Replacement Of Asset",
+			"options": "Asset",
+			"read_only": 1,
+			"insert_after": "parent_asset",
+			"description": "Set when this Asset was created via Create Replacement Asset on a disposed Asset (GAP-016 Path 2).",
+		},
+		{
+			"fieldname": "replaced_by_asset",
+			"fieldtype": "Link",
+			"label": "Replaced By Asset",
+			"options": "Asset",
+			"read_only": 1,
+			"insert_after": "replacement_of_asset",
+		},
+		{
+			"fieldname": "traceability_cb",
+			"fieldtype": "Column Break",
+			"insert_after": "replaced_by_asset",
+		},
+		{
+			"fieldname": "scrap_reversal_journal_entry",
+			"fieldtype": "Link",
+			"label": "Scrap Reversal Journal Entry",
+			"options": "Journal Entry",
+			"read_only": 1,
+			"insert_after": "traceability_cb",
+			"description": "Mirror JE posted by the same-period restore (GAP-016 Path 1 / GAP-029).",
+		},
+		{
+			"fieldname": "merged_into_asset",
+			"fieldtype": "Link",
+			"label": "Merged Into Asset",
+			"options": "Asset",
+			"read_only": 1,
+			"insert_after": "scrap_reversal_journal_entry",
+			"description": "Composite this Asset was merged into via Capitalized Maintenance (GAP-035 bidirectional linkage).",
+		},
+		{
+			"fieldname": "merge_log_section",
+			"fieldtype": "Section Break",
+			"label": "Composite Merge Log",
+			"insert_after": "merged_into_asset",
+			"depends_on": "eval:doc.asset_type==='Composite Asset'",
+		},
+		{
+			"fieldname": "merge_log",
+			"fieldtype": "Table",
+			"label": "Merge Log",
+			"options": "Composite Merge Log Entry",
+			"read_only": 1,
+			"insert_after": "merge_log_section",
+		},
+	],
+	# ------------------------------------------------- Asset Category Account
+	"Asset Category Account": [
+		_acc("asset_suspense_account", "Asset Suspense Account", "capital_work_in_progress_account"),
+		_acc("pya_expense_account", "Prior Year Adjustment Expense Account", "asset_suspense_account"),
+		_acc(
+			"asset_invoice_difference_account",
+			"Asset Invoice Difference / Clearing Account",
+			"pya_expense_account",
+		),
+		_acc(
+			"post_disposal_invoice_diff_account",
+			"Post-Disposal Invoice Difference Expense Account",
+			"asset_invoice_difference_account",
+		),
+		_acc("impairment_loss_account", "Impairment Loss Account", "post_disposal_invoice_diff_account"),
+		_acc(
+			"revaluation_surplus_oci_account",
+			"Revaluation Surplus Account (OCI)",
+			"impairment_loss_account",
+		),
+		_acc("fa_count_discovery_account", "FA Count Discovery Account", "revaluation_surplus_oci_account"),
+		_acc(
+			"disposal_account_override",
+			"Disposal Account Override",
+			"fa_count_discovery_account",
+			description="Category-level override of Company disposal account (GA-0005-01 §3.5 chain).",
+		),
+		_acc(
+			"capitalization_clearing_account",
+			"Capitalization Clearing Account",
+			"disposal_account_override",
+			description="Intermediary for the Capitalized Maintenance two-leg merge GL (GAP-014). Nets to zero per merge.",
+		),
+	],
+	# ---------------------------------------------------------- Asset Category
+	"Asset Category": [
+		{
+			"fieldname": "calculate_from_receiving_date",
+			"fieldtype": "Check",
+			"label": "Depreciation Start From Receiving Date",
+			"insert_after": "enable_cwip_accounting",
+			"description": "GAP-003: depreciation start basis = PR posting date when set.",
+		},
+		{
+			"fieldname": "subject_to_impairment_review",
+			"fieldtype": "Check",
+			"label": "Subject to Impairment Review",
+			"insert_after": "calculate_from_receiving_date",
+			"description": "GAP-008: reporting flag only — no automatic GL impact.",
+		},
+	],
+	# ---------------------------------------------------- Asset Capitalization
+	"Asset Capitalization": [
+		{
+			"fieldname": "transaction_type",
+			"fieldtype": "Select",
+			"label": "Transaction Type",
+			"options": "Standard Capitalization\nCapitalized Maintenance\nReversal of Capitalized Maintenance",
+			"default": "Standard Capitalization",
+			"reqd": 1,
+			"insert_after": "title",
+		},
+		{
+			"fieldname": "transaction_sub_type",
+			"fieldtype": "Select",
+			"label": "Transaction Sub Type",
+			"options": "\nStandard Maintenance\nReclassification / Asset Category Transfer",
+			"depends_on": "eval:doc.transaction_type==='Capitalized Maintenance'",
+			"insert_after": "transaction_type",
+		},
+		{
+			"fieldname": "reversal_of_capitalization",
+			"fieldtype": "Link",
+			"label": "Reversal Of Capitalization",
+			"options": "Asset Capitalization",
+			"read_only": 1,
+			"depends_on": "eval:doc.transaction_type==='Reversal of Capitalized Maintenance'",
+			"mandatory_depends_on": "eval:doc.transaction_type==='Reversal of Capitalized Maintenance'",
+			"insert_after": "transaction_sub_type",
+		},
+		{
+			"fieldname": "reversed_by_capitalization",
+			"fieldtype": "Link",
+			"label": "Reversed By Capitalization",
+			"options": "Asset Capitalization",
+			"read_only": 1,
+			"insert_after": "reversal_of_capitalization",
+		},
+		{
+			"fieldname": "source_asset_category",
+			"fieldtype": "Link",
+			"label": "Source Asset Category",
+			"options": "Asset Category",
+			"read_only": 1,
+			"depends_on": "eval:doc.transaction_sub_type==='Reclassification / Asset Category Transfer'",
+			"insert_after": "reversed_by_capitalization",
+		},
+		{
+			"fieldname": "target_asset_category",
+			"fieldtype": "Link",
+			"label": "Target Asset Category",
+			"options": "Asset Category",
+			"read_only": 1,
+			"depends_on": "eval:doc.transaction_sub_type==='Reclassification / Asset Category Transfer'",
+			"insert_after": "source_asset_category",
+		},
+		{
+			"fieldname": "fully_depreciated_treatment",
+			"fieldtype": "Select",
+			"label": "Fully Depreciated Target Treatment",
+			"options": "\nExpense Immediately\nAdd Value and Extend Life",
+			"insert_after": "target_asset_category",
+			"description": "Required when the target composite is fully depreciated (GAP-014, per 2026-07-14 meeting).",
+		},
+		{
+			"fieldname": "extended_life_months",
+			"fieldtype": "Float",
+			"label": "Extended Life (Months)",
+			"precision": "2",
+			"depends_on": "eval:doc.fully_depreciated_treatment==='Add Value and Extend Life'",
+			"mandatory_depends_on": "eval:doc.fully_depreciated_treatment==='Add Value and Extend Life'",
+			"insert_after": "fully_depreciated_treatment",
+		},
+	],
+	# ----------------------------------------------------------- Asset Repair
+	"Asset Repair": [
+		{
+			"fieldname": "transaction_type",
+			"fieldtype": "Select",
+			"label": "Transaction Type",
+			"options": "Standard\nReversal",
+			"default": "Standard",
+			"reqd": 1,
+			"insert_after": "naming_series",
+		},
+		{
+			"fieldname": "reversal_of_repair",
+			"fieldtype": "Link",
+			"label": "Reversal Of Repair",
+			"options": "Asset Repair",
+			"read_only": 1,
+			"depends_on": "eval:doc.transaction_type==='Reversal'",
+			"mandatory_depends_on": "eval:doc.transaction_type==='Reversal'",
+			"insert_after": "transaction_type",
+		},
+		{
+			"fieldname": "reversed_by_repair",
+			"fieldtype": "Link",
+			"label": "Reversed By Repair",
+			"options": "Asset Repair",
+			"read_only": 1,
+			"insert_after": "reversal_of_repair",
+		},
+	],
+	# ------------------------------------------------- Asset Value Adjustment
+	"Asset Value Adjustment": [
+		{
+			"fieldname": "transaction_type",
+			"fieldtype": "Select",
+			"label": "Transaction Type",
+			"options": "\nInitial Impairment\nUpward Revaluation\nInvoice Adjustment\nUseful Life Adjustment\nValue + Life Adjustment",
+			"insert_after": "company",
+			"description": "No Downward Revaluation — value drops below carrying value are Impairment (IAS 16).",
+		},
+		{
+			"fieldname": "adjusted_life_months",
+			"fieldtype": "Float",
+			"label": "Adjusted Life (Months)",
+			"precision": "2",
+			"insert_after": "new_asset_value",
+			"description": "GAP-013: positive extends, negative shortens useful life. Prospective recalc.",
+		},
+		{
+			"fieldname": "reversal_of_ava",
+			"fieldtype": "Link",
+			"label": "Reversal Of AVA",
+			"options": "Asset Value Adjustment",
+			"read_only": 1,
+			"insert_after": "adjusted_life_months",
+		},
+		{
+			"fieldname": "reversed_by_ava",
+			"fieldtype": "Link",
+			"label": "Reversed By AVA",
+			"options": "Asset Value Adjustment",
+			"read_only": 1,
+			"insert_after": "reversal_of_ava",
+		},
+	],
+	# ------------------------------------------- Depreciation Schedule (child)
+	"Depreciation Schedule": [
+		{
+			"fieldname": "cost_center",
+			"fieldtype": "Link",
+			"label": "Cost Center",
+			"options": "Cost Center",
+			"insert_after": "journal_entry",
+			"description": "GAP-021: CC-split depreciation rows on mid-period transfer.",
+		},
+		{
+			"fieldname": "is_pya_entry",
+			"fieldtype": "Check",
+			"label": "Is Prior Year Adjustment",
+			"read_only": 1,
+			"insert_after": "cost_center",
+		},
+		{
+			"fieldname": "days_in_period",
+			"fieldtype": "Int",
+			"label": "Days in Period",
+			"read_only": 1,
+			"insert_after": "is_pya_entry",
+		},
+		{
+			"fieldname": "daily_rate",
+			"fieldtype": "Float",
+			"label": "Daily Rate",
+			"precision": "9",
+			"read_only": 1,
+			"insert_after": "days_in_period",
+		},
+	],
+	# ------------------------------------------------- Asset Movement Item
+	"Asset Movement Item": [
+		{
+			"fieldname": "source_cost_center",
+			"fieldtype": "Link",
+			"label": "Source Cost Center",
+			"options": "Cost Center",
+			"read_only": 1,
+			"fetch_from": "asset.cost_center",
+			"insert_after": "to_employee",
+		},
+		{
+			"fieldname": "target_cost_center",
+			"fieldtype": "Link",
+			"label": "Target Cost Center",
+			"options": "Cost Center",
+			"insert_after": "source_cost_center",
+			"description": "GAP-020: future depreciation routes here after transfer.",
+		},
+	],
+	# ------------------------------------------------------- PR / PI item flags
+	"Purchase Receipt Item": [
+		{
+			"fieldname": "asset_linked",
+			"fieldtype": "Check",
+			"label": "Asset Linked",
+			"read_only": 1,
+			"insert_after": "is_fixed_asset",
+			"description": "GAP-004: set when an Asset references this row; PR reversal cascades.",
+		},
+	],
+	"Purchase Invoice Item": [
+		{
+			"fieldname": "asset_linked",
+			"fieldtype": "Check",
+			"label": "Asset Linked",
+			"read_only": 1,
+			"insert_after": "is_fixed_asset",
+		},
+	],
+	# --------------------------------------------------------- Purchase Invoice
+	"Purchase Invoice": [
+		{
+			"fieldname": "pi_asset_allocation_section",
+			"fieldtype": "Section Break",
+			"label": "Asset Allocation",
+			"insert_after": "items",
+			"depends_on": "eval:doc.update_stock!==1",
+			"collapsible": 1,
+		},
+		{
+			"fieldname": "pi_asset_allocation",
+			"fieldtype": "Table",
+			"label": "PI Asset Allocation",
+			"options": "PI Asset Allocation",
+			"insert_after": "pi_asset_allocation_section",
+			"description": "GAP-012: 1:1 mapping of this (partial) invoice to specific received Assets. Fully-invoiced assets (pi_amount >= pr_amount) are filtered out.",
+		},
+	],
+	# ------------------------------------------------------------------ Company
+	"Company": [
+		{
+			"fieldname": "enterprise_asset_defaults_section",
+			"fieldtype": "Section Break",
+			"label": "Enterprise Asset Defaults",
+			"insert_after": "capital_work_in_progress_account",
+			"collapsible": 1,
+		},
+		_acc(
+			"default_asset_suspense_account",
+			"Default Asset Suspense Account",
+			"enterprise_asset_defaults_section",
+		),
+		_acc("default_pya_expense_account", "Default PYA Expense Account", "default_asset_suspense_account"),
+		_acc(
+			"default_asset_invoice_difference_account",
+			"Default Asset Invoice Difference / Clearing Account",
+			"default_pya_expense_account",
+		),
+		_acc(
+			"default_post_disposal_invoice_diff_account",
+			"Default Post-Disposal Invoice Difference Account",
+			"default_asset_invoice_difference_account",
+		),
+		_acc(
+			"default_impairment_loss_account",
+			"Default Impairment Loss Account",
+			"default_post_disposal_invoice_diff_account",
+		),
+		_acc(
+			"default_revaluation_surplus_oci_account",
+			"Default Revaluation Surplus Account (OCI)",
+			"default_impairment_loss_account",
+		),
+		_acc(
+			"default_fa_count_discovery_account",
+			"Default FA Count Discovery Account",
+			"default_revaluation_surplus_oci_account",
+		),
+		_acc(
+			"default_capitalization_clearing_account",
+			"Default Capitalization Clearing Account",
+			"default_fa_count_discovery_account",
+		),
+	],
+}

@@ -1,0 +1,106 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-07-16 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "enable_enterprise_assets",
+  "depreciation_section",
+  "force_eom_depreciation",
+  "tolerance_settings",
+  "controls_section",
+  "prevent_disposal_before_full_invoicing",
+  "block_invoice_below_receipt",
+  "mass_depreciation_section",
+  "mass_depreciation_authority_roles"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "description": "Master switch for GA-0005-01 behavior (monkeypatched engines). Controller-class overrides are always active but pass through when this is off.",
+   "fieldname": "enable_enterprise_assets",
+   "fieldtype": "Check",
+   "label": "Enable Enterprise Assets"
+  },
+  {
+   "fieldname": "depreciation_section",
+   "fieldtype": "Section Break",
+   "label": "Depreciation"
+  },
+  {
+   "default": "0",
+   "fieldname": "force_eom_depreciation",
+   "fieldtype": "Check",
+   "label": "Force End-of-Month Depreciation Dates"
+  },
+  {
+   "description": "Max rounding drift the final depreciation posting absorbs without flagging (GA-0005-01 \u00a74.10). Drift is always posted; the flag is informational.",
+   "fieldname": "tolerance_settings",
+   "fieldtype": "Table",
+   "label": "Last-Period Tolerance (per Company)",
+   "options": "Asset Settings Tolerance"
+  },
+  {
+   "fieldname": "controls_section",
+   "fieldtype": "Section Break",
+   "label": "Controls"
+  },
+  {
+   "default": "0",
+   "fieldname": "prevent_disposal_before_full_invoicing",
+   "fieldtype": "Check",
+   "label": "Prevent Disposal Before Full Invoicing"
+  },
+  {
+   "default": "0",
+   "description": "OPEN pending finance decision (GA-0005-01 GAP-012 A/B/C). Default off: both PI directions flow per the ASSET_MVT matrix.",
+   "fieldname": "block_invoice_below_receipt",
+   "fieldtype": "Check",
+   "label": "Block Invoice Below Receipt Amount"
+  },
+  {
+   "fieldname": "mass_depreciation_section",
+   "fieldtype": "Section Break",
+   "label": "Mass Depreciation"
+  },
+  {
+   "fieldname": "mass_depreciation_authority_roles",
+   "fieldtype": "Table",
+   "label": "Mass Depreciation Authority Roles",
+   "options": "Asset Settings Authority Role"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "istable": 0,
+ "links": [],
+ "modified": "2026-07-16 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Enterprise",
+ "name": "Asset Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

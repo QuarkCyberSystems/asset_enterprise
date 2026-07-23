@@ -1,0 +1,92 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "creation": "2026-07-16 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "merged_source_asset",
+  "merged_source_asset_name",
+  "merged_date",
+  "merged_via_capitalization",
+  "historical_value_at_merge",
+  "accumulated_depreciation_at_merge",
+  "net_book_value_at_merge",
+  "status"
+ ],
+ "fields": [
+  {
+   "fieldname": "merged_source_asset",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Merged Source Asset",
+   "options": "Asset",
+   "read_only": 1
+  },
+  {
+   "fieldname": "merged_source_asset_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Source Asset Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "merged_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Merged (Disposal) Date",
+   "read_only": 1
+  },
+  {
+   "fieldname": "merged_via_capitalization",
+   "fieldtype": "Link",
+   "label": "Via Capitalization",
+   "options": "Asset Capitalization",
+   "read_only": 1
+  },
+  {
+   "fieldname": "historical_value_at_merge",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "Historical Value at Merge",
+   "read_only": 1
+  },
+  {
+   "fieldname": "accumulated_depreciation_at_merge",
+   "fieldtype": "Currency",
+   "label": "Accum. Depreciation at Merge",
+   "read_only": 1
+  },
+  {
+   "fieldname": "net_book_value_at_merge",
+   "fieldtype": "Currency",
+   "in_list_view": 1,
+   "label": "NBV at Merge",
+   "read_only": 1
+  },
+  {
+   "default": "Active",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Active\nReversed",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "issingle": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-07-16 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Enterprise",
+ "name": "Composite Merge Log Entry",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
