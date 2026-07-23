@@ -1,0 +1,256 @@
+"""Disposal engine — GA-0005-01 v2.14 GAP-018 / GAP-019 / VR-041.
+
+Full scrap (replaces the whitelisted core scrap_asset when the master
+switch is on) and partial scrap (new endpoint), both routing the loss
+leg through the Scrapping Type account chain (§3.5, per 2026-07-14
+meeting):
+
+    Scrapping Type Account (per reason, per company)
+      -> Asset Category `disposal_account_override`
+      -> Company disposal account
+
+Full scrap GL (per xlsx ASSET_MVT Scrapping):
+    DR Accumulated Depreciation   [Accum at scrap, post-proration]
+    DR <Scrapping Type account>   [NBV loss]
+       CR Fixed Asset Cost        [HAV / gross]
+
+Partial scrap GL (per xlsx Partial_Disposal_Simulation, labels per
+2026-07-14 meeting):
+    DR Accumulated Depreciation   [Accumulated Reverse = ratio x Accum]
+    DR <Scrapping Type account>   [Loss = Scrap Value − Accumulated Reverse]
+       CR Fixed Asset Cost        [Scrap Value]
+
+VR-041: an asset already in a disposal state cannot be disposed again
+(core validate_asset_for_scrap covers full scrap; we mirror it here).
+"""
+
+import frappe
+from frappe import _
+from frappe.utils import flt, getdate, today
+
+from asset_enterprise.accounts import get_disposal_account, get_disposal_cost_center
+from asset_enterprise.rounding import fa_module_round
+
+DISPOSED_STATUSES = ("Cancelled", "Sold", "Scrapped", "Capitalized")
+
+
+@frappe.whitelist()
+def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
+	"""Whitelisted replacement for core scrap_asset (build plan §2.2)."""
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled():
+		from erpnext.assets.doctype.asset.depreciation import scrap_asset as core_scrap
+
+		return core_scrap(asset_name, scrap_date=scrap_date)
+
+	from asset_enterprise import tcc
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from erpnext.assets.doctype.asset.depreciation import (
+		depreciate_asset,
+		validate_asset_for_scrap,
+	)
+
+	asset = frappe.get_doc("Asset", asset_name)
+	scrap_date = getdate(scrap_date or today())
+	validate_asset_for_scrap(asset, scrap_date)  # incl. VR-041 status gate
+
+	# Mid-period proration up to the scrap date (existing engine).
+	if asset.calculate_depreciation:
+		try:
+			depreciate_asset(asset, scrap_date, _("Scrapped on {0}").format(scrap_date))
+			asset.reload()
+		except Exception:
+			pass
+
+	values = recalculate_asset_values(asset.name, save=False)
+	hav = flt(values["historical_asset_value"])
+	accum = flt(values["accumulated_depreciation_value"])
+	nbv = fa_module_round(hav - accum, asset.company)
+
+	je = _post_disposal_je(asset, scrap_date, scrapping_type, accum, nbv, hav)
+
+	asset.db_set("disposal_date", scrap_date)
+	asset.db_set("journal_entry_for_scrap", je)
+	asset.db_set("status", "Scrapped")
+
+	tcc.apply(
+		source_doc=("Asset", asset.name),
+		category="Disposal",
+		transaction_type=f"Scrapping — {scrapping_type}" if scrapping_type else "Scrapping",
+		asset=asset.name,
+		posting_date=scrap_date,
+		amount=nbv,
+		hav_delta=-hav,
+		accum_delta=-accum,
+		journal_entry=je,
+	)
+	_freeze_schedule(asset.name, scrap_date, _("Asset scrapped via {0}").format(je))
+	return je
+
+
+@frappe.whitelist()
+def partial_scrap_asset(
+	asset_name, scrap_value=None, percentage=None, scrapping_type=None, scrap_date=None
+):
+	"""GAP-018: partial scrap by value or percentage. Asset stays active."""
+	from asset_enterprise import tcc
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled():
+		frappe.throw(_("Partial scrap requires Enterprise Assets to be enabled."))
+
+	asset = frappe.get_doc("Asset", asset_name)
+	if asset.docstatus != 1:
+		frappe.throw(_("Asset {0} must be submitted.").format(asset_name))
+	if asset.status in DISPOSED_STATUSES:
+		frappe.throw(
+			_("Asset {0} is {1} — no further disposal is permitted (VR-041).").format(
+				asset_name, asset.status
+			)
+		)
+
+	scrap_date = getdate(scrap_date or today())
+	values = recalculate_asset_values(asset.name, save=False)
+	hav = flt(values["historical_asset_value"])
+	accum = flt(values["accumulated_depreciation_value"])
+
+	scrap_value = flt(scrap_value) or fa_module_round(hav * flt(percentage) / 100, asset.company)
+	if not (0 < scrap_value < hav):
+		frappe.throw(_("Partial scrap value must be greater than 0 and less than HAV (VR-023)."))
+
+	ratio = scrap_value / hav
+	accumulated_reverse = fa_module_round(ratio * accum, asset.company)
+	loss = fa_module_round(scrap_value - accumulated_reverse, asset.company)
+
+	je = _post_disposal_je(
+		asset, scrap_date, scrapping_type, accumulated_reverse, loss, scrap_value
+	)
+
+	tcc.apply(
+		source_doc=("Asset", asset.name),
+		category="Disposal",
+		transaction_type=f"Partial Disposal — {scrapping_type}" if scrapping_type else "Partial Disposal",
+		asset=asset.name,
+		posting_date=scrap_date,
+		amount=scrap_value,
+		hav_delta=-scrap_value,
+		accum_delta=-accumulated_reverse,
+		journal_entry=je,
+	)
+
+	# Prospective schedule over the reduced base; asset remains active.
+	from asset_enterprise.depreciation import supersede_and_regenerate
+
+	try:
+		supersede_and_regenerate(
+			asset.name, as_of_date=scrap_date, reason=_("Partial scrap via {0}").format(je)
+		)
+	except frappe.ValidationError:
+		pass
+	return je
+
+
+def _post_disposal_je(asset, posting_date, scrapping_type, accum_debit, loss_debit, fa_credit):
+	aca = frappe.db.get_value(
+		"Asset Category Account",
+		{"parent": asset.asset_category, "company_name": asset.company},
+		["fixed_asset_account", "accumulated_depreciation_account"],
+		as_dict=True,
+	)
+	loss_account = get_disposal_account(
+		asset.company, scrapping_type=scrapping_type, asset_category=asset.asset_category
+	)
+	cost_center = get_disposal_cost_center(asset.company, scrapping_type) or asset.get(
+		"cost_center"
+	)
+
+	accounts = []
+	if flt(accum_debit):
+		accounts.append(
+			{
+				"account": aca.accumulated_depreciation_account,
+				"debit_in_account_currency": flt(accum_debit),
+				"cost_center": cost_center,
+				"reference_type": "Asset",
+				"reference_name": asset.name,
+			}
+		)
+	if flt(loss_debit):
+		accounts.append(
+			{
+				"account": loss_account,
+				"debit_in_account_currency": flt(loss_debit),
+				"cost_center": cost_center,
+				"reference_type": "Asset",
+				"reference_name": asset.name,
+			}
+		)
+	accounts.append(
+		{
+			"account": aca.fixed_asset_account,
+			"credit_in_account_currency": flt(fa_credit),
+			"cost_center": cost_center,
+			"reference_type": "Asset",
+			"reference_name": asset.name,
+		}
+	)
+
+	je = frappe.get_doc(
+		{
+			"doctype": "Journal Entry",
+			"voucher_type": "Journal Entry",
+			"company": asset.company,
+			"posting_date": posting_date,
+			"user_remark": _("Disposal ({0}) of Asset {1}").format(
+				scrapping_type or "Scrap", asset.name
+			),
+			"accounts": accounts,
+		}
+	)
+	je.flags.ignore_permissions = True
+	je.submit()
+	return je.name
+
+
+def _freeze_schedule(asset_name, as_of_date, reason):
+	"""After full disposal NBV is zero — supersession leaves only the
+	posted rows (no future rows regenerate from a zero base)."""
+	from asset_enterprise.depreciation import supersede_and_regenerate
+
+	try:
+		supersede_and_regenerate(asset_name, as_of_date=as_of_date, reason=reason)
+	except frappe.ValidationError:
+		pass
+
+
+def get_gl_entries_on_asset_disposal_wrapper(core_fn):
+	"""Patch #3 (build plan §2.3): swap the loss account in core disposal
+	GL (e.g. sale via Sales Invoice) with the §3.5 chain result."""
+
+	def wrapped(asset, *args, **kwargs):
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		gl = core_fn(asset, *args, **kwargs)
+		if not enterprise_enabled():
+			return gl
+		try:
+			override = get_disposal_account(
+				asset.company, scrapping_type=None, asset_category=asset.asset_category
+			)
+			from erpnext.assets.doctype.asset.depreciation import (
+				get_disposal_account_and_cost_center,
+			)
+
+			core_account = get_disposal_account_and_cost_center(asset.company)[0]
+			if override and override != core_account:
+				for row in gl:
+					if row.get("account") == core_account:
+						row["account"] = override
+		except Exception:
+			pass
+		return gl
+
+	wrapped._asset_enterprise_wrapper = True
+	return wrapped

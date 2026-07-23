@@ -116,4 +116,12 @@ def apply_patches():
 
 	core_depr.post_depreciation_entries = post_depreciation_entries
 	core_ads.reschedule_depreciation = reschedule_depreciation
+
+	# Phase 6 — patch #3: Scrape Type / ACA-override routing for the
+	# loss account in core disposal GL (e.g. sale via Sales Invoice).
+	from asset_enterprise.disposal import get_gl_entries_on_asset_disposal_wrapper
+
+	core_depr.get_gl_entries_on_asset_disposal = get_gl_entries_on_asset_disposal_wrapper(
+		core_depr.get_gl_entries_on_asset_disposal
+	)
 	_PATCHED = True

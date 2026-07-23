@@ -48,9 +48,12 @@ def _posted_ft_sums(asset_name):
 
 
 def _posted_depreciation_total(asset_name):
-	"""Sum of schedule-row amounts that have a Journal Entry, across all
-	active/superseded schedules (posted rows survive supersession per
-	GAP-031/032)."""
+	"""Sum of posted schedule-row amounts from the ACTIVE schedule only.
+
+	Posted rows are copied verbatim into every superseding generation
+	(GAP-031/032), so the Active schedule alone is the complete record —
+	summing across Superseded generations would double-count.
+	"""
 	return flt(
 		frappe.db.sql(
 			"""
@@ -59,6 +62,7 @@ def _posted_depreciation_total(asset_name):
 			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
 			where ads.asset = %s
 			  and ads.docstatus = 1
+			  and ads.status = 'Active'
 			  and ifnull(ds.journal_entry, '') != ''
 			""",
 			asset_name,

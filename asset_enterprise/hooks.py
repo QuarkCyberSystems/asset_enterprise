@@ -21,13 +21,12 @@ override_doctype_class = {
 	"Asset Movement": "asset_enterprise.overrides.asset_movement.EnterpriseAssetMovement",
 }
 
-# GA-0005-01 v2.14 — endpoint replacements (build plan §2.2).
-# Enabled in Phase 6 when asset_enterprise.restore / .disposal land;
-# kept commented until then so core endpoints keep working unchanged.
-# override_whitelisted_methods = {
-# 	"erpnext.assets.doctype.asset.depreciation.restore_asset": "asset_enterprise.restore.restore_asset",
-# 	"erpnext.assets.doctype.asset.depreciation.scrap_asset": "asset_enterprise.disposal.scrap_asset",
-# }
+# GA-0005-01 v2.14 — endpoint replacements (build plan §2.2, Phase 6).
+# Wrappers delegate to core when the Asset Settings master switch is off.
+override_whitelisted_methods = {
+	"erpnext.assets.doctype.asset.depreciation.restore_asset": "asset_enterprise.restore.restore_asset",
+	"erpnext.assets.doctype.asset.depreciation.scrap_asset": "asset_enterprise.disposal.scrap_asset",
+}
 
 # Upgrade guard (build plan §2.3 / §6): every bench migrate re-verifies
 # that erpnext still exposes our override targets with compatible

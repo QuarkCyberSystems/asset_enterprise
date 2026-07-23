@@ -19,6 +19,18 @@ class EnterpriseAsset(Asset):
 	VR-041 (Phase 6).
 	"""
 
+	def on_submit(self):
+		super().on_submit()
+		if self.get("replacement_of_asset"):
+			# GAP-016 Path 2: two-way link once the replacement goes live.
+			frappe.db.set_value(
+				"Asset",
+				self.replacement_of_asset,
+				"replaced_by_asset",
+				self.name,
+				update_modified=False,
+			)
+
 	def on_cancel(self):
 		if self._enterprise():
 			self._block_when_depreciation_posted()
