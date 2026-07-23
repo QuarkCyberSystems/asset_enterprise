@@ -49,8 +49,98 @@ frappe.ui.form.on("Asset", {
 				}),
 			__("Manage")
 		);
+
+		// Enable Depreciation after creation (GAP-011) — amendment-free.
+		if (
+			!frm.doc.calculate_depreciation &&
+			!["Scrapped", "Sold", "Capitalized", "Cancelled"].includes(frm.doc.status)
+		) {
+			frm.add_custom_button(
+				__("Enable Depreciation"),
+				() => enable_depreciation_dialog(frm),
+				__("Manage")
+			);
+		}
+
+		// Tree Summary (GAP-009) — aggregated values over descendants.
+		frm.add_custom_button(
+			__("Tree Summary"),
+			() =>
+				frappe.call({
+					method: "asset_enterprise.api.tree_aggregate",
+					args: { asset_name: frm.doc.name },
+					callback: (r) => {
+						const t = r.message;
+						frappe.msgprint({
+							title: __("Asset Tree Summary — {0}", [frm.doc.name]),
+							message: __(
+								"Assets in tree: {0}<br>Historical Asset Value: {1}<br>Accumulated Depreciation: {2}<br>Net Book Value: {3}",
+								[
+									t.assets,
+									format_currency(t.historical_asset_value),
+									format_currency(t.accumulated_depreciation_value),
+									format_currency(t.net_book_value),
+								]
+							),
+						});
+					},
+				}),
+			__("Manage")
+		);
 	},
 });
+
+function enable_depreciation_dialog(frm) {
+	const d = new frappe.ui.Dialog({
+		title: __("Enable Depreciation — {0}", [frm.doc.name]),
+		fields: [
+			{
+				fieldname: "total_number_of_depreciations",
+				fieldtype: "Int",
+				label: __("Number of Depreciations"),
+				reqd: 1,
+			},
+			{
+				fieldname: "frequency_of_depreciation",
+				fieldtype: "Int",
+				label: __("Frequency (Months)"),
+				default: 1,
+				reqd: 1,
+			},
+			{
+				fieldname: "depreciation_start_date",
+				fieldtype: "Date",
+				label: __("Start Basis Date"),
+				default: "Today",
+				reqd: 1,
+			},
+			{
+				fieldname: "expected_value_after_useful_life",
+				fieldtype: "Currency",
+				label: __("Salvage Value"),
+				default: 0,
+			},
+			{
+				fieldname: "finance_book",
+				fieldtype: "Link",
+				options: "Finance Book",
+				label: __("Finance Book"),
+			},
+		],
+		primary_action_label: __("Enable"),
+		primary_action(values) {
+			frappe.call({
+				method: "asset_enterprise.depreciation.enable_depreciation",
+				args: { asset_name: frm.doc.name, ...values },
+				callback: () => {
+					d.hide();
+					frm.reload_doc();
+				},
+			});
+		},
+	});
+	d.show();
+}
 
 function partial_scrap_dialog(frm) {
 	const d = new frappe.ui.Dialog({

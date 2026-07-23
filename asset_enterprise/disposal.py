@@ -34,6 +34,36 @@ from asset_enterprise.rounding import fa_module_round
 DISPOSED_STATUSES = ("Cancelled", "Sold", "Scrapped", "Capitalized")
 
 
+def assert_fully_invoiced(asset):
+	"""GAP-010 / VR-011: with the Asset Settings flag on, an asset created
+	from a PR cannot be disposed of (or merged away) until a submitted
+	Purchase Invoice allocation covers it. Callers gate on the master
+	switch; `asset` is a doc or anything with .get()."""
+	if not frappe.db.get_single_value(
+		"Asset Settings", "prevent_disposal_before_full_invoicing", cache=False
+	):
+		return
+	if not asset.get("purchase_receipt") or asset.get("purchase_invoice"):
+		return
+	covered = frappe.db.sql(
+		"""
+		select paa.parent from `tabPI Asset Allocation` paa
+		join `tabPurchase Invoice` pi on pi.name = paa.parent
+		where paa.asset = %s and pi.docstatus = 1
+		limit 1
+		""",
+		asset.name,
+	)
+	if not covered:
+		frappe.throw(
+			_(
+				"Asset {0} is received on {1} but not yet fully invoiced — disposal and "
+				"capitalization are blocked until a submitted Purchase Invoice covers it "
+				"(VR-011, per Asset Settings)."
+			).format(asset.name, asset.get("purchase_receipt"))
+		)
+
+
 @frappe.whitelist()
 def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
 	"""Whitelisted replacement for core scrap_asset (build plan §2.2)."""
@@ -54,6 +84,7 @@ def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
 	asset = frappe.get_doc("Asset", asset_name)
 	scrap_date = getdate(scrap_date or today())
 	validate_asset_for_scrap(asset, scrap_date)  # incl. VR-041 status gate
+	assert_fully_invoiced(asset)  # GAP-010 / VR-011
 
 	# Mid-period proration up to the scrap date (existing engine).
 	if asset.calculate_depreciation:
@@ -110,6 +141,7 @@ def partial_scrap_asset(
 				asset_name, asset.status
 			)
 		)
+	assert_fully_invoiced(asset)  # GAP-010 / VR-011
 
 	scrap_date = getdate(scrap_date or today())
 	values = recalculate_asset_values(asset.name, save=False)

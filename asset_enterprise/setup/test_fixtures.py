@@ -28,6 +28,16 @@ def make_test_asset(company, gross=100000, submit=False, with_depreciation=False
 			f"Depreciation accounts — cannot build smoke fixture."
 		)
 
+	# GAP-001: submitting an existing asset posts the suspense JE — seed
+	# a company default so smoke fixtures submit cleanly (savepoint-only).
+	if not frappe.db.get_value("Company", company, "default_asset_suspense_account"):
+		suspense = frappe.db.get_value(
+			"Account", {"company": company, "root_type": "Liability", "is_group": 0}, "name"
+		)
+		frappe.db.set_value(
+			"Company", company, "default_asset_suspense_account", suspense, update_modified=False
+		)
+
 	if not frappe.db.exists("Asset Category", "AE Smoke Category"):
 		frappe.get_doc(
 			{

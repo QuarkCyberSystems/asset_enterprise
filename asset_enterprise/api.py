@@ -10,3 +10,33 @@ def recalculate(asset_name):
 
 	frappe.has_permission("Asset", "write", asset_name, throw=True)
 	return recalculate_asset_values(asset_name, save=True)
+
+
+@frappe.whitelist()
+def tree_aggregate(asset_name):
+	"""GAP-009: aggregated HAV / Accum / NBV over the asset and every
+	descendant (parent_asset chain), for the tree dashboard (TC-012)."""
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	frappe.has_permission("Asset", "read", asset_name, throw=True)
+
+	nodes, queue = [asset_name], [asset_name]
+	while queue:
+		children = frappe.get_all(
+			"Asset", filters={"parent_asset": queue.pop(0), "docstatus": 1}, pluck="name"
+		)
+		nodes.extend(children)
+		queue.extend(children)
+
+	totals = {
+		"assets": len(nodes),
+		"historical_asset_value": 0.0,
+		"accumulated_depreciation_value": 0.0,
+		"net_book_value": 0.0,
+	}
+	for name in nodes:
+		values = recalculate_asset_values(name, save=False)
+		totals["historical_asset_value"] += values["historical_asset_value"]
+		totals["accumulated_depreciation_value"] += values["accumulated_depreciation_value"]
+		totals["net_book_value"] += values["net_book_value"]
+	return totals

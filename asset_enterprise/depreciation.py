@@ -22,7 +22,7 @@ from datetime import date, timedelta
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, date_diff, flt, get_last_day, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, date_diff, flt, get_last_day, getdate, nowdate
 
 from asset_enterprise.rounding import fa_module_round, final_row_amount
 
@@ -249,6 +249,130 @@ def supersede_and_regenerate(
 			_("{0} unposted rows regenerated prospectively in {1}.").format(len(unposted), new.name),
 		)
 	return new
+
+
+# --------------------------------------------------------------------------
+# Enable depreciation after creation (GAP-011)
+# --------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def enable_depreciation(
+	asset_name,
+	total_number_of_depreciations,
+	frequency_of_depreciation=1,
+	depreciation_start_date=None,
+	expected_value_after_useful_life=0,
+	finance_book=None,
+	depreciation_method="Straight Line",
+):
+	"""GAP-011: amendment-free enablement on a submitted asset.
+
+	Core clears finance_books when calculate_depreciation=0 and blocks
+	re-enabling without amendment. Here: flag on + Asset Finance Book row
+	+ a new Active schedule built prospectively from current NBV over the
+	chosen life via the daily-rate engine. Nothing posted changes.
+	"""
+	if not enterprise_enabled():
+		frappe.throw(_("Enable Depreciation requires Enterprise Assets to be enabled."))
+	frappe.has_permission("Asset", "write", asset_name, throw=True)
+
+	asset = frappe.get_doc("Asset", asset_name)
+	if asset.docstatus != 1:
+		frappe.throw(_("Asset {0} must be submitted.").format(asset_name))
+	if asset.calculate_depreciation:
+		frappe.throw(_("Depreciation is already enabled on {0}.").format(asset_name))
+	if asset.status in ("Sold", "Scrapped", "Capitalized"):
+		frappe.throw(_("Asset {0} is {1} — cannot enable depreciation.").format(asset_name, asset.status))
+	if frappe.db.exists(
+		"Asset Depreciation Schedule", {"asset": asset_name, "status": "Active", "docstatus": 1}
+	):
+		frappe.throw(_("Asset {0} already has an Active depreciation schedule.").format(asset_name))
+
+	months = cint(total_number_of_depreciations) * (cint(frequency_of_depreciation) or 1)
+	if months <= 0:
+		frappe.throw(_("Total useful life must be positive."))
+
+	start = getdate(depreciation_start_date or nowdate())
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	nbv = flt(recalculate_asset_values(asset_name, save=False)["net_book_value"])
+	base = fa_module_round(nbv - flt(expected_value_after_useful_life), asset.company)
+	if base <= 0:
+		frappe.throw(
+			_("Depreciable base is {0} — NBV must exceed the salvage value.").format(base)
+		)
+
+	end_of_life = add_days(add_months(start, months), -1)
+	total_days = date_diff(end_of_life, start) + 1
+	rows = build_daily_rate_rows(base, start, total_days, asset.company)
+
+	fb_row = frappe.get_doc(
+		{
+			"doctype": "Asset Finance Book",
+			"parent": asset.name,
+			"parenttype": "Asset",
+			"parentfield": "finance_books",
+			"idx": 1,
+			"docstatus": 1,
+			"finance_book": finance_book,
+			"depreciation_method": depreciation_method,
+			"total_number_of_depreciations": cint(total_number_of_depreciations),
+			"frequency_of_depreciation": cint(frequency_of_depreciation) or 1,
+			"depreciation_start_date": rows[0]["schedule_date"],
+			"expected_value_after_useful_life": flt(expected_value_after_useful_life),
+			"value_after_depreciation": base,
+			"daily_prorata_based": 1,
+		}
+	)
+	fb_row.flags.ignore_permissions = True
+	fb_row.db_insert()
+
+	asset.db_set("calculate_depreciation", 1, update_modified=False)
+	if not asset.available_for_use_date:
+		asset.db_set("available_for_use_date", start, update_modified=False)
+
+	ads = frappe.get_doc(
+		{
+			"doctype": "Asset Depreciation Schedule",
+			"asset": asset.name,
+			"company": asset.company,
+			"finance_book": finance_book,
+			"depreciation_method": depreciation_method,
+			"total_number_of_depreciations": cint(total_number_of_depreciations),
+			"frequency_of_depreciation": cint(frequency_of_depreciation) or 1,
+			"expected_value_after_useful_life": flt(expected_value_after_useful_life),
+			"daily_prorata_based": 1,
+			# Set so core ADS validate does NOT regenerate our rows.
+			"finance_book_id": fb_row.idx,
+			"notes": _("Created by Enable Depreciation (GAP-011) starting {0}.").format(start),
+		}
+	)
+	accumulated = 0.0
+	for row in rows:
+		accumulated = flt(accumulated + row["amount"])
+		ads.append(
+			"depreciation_schedule",
+			{
+				"schedule_date": row["schedule_date"],
+				"depreciation_amount": row["amount"],
+				"accumulated_depreciation_amount": fa_module_round(accumulated, asset.company),
+				"days_in_period": row["days_in_period"],
+				"daily_rate": row["daily_rate"],
+			},
+		)
+	ads.flags.ignore_permissions = True
+	ads.insert()
+	ads.submit()  # core on_submit sets status Active
+
+	asset.add_comment(
+		"Comment",
+		_("Depreciation enabled: {0} months from {1}, schedule {2} (GAP-011).").format(
+			months, start, ads.name
+		),
+	)
+	recalculate_asset_values(asset_name, save=True)
+	return ads.name
 
 
 # --------------------------------------------------------------------------

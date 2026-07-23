@@ -1,5 +1,6 @@
 import frappe
 from frappe import _
+from frappe.utils import flt, getdate
 
 from erpnext.assets.doctype.asset.asset import Asset
 
@@ -7,17 +8,105 @@ from erpnext.assets.doctype.asset.asset import Asset
 class EnterpriseAsset(Asset):
 	"""GA-0005-01 v2.14 Asset overrides.
 
-	Phase 4 (GAP-027 / VR-031): reversal of an Asset with posted
-	depreciation is blocked with an error — the user reverses each
-	depreciation JE via GA-0001-01 Reversal Journal Entry first, then
-	retries. No auto-cascade, per the 2026-07-14 meeting. When no
-	posted depreciation exists, the existing core path runs (it already
-	uses make_reverse_gl_entries for the booking GL — compliant).
-
-	Later phases: TCC Addition on submit / suspense JE (GAP-001,
-	Phase 7 PR-flow), mandatory location VR-040 + single-disposal
-	VR-041 (Phase 6).
+	- GAP-001: suspense JE on submit of an existing asset (TCC Addition,
+	  Existing-Asset Opening) — DR FA cost / CR Accum opening / CR Asset
+	  Suspense NBV.
+	- GAP-002: available-for-use date required only when depreciation is
+	  on AND the category is not on the receiving-date basis.
+	- GAP-003: category flag `calculate_from_receiving_date` makes the
+	  linked PR posting date the depreciation start basis.
+	- GAP-009: parent_asset tree must stay acyclic (VR-009).
+	- GAP-016 Path 2: two-way replacement link on submit.
+	- GAP-027 / VR-031: reversal of an Asset with posted depreciation is
+	  blocked — the user reverses each depreciation JE via GA-0001-01
+	  first. No auto-cascade, per the 2026-07-14 meeting.
 	"""
+
+	def validate(self):
+		if self._enterprise():
+			self._apply_receiving_date_basis()
+			# Depreciation without a start basis: core's draft-schedule
+			# build crashes on an empty AFU, so the VR-002 error fires
+			# here. AFU stays optional in the two designed cases (no
+			# depreciation; receiving-date basis, derived above).
+			if (
+				self.calculate_depreciation
+				and not self.available_for_use_date
+				and self.asset_type != "Composite Component"
+				and not self._receiving_date_basis()
+			):
+				frappe.throw(_("Available for use date is required (VR-002)."))
+			self._validate_tree_acyclic()
+		super().validate()
+
+	def validate_update_after_submit(self):
+		# Submitted-doc saves skip validate() — re-run the tree check so
+		# a parent_asset edit after submit cannot create a cycle (VR-009).
+		super().validate_update_after_submit()
+		if self._enterprise():
+			self._validate_tree_acyclic()
+
+	def validate_in_use_date(self):
+		"""GAP-002: optional on save; on submit required only when
+		calculate_depreciation=1 AND not receiving-date basis."""
+		if not self._enterprise():
+			return super().validate_in_use_date()
+
+		if not self.available_for_use_date:
+			if (
+				self.calculate_depreciation
+				and self.asset_type != "Composite Component"
+				and not self._receiving_date_basis()
+			):
+				frappe.throw(_("Available for use date is required (VR-002)."))
+			return
+
+		for d in self.finance_books:
+			if getdate(d.depreciation_start_date) < getdate(self.available_for_use_date):
+				frappe.throw(
+					_(
+						"Depreciation Row {0}: Depreciation Posting Date cannot be before "
+						"Available-for-use Date"
+					).format(d.idx),
+					title=_("Incorrect Date"),
+				)
+
+	def _receiving_date_basis(self):
+		return self.get("asset_category") and frappe.db.get_value(
+			"Asset Category", self.asset_category, "calculate_from_receiving_date"
+		)
+
+	def _apply_receiving_date_basis(self):
+		"""GAP-003: PR posting date becomes the start basis when the
+		category flag is on and the user left the AFU date empty."""
+		if (
+			self.available_for_use_date
+			or self.get("is_existing_asset")
+			or not self.get("purchase_receipt")
+			or not self._receiving_date_basis()
+		):
+			return
+		receiving_date = frappe.db.get_value(
+			"Purchase Receipt", self.purchase_receipt, "posting_date"
+		)
+		if receiving_date:
+			self.available_for_use_date = receiving_date
+
+	def _validate_tree_acyclic(self):
+		"""GAP-009 / VR-009: parent_asset must not point into the asset's
+		own descendant chain."""
+		parent = self.get("parent_asset")
+		seen = {self.name}
+		while parent:
+			if parent in seen:
+				frappe.throw(
+					_(
+						"Parent Asset {0} is a descendant of {1} — the asset tree must "
+						"stay acyclic (VR-009)."
+					).format(self.parent_asset, self.name)
+				)
+			seen.add(parent)
+			parent = frappe.db.get_value("Asset", parent, "parent_asset")
 
 	def on_submit(self):
 		super().on_submit()
@@ -30,6 +119,100 @@ class EnterpriseAsset(Asset):
 				self.name,
 				update_modified=False,
 			)
+		if self._enterprise():
+			self._post_existing_asset_opening()
+
+	def _post_existing_asset_opening(self):
+		"""GAP-001: auto-JE via TCC Addition (Existing-Asset Opening).
+
+		Only for existing assets brought in without purchase documents —
+		purchased assets get their booking GL from the PR/PI flow.
+		"""
+		if (
+			not self.get("is_existing_asset")
+			or self.get("purchase_receipt")
+			or self.get("purchase_invoice")
+		):
+			return
+
+		from asset_enterprise import tcc
+		from asset_enterprise.accounts import get_enterprise_account
+		from asset_enterprise.rounding import fa_module_round
+
+		gross = flt(self.net_purchase_amount)
+		if gross <= 0:
+			return
+		opening_accum = flt(self.opening_accumulated_depreciation)
+		nbv = fa_module_round(gross - opening_accum, self.company)
+
+		aca = frappe.db.get_value(
+			"Asset Category Account",
+			{"parent": self.asset_category, "company_name": self.company},
+			["fixed_asset_account", "accumulated_depreciation_account"],
+			as_dict=True,
+		)
+		if not aca:
+			frappe.throw(
+				_("Asset Category Account missing for {0} / {1}").format(
+					self.asset_category, self.company
+				)
+			)
+		# Throws VR-001-style when unconfigured (TC-002).
+		suspense = get_enterprise_account("asset_suspense_account", self.company, self.asset_category)
+
+		accounts = [
+			{
+				"account": aca.fixed_asset_account,
+				"debit_in_account_currency": gross,
+				"cost_center": self.get("cost_center"),
+				"reference_type": "Asset",
+				"reference_name": self.name,
+			}
+		]
+		if opening_accum:
+			accounts.append(
+				{
+					"account": aca.accumulated_depreciation_account,
+					"credit_in_account_currency": opening_accum,
+					"reference_type": "Asset",
+					"reference_name": self.name,
+				}
+			)
+		if nbv:
+			accounts.append(
+				{
+					"account": suspense,
+					"credit_in_account_currency": nbv,
+					"cost_center": self.get("cost_center"),
+					"reference_type": "Asset",
+					"reference_name": self.name,
+				}
+			)
+
+		je = frappe.get_doc(
+			{
+				"doctype": "Journal Entry",
+				"voucher_type": "Journal Entry",
+				"company": self.company,
+				"posting_date": self.get("available_for_use_date") or frappe.utils.nowdate(),
+				"user_remark": _("Existing-Asset Opening for {0} (GAP-001)").format(self.name),
+				"accounts": accounts,
+			}
+		)
+		je.flags.ignore_permissions = True
+		je.submit()
+
+		# Values already carry net_purchase_amount and the opening accum —
+		# the FT is the audit record + JE link, so deltas stay zero.
+		tcc.apply(
+			source_doc=("Asset", self.name),
+			category="Addition",
+			transaction_type="Existing-Asset Opening",
+			asset=self.name,
+			posting_date=je.posting_date,
+			amount=gross,
+			journal_entry=je.name,
+		)
 
 	def on_cancel(self):
 		if self._enterprise():

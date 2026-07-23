@@ -29,6 +29,20 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 	# ---------------------------------------------------------- validation
 	def validate(self):
 		ttype = self.get("transaction_type") or "Standard Capitalization"
+
+		# GAP-010 / VR-011: sources leaving via capitalization must be
+		# fully invoiced first (reversals exempt — sources already left).
+		if (
+			self._enterprise()
+			and ttype != "Reversal of Capitalized Maintenance"
+			and self.get("asset_items")
+		):
+			from asset_enterprise.disposal import assert_fully_invoiced
+
+			for row in self.asset_items:
+				if row.get("asset"):
+					assert_fully_invoiced(frappe.get_doc("Asset", row.asset))
+
 		if not self._enterprise() or ttype == "Standard Capitalization":
 			return super().validate()
 
