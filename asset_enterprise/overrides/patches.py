@@ -72,12 +72,48 @@ def verify_patch_targets():
 	return True
 
 
-def apply_patches():
-	"""Apply the three wrap-and-delegate patches.
+_PATCHED = False
 
-	Phase 0: verification only — no behavior is patched yet. Each later
-	phase replaces its `pass` below with the actual wrapper.
+
+def apply_patches():
+	"""Apply the wrap-and-delegate patches (idempotent, import-time safe).
+
+	Wrappers check the Asset Settings master switch AT CALL TIME, so a
+	disabled site behaves exactly like stock erpnext.
+
+	Phase 3: post_depreciation_entries + reschedule_depreciation (below)
+	Phase 6: get_gl_entries_on_asset_disposal (pending)
 	"""
-	verify_patch_targets()
-	# Phase 3: post_depreciation_entries + reschedule_depreciation
-	# Phase 6: get_gl_entries_on_asset_disposal
+	global _PATCHED
+	if _PATCHED:
+		return
+	import erpnext.assets.doctype.asset.depreciation as core_depr
+	import erpnext.assets.doctype.asset_depreciation_schedule.asset_depreciation_schedule as core_ads
+
+	core_post = core_depr.post_depreciation_entries
+	core_resched = core_ads.reschedule_depreciation
+
+	def post_depreciation_entries(date=None):
+		from asset_enterprise.depreciation import enterprise_enabled
+		from asset_enterprise.depreciation import post_depreciation_entries as ours
+
+		if enterprise_enabled():
+			return ours(date)
+		return core_post(date)
+
+	def reschedule_depreciation(asset_doc, notes, disposal_date=None):
+		from asset_enterprise.depreciation import enterprise_enabled, supersede_and_regenerate
+
+		if enterprise_enabled():
+			# GAP-031: supersede-not-cancel. as_of = disposal/reschedule date.
+			return supersede_and_regenerate(
+				asset_doc.name, as_of_date=disposal_date, reason=notes
+			)
+		return core_resched(asset_doc, notes, disposal_date=disposal_date)
+
+	post_depreciation_entries._asset_enterprise_wrapper = True
+	reschedule_depreciation._asset_enterprise_wrapper = True
+
+	core_depr.post_depreciation_entries = post_depreciation_entries
+	core_ads.reschedule_depreciation = reschedule_depreciation
+	_PATCHED = True

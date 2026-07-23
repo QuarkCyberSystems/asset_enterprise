@@ -15,7 +15,7 @@ def _find_account(company, account_type, root_type=None):
 	return frappe.db.get_value("Account", filters, "name")
 
 
-def make_test_asset(company, gross=100000, submit=False):
+def make_test_asset(company, gross=100000, submit=False, with_depreciation=False):
 	"""Create Asset Category + Item + Asset for smoke tests. Returns Asset doc."""
 	fixed_asset_account = _find_account(company, "Fixed Asset")
 	accum_account = _find_account(company, "Accumulated Depreciation")
@@ -73,9 +73,20 @@ def make_test_asset(company, gross=100000, submit=False):
 			"opening_accumulated_depreciation": 0,
 			"available_for_use_date": add_months(nowdate(), -1),
 			"purchase_date": add_months(nowdate(), -1),
-			"calculate_depreciation": 0,
+			"calculate_depreciation": 1 if with_depreciation else 0,
 		}
 	)
+	if with_depreciation:
+		asset.append(
+			"finance_books",
+			{
+				"depreciation_method": "Straight Line",
+				"total_number_of_depreciations": 24,
+				"frequency_of_depreciation": 1,
+				"depreciation_start_date": nowdate(),
+				"daily_prorata_based": 1,
+			},
+		)
 	asset.flags.ignore_permissions = True
 	asset.insert()
 	if submit:

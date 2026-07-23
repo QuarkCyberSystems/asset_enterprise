@@ -330,6 +330,25 @@ CUSTOM_FIELDS = {
 			"insert_after": "reversal_of_ava",
 		},
 	],
+	# ------------------------------------- Asset Depreciation Schedule (parent)
+	"Asset Depreciation Schedule": [
+		{
+			"fieldname": "supersedes",
+			"fieldtype": "Link",
+			"label": "Supersedes",
+			"options": "Asset Depreciation Schedule",
+			"read_only": 1,
+			"insert_after": "status",
+			"description": "GAP-031: the schedule this one replaced. The old schedule stays submitted with status Superseded; its posted rows are copied here verbatim (GAP-032).",
+		},
+		{
+			"fieldname": "superseded_on",
+			"fieldtype": "Date",
+			"label": "Superseded On",
+			"read_only": 1,
+			"insert_after": "supersedes",
+		},
+	],
 	# ------------------------------------------- Depreciation Schedule (child)
 	"Depreciation Schedule": [
 		{
