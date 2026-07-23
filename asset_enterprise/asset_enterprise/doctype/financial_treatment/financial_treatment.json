@@ -1,0 +1,208 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "format:FT-{YYYY}-{#####}",
+ "creation": "2026-07-16 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "source_doctype",
+  "source_name",
+  "transaction_category",
+  "transaction_type",
+  "column_break_a",
+  "asset",
+  "company",
+  "posting_date",
+  "impact_section",
+  "amount",
+  "hav_delta",
+  "column_break_b",
+  "accum_delta",
+  "life_delta_months",
+  "links_section",
+  "journal_entry",
+  "column_break_c",
+  "status",
+  "reversal_reference"
+ ],
+ "fields": [
+  {
+   "fieldname": "source_doctype",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Source DocType",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_name",
+   "fieldtype": "Dynamic Link",
+   "in_list_view": 1,
+   "label": "Source Document",
+   "options": "source_doctype",
+   "read_only": 1
+  },
+  {
+   "fieldname": "transaction_category",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Transaction Category",
+   "options": "Transaction Category",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "description": "Business sub-type (e.g. Purchase, Invoice Adjustment, Capitalized Maintenance, Partial Disposal).",
+   "fieldname": "transaction_type",
+   "fieldtype": "Data",
+   "label": "Transaction Type",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_a",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "fieldname": "asset",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Asset",
+   "options": "Asset",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Posting Date",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "impact_section",
+   "fieldtype": "Section Break",
+   "label": "Financial Impact"
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "Transaction Amount",
+   "read_only": 1
+  },
+  {
+   "description": "Signed effect on Historical Asset Value. Summed by asset_values recalculation (GAP-006).",
+   "fieldname": "hav_delta",
+   "fieldtype": "Currency",
+   "label": "HAV Delta (signed)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_b",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "fieldname": "accum_delta",
+   "fieldtype": "Currency",
+   "label": "Accumulated Depreciation Delta (signed)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "life_delta_months",
+   "fieldtype": "Float",
+   "label": "Useful Life Delta (Months)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
+   "fieldname": "links_section",
+   "fieldtype": "Section Break",
+   "label": "References"
+  },
+  {
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "label": "Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_c",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "Pending\nPosted\nReversed\nCancelled",
+   "read_only": 1
+  },
+  {
+   "description": "On a reversal FT: the original it reverses. On the original: set via reversed-by lookup.",
+   "fieldname": "reversal_reference",
+   "fieldtype": "Link",
+   "label": "Reversal Reference",
+   "options": "Financial Treatment",
+   "read_only": 1
+  }
+ ],
+ "in_create": 1,
+ "index_web_pages_for_search": 1,
+ "issingle": 0,
+ "istable": 0,
+ "links": [],
+ "modified": "2026-07-16 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Enterprise",
+ "name": "Financial Treatment",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts User",
+   "share": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
