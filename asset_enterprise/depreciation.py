@@ -254,7 +254,7 @@ def supersede_and_regenerate(asset_name, finance_book=None, as_of_date=None, rea
 def enterprise_enabled():
 	try:
 		return bool(
-			frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=True)
+			frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 		)
 	except Exception:
 		return False
