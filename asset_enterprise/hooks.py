@@ -28,6 +28,11 @@ override_whitelisted_methods = {
 	"erpnext.assets.doctype.asset.depreciation.scrap_asset": "asset_enterprise.disposal.scrap_asset",
 }
 
+# GA-0005-01 v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
+doctype_js = {
+	"Asset": "public/js/asset.js",
+}
+
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
 doc_events = {
 	"Purchase Receipt": {

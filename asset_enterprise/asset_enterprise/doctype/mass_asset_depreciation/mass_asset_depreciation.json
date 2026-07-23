@@ -1,0 +1,116 @@
+{
+ "actions": [],
+ "autoname": "format:MAD-{YYYY}-{#####}",
+ "creation": "2026-07-17 10:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "company",
+  "posting_date",
+  "mode",
+  "column_break_a",
+  "asset_category",
+  "selected_assets",
+  "results_section",
+  "result_summary"
+ ],
+ "fields": [
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "posting_date",
+   "fieldtype": "Date",
+   "label": "Posting Date",
+   "reqd": 1
+  },
+  {
+   "default": "All Eligible",
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "label": "Mode",
+   "options": "All Eligible\nSelected Asset Category\nSelected Assets",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_a",
+   "fieldtype": "Column Break",
+   "label": ""
+  },
+  {
+   "depends_on": "eval:doc.mode==='Selected Asset Category'",
+   "fieldname": "asset_category",
+   "fieldtype": "Link",
+   "label": "Asset Category",
+   "mandatory_depends_on": "eval:doc.mode==='Selected Asset Category'",
+   "options": "Asset Category"
+  },
+  {
+   "depends_on": "eval:doc.mode==='Selected Assets'",
+   "fieldname": "selected_assets",
+   "fieldtype": "Table",
+   "label": "Selected Assets",
+   "options": "Mass Asset Depreciation Asset"
+  },
+  {
+   "fieldname": "results_section",
+   "fieldtype": "Section Break",
+   "label": "Results"
+  },
+  {
+   "fieldname": "result_summary",
+   "fieldtype": "Table",
+   "label": "Result Summary",
+   "options": "Mass Asset Depreciation Result",
+   "read_only": 1
+  }
+ ],
+ "is_submittable": 1,
+ "issingle": 0,
+ "istable": 0,
+ "links": [],
+ "modified": "2026-07-17 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Enterprise",
+ "name": "Mass Asset Depreciation",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
