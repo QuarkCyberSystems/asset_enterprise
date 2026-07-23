@@ -144,7 +144,9 @@ def split_period_for_cc_change(row_amount, days_in_period, change_day_offset, co
 # --------------------------------------------------------------------------
 
 
-def supersede_and_regenerate(asset_name, finance_book=None, as_of_date=None, reason=None):
+def supersede_and_regenerate(
+	asset_name, finance_book=None, as_of_date=None, reason=None, end_of_life_override=None
+):
 	"""Replace reschedule-by-cancel with supersession.
 
 	1. Active schedule -> status "Superseded" (db_set; docstatus stays 1;
@@ -176,10 +178,13 @@ def supersede_and_regenerate(asset_name, finance_book=None, as_of_date=None, rea
 	posted = [r for r in old.get("depreciation_schedule") if r.journal_entry]
 	unposted = [r for r in old.get("depreciation_schedule") if not r.journal_entry]
 
-	# Remaining life: end of life comes from the OLD schedule's horizon.
+	# Remaining life: the OLD schedule's horizon, unless explicitly
+	# extended (GAP-014 "Add Value and Extend Life").
 	if not old.get("depreciation_schedule"):
 		frappe.throw(_("Schedule {0} has no rows.").format(old_name))
-	end_of_life = getdate(old.get("depreciation_schedule")[-1].schedule_date)
+	end_of_life = getdate(
+		end_of_life_override or old.get("depreciation_schedule")[-1].schedule_date
+	)
 
 	from asset_enterprise.asset_values import recalculate_asset_values
 
