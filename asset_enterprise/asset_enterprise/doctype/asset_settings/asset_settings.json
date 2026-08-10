@@ -8,7 +8,6 @@
  "field_order": [
   "enable_enterprise_assets",
   "depreciation_section",
-  "force_eom_depreciation",
   "tolerance_settings",
   "controls_section",
   "prevent_disposal_before_full_invoicing",
@@ -28,12 +27,6 @@
    "fieldname": "depreciation_section",
    "fieldtype": "Section Break",
    "label": "Depreciation"
-  },
-  {
-   "default": "0",
-   "fieldname": "force_eom_depreciation",
-   "fieldtype": "Check",
-   "label": "Force End-of-Month Depreciation Dates"
   },
   {
    "description": "Max rounding drift the final depreciation posting absorbs without flagging (GA-0005-01 \u00a74.10). Drift is always posted; the flag is informational.",

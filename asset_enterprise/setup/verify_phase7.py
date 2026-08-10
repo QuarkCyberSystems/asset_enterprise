@@ -220,6 +220,26 @@ def _run():
 			print(f"optionb FAIL (below-receipt PI blocked under Option B): {e}")
 			ok = False
 
+		# --------------- Phase 11c D1: ARBNB/clearing reconcile via transfer JE
+		transfer_je = frappe.db.get_value(
+			"Journal Entry",
+			{"user_remark": ("like", f"Invoice delta transfer for {pi.name}%"), "docstatus": 1},
+			"name",
+		)
+		ava_je = frappe.db.get_value("Asset Value Adjustment", ava.name, "journal_entry")
+		clearing_net = flt(frappe.db.sql(
+			"""select coalesce(sum(debit - credit), 0) from `tabGL Entry`
+			   where account = %s and is_cancelled = 0
+			     and voucher_no in (%s, %s)""",
+			(diff_account, transfer_je or "x", ava_je or ava.name),
+		)[0][0]) if transfer_je else None
+		d1_ok = bool(transfer_je) and clearing_net == 0
+		print(
+			f"d1     delta transfer JE={transfer_je} clearing-net={clearing_net} (want 0) "
+			f"{'OK' if d1_ok else 'FAIL'}"
+		)
+		ok = ok and d1_ok
+
 		# ------------------------------------------- PI cancel unwinds via Reversal AVA
 		pi.reload()
 		pi.cancel()
@@ -233,6 +253,57 @@ def _run():
 			f"{'OK' if c_ok else 'FAIL'}"
 		)
 		ok = ok and c_ok
+
+		# --------------- Phase 11c D1: Case A.02 — disposed asset expensed
+		expense = frappe.db.get_value(
+			"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name")
+		frappe.db.set_value(
+			"Company", company,
+			{"default_post_disposal_invoice_diff_account": expense,
+			 "disposal_account": frappe.db.get_value("Company", company, "disposal_account") or expense},
+			update_modified=False,
+		)
+		from asset_enterprise import disposal as _disposal
+
+		_disposal.scrap_asset(assets[0], scrapping_type="Damage")
+		avas_before = frappe.db.count(
+			"Asset Value Adjustment", {"asset": assets[0], "docstatus": 1})
+		pi4 = frappe.get_doc(
+			{
+				"doctype": "Purchase Invoice",
+				"company": company,
+				"supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [
+					{
+						"item_code": "AE-SMOKE-ITEM",
+						"qty": 1,
+						"rate": 1200,  # +200 over PR on a scrapped asset
+						"purchase_receipt": pr.name,
+						"pr_detail": pr.items[0].name,
+					}
+				],
+				"pi_asset_allocation": [{"asset": assets[0]}],
+			}
+		)
+		pi4.flags.ignore_permissions = True
+		pi4.insert()
+		pi4.submit()
+		a02_ft = frappe.db.exists(
+			"Financial Treatment",
+			{"source_name": pi4.name, "transaction_type": "Post-Disposal Invoice Adjustment",
+			 "status": "Posted"},
+		)
+		avas_after = frappe.db.count(
+			"Asset Value Adjustment", {"asset": assets[0], "docstatus": 1})
+		new_ava = avas_after - avas_before
+		hav_scrapped = recalculate_asset_values(assets[0], save=False)["historical_asset_value"]
+		a02_ok = bool(a02_ft) and new_ava == 0 and flt(hav_scrapped) == 0
+		print(
+			f"a02    disposed-asset delta expensed: FT={bool(a02_ft)} new-AVAs={new_ava} (want 0) "
+			f"HAV stays {hav_scrapped} (want 0) {'OK' if a02_ok else 'FAIL'}"
+		)
+		ok = ok and a02_ok
 
 	finally:
 		frappe.db.rollback(save_point="phase7_verify")

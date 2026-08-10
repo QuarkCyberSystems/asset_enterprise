@@ -45,6 +45,29 @@ def sync_customizations():
 	apply_property_setters()
 	seed_masters()
 	seed_setting_defaults()
+	register_asset_accounting_dimension()
+
+
+def register_asset_accounting_dimension():
+	"""GAP-023 (Phase 11c D5, recommended option): ship "Asset" as an
+	Accounting Dimension so GL entries can be filtered/grouped by
+	asset. Idempotent; dimension creation adds the `asset` dimension
+	field across GL-mapped doctypes."""
+	try:
+		if frappe.db.exists("Accounting Dimension", {"document_type": "Asset"}):
+			return
+		dim = frappe.get_doc(
+			{"doctype": "Accounting Dimension", "document_type": "Asset"}
+		)
+		dim.flags.ignore_permissions = True
+		dim.insert()
+		frappe.db.commit()
+		print("asset_enterprise: registered 'Asset' as Accounting Dimension (GAP-023)")
+	except Exception:
+		frappe.log_error(
+			title="asset_enterprise: Accounting Dimension registration failed",
+			message=frappe.get_traceback(),
+		)
 
 
 def seed_setting_defaults():

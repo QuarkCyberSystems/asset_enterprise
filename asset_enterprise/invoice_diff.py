@@ -196,11 +196,16 @@ def _maybe_warn_below_receipt(doc):
 			)
 
 
+DISPOSED_STATUSES = ("Scrapped", "Sold", "Capitalized")
+
+
 def pi_on_submit(doc, method=None):
 	if not _enterprise() or not doc.get("pi_asset_allocation"):
 		return
 
 	from asset_enterprise.accounts import get_enterprise_account
+
+	transfer_legs = []  # Phase 11c D1: delta moves OUT of ARBNB at PI time
 
 	for row in doc.pi_asset_allocation:
 		price_delta, fx_delta = _compute_deltas(doc, row.asset)
@@ -212,10 +217,48 @@ def pi_on_submit(doc, method=None):
 		)
 
 		asset = frappe.db.get_value(
-			"Asset", row.asset, ["docstatus", "asset_category", "company"], as_dict=True
+			"Asset", row.asset, ["docstatus", "asset_category", "company", "status"], as_dict=True
 		)
-		if not price_delta or asset.docstatus != 1:
+		if asset.docstatus != 1:
 			continue  # draft assets absorb the delta on their own submit values
+
+		# §12.4/§12.5 (Phase 11c D1): the PI parked the full amount in
+		# ARBNB — move the price delta to its destination account, and
+		# the FX component to Exchange Gain/Loss (never capitalized).
+		if asset.status in DISPOSED_STATUSES:
+			# Case A.02: disposed asset — delta is EXPENSED, no AVA.
+			if price_delta:
+				dest = get_enterprise_account(
+					"post_disposal_invoice_diff_account", asset.company, asset.asset_category
+				)
+				transfer_legs.append((dest, price_delta, row.asset))
+				from asset_enterprise import tcc
+
+				tcc.apply(
+					source_doc=doc,
+					category="Addition",
+					transaction_type="Post-Disposal Invoice Adjustment",
+					asset=row.asset,
+					posting_date=doc.posting_date,
+					amount=abs(price_delta),
+				)
+			if fx_delta:
+				transfer_legs.append((_exchange_account(doc.company), fx_delta, row.asset))
+			continue
+
+		if fx_delta:
+			transfer_legs.append((_exchange_account(doc.company), fx_delta, row.asset))
+		if not price_delta:
+			continue
+		transfer_legs.append(
+			(
+				get_enterprise_account(
+					"asset_invoice_difference_account", asset.company, asset.asset_category
+				),
+				price_delta,
+				row.asset,
+			)
+		)
 
 		# Auto-AVA sweeps the price delta onto the asset (Case A.01);
 		# the clearing account is the AVA difference account, matching
@@ -250,12 +293,75 @@ def pi_on_submit(doc, method=None):
 				frappe.db.set_value(
 					"Purchase Invoice Item", item.name, "asset_linked", 1, update_modified=False
 				)
-		doc.add_comment(
-			"Comment",
-			_("Invoice Adjustment AVA {0} posted for Asset {1} (delta {2}).").format(
-				ava.name, row.asset, price_delta
-			),
+
+	_post_delta_transfer_je(doc, transfer_legs)
+
+
+def _exchange_account(company):
+	account = frappe.db.get_value("Company", company, "exchange_gain_loss_account")
+	if not account:
+		frappe.throw(
+			_(
+				"Set the Exchange Gain / Loss account on Company {0} — required to "
+				"route the FX portion of an invoice-vs-receipt delta (GAP-012 / N3)."
+			).format(company)
 		)
+	return account
+
+
+def _post_delta_transfer_je(doc, transfer_legs):
+	"""Phase 11c D1 (recommended Option A): one JE per PI moving the
+	deltas OUT of Asset Received But Not Billed into their destination
+	accounts (invoice-difference clearing / post-disposal expense /
+	exchange gain-loss). Net effect with the auto-AVA: both ARBNB and
+	the clearing account reconcile to zero — §12.4/§12.5's invariant —
+	without overriding core's own invoice posting."""
+	legs = [(acct, amt, asset) for acct, amt, asset in transfer_legs if flt(amt)]
+	if not legs:
+		return
+	arbnb = frappe.db.get_value("Company", doc.company, "asset_received_but_not_billed")
+	if not arbnb:
+		frappe.throw(
+			_("Set 'Asset Received But Not Billed' on Company {0}.").format(doc.company)
+		)
+
+	def _side(amount):
+		return (
+			{"debit_in_account_currency": abs(amount)}
+			if amount > 0
+			else {"credit_in_account_currency": abs(amount)}
+		)
+
+	accounts = []
+	total = 0.0
+	for acct, amt, asset_name in legs:
+		accounts.append(
+			{
+				"account": acct,
+				"reference_type": "Asset",
+				"reference_name": asset_name,
+				**_side(amt),
+			}
+		)
+		total = fa_module_round(total + amt, doc.company)
+	accounts.append({"account": arbnb, **_side(-total)})
+
+	je = frappe.get_doc(
+		{
+			"doctype": "Journal Entry",
+			"voucher_type": "Journal Entry",
+			"company": doc.company,
+			"posting_date": doc.posting_date,
+			"user_remark": _("Invoice delta transfer for {0} (GAP-012)").format(doc.name),
+			"accounts": accounts,
+		}
+	)
+	je.flags.ignore_permissions = True
+	je.submit()
+	doc.add_comment(
+		"Comment",
+		_("Invoice-vs-receipt delta moved out of ARBNB via {0} (GAP-012).").format(je.name),
+	)
 
 
 def pi_on_cancel(doc, method=None):
@@ -279,6 +385,33 @@ def pi_on_cancel(doc, method=None):
 		pluck="name",
 	):
 		frappe.get_doc("Asset Value Adjustment", ava_name).cancel()
+
+	# Phase 11c D1: mirror the delta-transfer JE (immutable — original
+	# stays posted) and pair any Case A.02 treatments.
+	transfer_je = frappe.db.get_value(
+		"Journal Entry",
+		{"user_remark": ("like", f"Invoice delta transfer for {doc.name}%"), "docstatus": 1},
+		"name",
+	)
+	if transfer_je:
+		from asset_enterprise.restore import _mirror_je
+
+		_mirror_je(
+			transfer_je, _("Reversal of invoice delta transfer for {0}").format(doc.name)
+		)
+	from asset_enterprise import tcc
+
+	for ft in frappe.get_all(
+		"Financial Treatment",
+		filters={
+			"source_doctype": "Purchase Invoice",
+			"source_name": doc.name,
+			"transaction_type": "Post-Disposal Invoice Adjustment",
+			"status": "Posted",
+		},
+		pluck="name",
+	):
+		tcc.reverse(ft, ("Purchase Invoice", doc.name))
 
 
 def _compute_deltas(doc, asset_name):
