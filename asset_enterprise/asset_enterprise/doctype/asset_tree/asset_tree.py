@@ -108,5 +108,19 @@ def rebuild_all():
 			)
 
 
-# Tree View uses frappe's generic nested-set browser (is_tree +
-# nsm_parent_field + title_field cover it) — no custom source needed.
+@frappe.whitelist()
+def get_children(doctype=None, parent=None, **kwargs):
+	"""Tree View node source (Location pattern): the synthetic root
+	label maps to the parent-less nodes."""
+	if parent in (None, "", "All Asset Trees", "Asset Tree"):
+		parent = ""
+	return frappe.db.sql(
+		"""
+		select name as value, asset_name as title, is_group as expandable
+		from `tabAsset Tree`
+		where ifnull(parent_asset_tree, '') = %s
+		order by name
+		""",
+		parent,
+		as_dict=True,
+	)

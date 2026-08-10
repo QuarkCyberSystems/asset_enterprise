@@ -2,17 +2,18 @@
 frappe.treeview_settings["Asset Tree"] = {
 	title: __("Asset Tree"),
 	breadcrumb: "Assets",
+	root_label: "All Asset Trees",
 	get_tree_root: false,
+	get_tree_nodes:
+		"asset_enterprise.asset_enterprise.doctype.asset_tree.asset_tree.get_children",
+	ignore_fields: ["parent_asset_tree"],
 	menu_items: [
 		{
 			label: __("Open Asset Tree Report"),
 			action: () => frappe.set_route("query-report", "Asset Tree"),
 		},
 	],
-	onclick(node) {
-		// node name == asset id — one click through to the Asset.
-		if (node && node.data && node.data.value && !node.is_root) {
-			frappe.set_route("Form", "Asset", node.data.value);
-		}
+	onload: function (treeview) {
+		treeview.make_tree();
 	},
 };
