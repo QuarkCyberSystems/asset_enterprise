@@ -75,6 +75,35 @@ class EnterpriseAsset(Asset):
 			self._validate_tree_acyclic()
 			self._guard_merge_log()
 
+	def on_update(self):
+		super().on_update()
+		self._sync_asset_tree()
+
+	def on_update_after_submit(self):
+		parent_hook = getattr(super(), "on_update_after_submit", None)
+		if parent_hook:
+			parent_hook()
+		self._sync_asset_tree()
+
+	def _sync_asset_tree(self):
+		"""GAP-009: the Asset Tree doctype mirrors parent_asset links
+		for the native Tree View."""
+		if not self._enterprise() or not (
+			self.get("parent_asset")
+			or frappe.db.exists("Asset Tree", {"child_asset": self.name})
+		):
+			return
+		try:
+			from asset_enterprise.asset_enterprise.doctype.asset_tree.asset_tree import (
+				sync_asset_tree,
+			)
+
+			sync_asset_tree(self.name)
+		except Exception:
+			frappe.log_error(
+				title=f"asset_tree sync failed: {self.name}", message=frappe.get_traceback()
+			)
+
 	def _guard_merge_log(self):
 		"""VR-039 (Phase 11b): Merge Log rows change only through
 		Capitalization submit/reverse and component scrap — direct edits

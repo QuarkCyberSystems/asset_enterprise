@@ -97,33 +97,64 @@ frappe.ui.form.on("Asset", {
 			);
 		}
 
-		// Tree Summary (GAP-009) — aggregated values over descendants.
+		// Asset Tree report (GAP-009) — collapsible hierarchy with values.
 		frm.add_custom_button(
-			__("Tree Summary"),
-			() =>
-				frappe.call({
-					method: "asset_enterprise.api.tree_aggregate",
-					args: { asset_name: frm.doc.name },
-					callback: (r) => {
-						const t = r.message;
-						frappe.msgprint({
-							title: __("Asset Tree Summary — {0}", [frm.doc.name]),
-							message: __(
-								"Assets in tree: {0}<br>Historical Asset Value: {1}<br>Accumulated Depreciation: {2}<br>Net Book Value: {3}",
-								[
-									t.assets,
-									format_currency(t.historical_asset_value),
-									format_currency(t.accumulated_depreciation_value),
-									format_currency(t.net_book_value),
-								]
-							),
-						});
-					},
-				}),
-			__("Manage")
+			__("Asset Tree"),
+			() => frappe.set_route("query-report", "Asset Tree"),
+			__("View")
 		);
+
+		render_tree_panel(frm);
 	},
 });
+
+function render_tree_panel(frm) {
+	// GAP-009: parent link + children table directly on the form.
+	frappe.call({
+		method: "asset_enterprise.api.tree_panel",
+		args: { asset_name: frm.doc.name },
+		callback: (r) => {
+			const t = r.message || {};
+			if (!t.parent && !(t.children || []).length) return;
+
+			let html = "";
+			if (t.parent) {
+				html += `<p>${__("Part of")} <a href="/app/asset/${encodeURIComponent(
+					t.parent
+				)}"><b>${frappe.utils.escape_html(t.parent)}</b></a> — ${frappe.utils.escape_html(
+					t.parent_name || ""
+				)}</p>`;
+			}
+			if ((t.children || []).length) {
+				const rows = t.children
+					.map(
+						(c) => `<tr>
+							<td><a href="/app/asset/${encodeURIComponent(c.name)}">${frappe.utils.escape_html(
+								c.name
+							)}</a></td>
+							<td>${frappe.utils.escape_html(c.asset_name || "")}</td>
+							<td>${frappe.utils.escape_html(c.status || "")}</td>
+							<td class="text-right">${format_currency(c.historical_asset_value)}</td>
+							<td class="text-right">${format_currency(c.net_book_value)}</td>
+						</tr>`
+					)
+					.join("");
+				html += `<table class="table table-bordered table-sm" style="margin-bottom:6px">
+					<thead><tr>
+						<th>${__("Child Asset")}</th><th>${__("Name")}</th><th>${__("Status")}</th>
+						<th class="text-right">${__("HAV")}</th><th class="text-right">${__("NBV")}</th>
+					</tr></thead><tbody>${rows}</tbody></table>`;
+				if (t.totals) {
+					html += `<p><b>${__("Subtree totals")}:</b> ${__("Assets")} ${t.totals.assets} ·
+						HAV ${format_currency(t.totals.historical_asset_value)} ·
+						${__("Accum")} ${format_currency(t.totals.accumulated_depreciation_value)} ·
+						NBV ${format_currency(t.totals.net_book_value)}</p>`;
+				}
+			}
+			frm.dashboard.add_section(html, __("Asset Tree"));
+		},
+	});
+}
 
 function enable_depreciation_dialog(frm) {
 	const d = new frappe.ui.Dialog({

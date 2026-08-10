@@ -13,6 +13,33 @@ def recalculate(asset_name):
 
 
 @frappe.whitelist()
+def tree_panel(asset_name):
+	"""GAP-009: parent + children + subtree totals for the Asset form's
+	tree panel."""
+	frappe.has_permission("Asset", "read", asset_name, throw=True)
+	parent = frappe.db.get_value("Asset", asset_name, "parent_asset")
+	parent_name = parent and frappe.db.get_value("Asset", parent, "asset_name")
+	children = frappe.get_all(
+		"Asset",
+		filters={"parent_asset": asset_name, "docstatus": ("<", 2)},
+		fields=[
+			"name",
+			"asset_name",
+			"status",
+			"historical_asset_value",
+			"net_book_value",
+		],
+		order_by="name",
+	)
+	return {
+		"parent": parent,
+		"parent_name": parent_name,
+		"children": children,
+		"totals": tree_aggregate(asset_name) if children else None,
+	}
+
+
+@frappe.whitelist()
 def tree_aggregate(asset_name):
 	"""GAP-009: aggregated HAV / Accum / NBV over the asset and every
 	descendant (parent_asset chain), for the tree dashboard (TC-012)."""

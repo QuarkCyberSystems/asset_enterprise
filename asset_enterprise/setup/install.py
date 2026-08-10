@@ -46,6 +46,20 @@ def sync_customizations():
 	seed_masters()
 	seed_setting_defaults()
 	register_asset_accounting_dimension()
+	rebuild_asset_tree_nodes()
+
+
+def rebuild_asset_tree_nodes():
+	"""GAP-009: backfill Asset Tree nodes from Asset.parent_asset links
+	(covers links set via db_set / imports that bypass hooks)."""
+	try:
+		from asset_enterprise.asset_enterprise.doctype.asset_tree.asset_tree import rebuild_all
+
+		rebuild_all()
+	except Exception:
+		frappe.log_error(
+			title="asset_enterprise: asset tree rebuild failed", message=frappe.get_traceback()
+		)
 
 
 def register_asset_accounting_dimension():
