@@ -22,7 +22,7 @@ def run():
 
 def _run():
 	ok = True
-	from asset_enterprise.setup.test_fixtures import pick_company
+	from asset_enterprise.setup.test_fixtures import pick_company, pick_plain_account
 	company = pick_company()
 
 	from asset_enterprise.asset_values import recalculate_asset_values
@@ -38,9 +38,7 @@ def _run():
 	try:
 		frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
 		if not frappe.db.get_value("Company", company, "disposal_account"):
-			expense = frappe.db.get_value(
-				"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name"
-			)
+			expense = pick_plain_account(company, "Expense")
 			frappe.db.set_value("Company", company, "disposal_account", expense, update_modified=False)
 
 		def first_unposted_row(asset_name):
@@ -428,8 +426,7 @@ def _run():
 		ok = ok and t7_ok
 
 		# T8: AVA difference account defaults from the chain.
-		liab = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Liability", "is_group": 0}, "name")
+		liab = pick_plain_account(company, "Liability")
 		frappe.db.set_value(
 			"Company", company, "default_impairment_loss_account", liab, update_modified=False)
 		ava_d = frappe.get_doc({

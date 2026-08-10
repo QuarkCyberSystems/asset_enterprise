@@ -17,6 +17,19 @@ def pick_company():
 	)
 
 
+def pick_plain_account(company, root_type):
+	"""Non-group account of the given root type that a plain JE can
+	post to (no party/stock/bank semantics) — live CoAs list
+	receivables first."""
+	rows = frappe.db.sql(
+		"""select name from tabAccount where company = %s and root_type = %s
+		   and is_group = 0 and ifnull(account_type, '') not in
+		   ('Receivable', 'Payable', 'Stock', 'Bank', 'Cash') limit 1""",
+		(company, root_type),
+	)
+	return rows[0][0] if rows else None
+
+
 def _find_account(company, account_type, root_type=None):
 	filters = {"company": company, "account_type": account_type, "is_group": 0}
 	if root_type:
@@ -40,9 +53,7 @@ def make_test_asset(company, gross=100000, submit=False, with_depreciation=False
 	# GAP-001: submitting an existing asset posts the suspense JE — seed
 	# a company default so smoke fixtures submit cleanly (savepoint-only).
 	if not frappe.db.get_value("Company", company, "default_asset_suspense_account"):
-		suspense = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Liability", "is_group": 0}, "name"
-		)
+		suspense = pick_plain_account(company, "Liability")
 		frappe.db.set_value(
 			"Company", company, "default_asset_suspense_account", suspense, update_modified=False
 		)

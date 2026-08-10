@@ -20,7 +20,7 @@ def run():
 
 def _run():
 	ok = True
-	from asset_enterprise.setup.test_fixtures import pick_company
+	from asset_enterprise.setup.test_fixtures import pick_company, pick_plain_account
 	company = pick_company()
 
 	from asset_enterprise.asset_values import recalculate_asset_values
@@ -45,9 +45,7 @@ def _run():
 			print(f"gap001n submit blocked without suspense account: {'OK' if g else 'FAIL: ' + str(e)}")
 			ok = ok and g
 
-		suspense = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Liability", "is_group": 0}, "name"
-		)
+		suspense = pick_plain_account(company, "Liability")
 		frappe.db.set_value(
 			"Company", company, "default_asset_suspense_account", suspense, update_modified=False
 		)

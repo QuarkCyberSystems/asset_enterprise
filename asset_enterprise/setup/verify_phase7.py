@@ -15,7 +15,7 @@ def run():
 
 def _run():
 	ok = True
-	from asset_enterprise.setup.test_fixtures import pick_company
+	from asset_enterprise.setup.test_fixtures import pick_company, pick_plain_account
 	company = pick_company()
 
 	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
@@ -28,9 +28,12 @@ def _run():
 		frappe.db.set_single_value(
 			"Accounts Settings", "over_billing_allowance", 100
 		)  # PI > PR headroom for the Invoice Adjustment smoke
-		diff_account = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Asset", "is_group": 0}, "name"
-		)
+		diff_account = frappe.db.sql(
+			"""select name from tabAccount where company = %s and root_type = 'Asset'
+			   and is_group = 0 and ifnull(account_type, '') not in
+			   ('Receivable', 'Payable', 'Stock', 'Bank', 'Cash') limit 1""",
+			company,
+		)[0][0]
 		frappe.db.set_value(
 			"Company", company, "default_asset_invoice_difference_account", diff_account,
 			update_modified=False,
@@ -259,8 +262,7 @@ def _run():
 		ok = ok and c_ok
 
 		# --------------- Phase 11c D1: Case A.02 — disposed asset expensed
-		expense = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name")
+		expense = pick_plain_account(company, "Expense")
 		frappe.db.set_value(
 			"Company", company,
 			{"default_post_disposal_invoice_diff_account": expense,

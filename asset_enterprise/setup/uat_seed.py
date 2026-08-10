@@ -35,14 +35,13 @@ def _fail(scenario, exc):
 
 
 def _account(company, root_type=None, account_type=None, name_like=None):
-	filters = {"company": company, "is_group": 0}
-	if root_type:
-		filters["root_type"] = root_type
 	if account_type:
-		filters["account_type"] = account_type
-	if name_like:
-		filters["name"] = ("like", f"%{name_like}%")
-	return frappe.db.get_value("Account", filters, "name")
+		return frappe.db.get_value(
+			"Account", {"company": company, "is_group": 0, "account_type": account_type}, "name"
+		)
+	from asset_enterprise.setup.test_fixtures import pick_plain_account
+
+	return pick_plain_account(company, root_type)
 
 
 def _ensure_masters(company):

@@ -23,7 +23,7 @@ def run():
 
 def _run():
 	ok = True
-	from asset_enterprise.setup.test_fixtures import pick_company
+	from asset_enterprise.setup.test_fixtures import pick_company, pick_plain_account
 	company = pick_company()
 
 	from asset_enterprise.asset_values import recalculate_asset_values
@@ -37,9 +37,7 @@ def _run():
 
 		# Disposal loss chain for the scrap tests.
 		if not frappe.db.get_value("Company", company, "disposal_account"):
-			expense = frappe.db.get_value(
-				"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name"
-			)
+			expense = pick_plain_account(company, "Expense")
 			frappe.db.set_value("Company", company, "disposal_account", expense, update_modified=False)
 
 		# ------------------------------------ CH-12: §4.3 day-count rule
@@ -270,8 +268,7 @@ def _run():
 
 		# ------------------------- CH-07: VR-042 NBV-coverage gate (AVA)
 		v1 = make_test_asset(company, gross=100_000, submit=True, with_depreciation=True)
-		diff_account = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Liability", "is_group": 0}, "name")
+		diff_account = pick_plain_account(company, "Liability")
 		ava = frappe.get_doc({
 			"doctype": "Asset Value Adjustment", "asset": v1.name, "company": company,
 			"date": nowdate(), "transaction_type": "Upward Revaluation",
