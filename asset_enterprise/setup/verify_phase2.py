@@ -19,7 +19,8 @@ def run():
 		get_currency_precision,
 	)
 
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 	places = get_currency_precision(company)
 	print(f"rounding precision({company}) = {places} places")
 

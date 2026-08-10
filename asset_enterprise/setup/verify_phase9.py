@@ -20,7 +20,8 @@ def run():
 
 def _run():
 	ok = True
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 
 	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.setup.test_fixtures import make_test_asset
@@ -119,7 +120,7 @@ def _run():
 		)
 		item.flags.ignore_permissions = True
 		item.save()
-		supplier = frappe.db.get_value("Supplier", {}, "name") or (
+		supplier = frappe.db.get_value("Supplier", {"supplier_name": "AE Smoke Supplier"}, "name") or (
 			frappe.get_doc({"doctype": "Supplier", "supplier_name": "AE Smoke Supplier"})
 			.insert(ignore_permissions=True)
 			.name

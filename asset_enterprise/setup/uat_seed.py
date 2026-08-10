@@ -236,7 +236,8 @@ def run():
 
 
 def _run():
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 	print(f"Seeding persistent UAT dataset on company: {company}\n")
 	m = _ensure_masters(company)
 	frappe.db.commit()
@@ -646,7 +647,8 @@ def _run():
 def wipe():
 	"""Best-effort removal of a previous UAT-FA dataset (test systems
 	only). Deletes in reverse dependency order with force."""
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 	assets = frappe.get_all(
 		"Asset", filters={"asset_name": ("like", f"{PREFIX}%")}, pluck="name"
 	)

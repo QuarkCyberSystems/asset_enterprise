@@ -72,7 +72,8 @@ def run():
 	# 6. Account resolution chain smoke (expect controlled throw, not crash)
 	from asset_enterprise.accounts import get_disposal_account, get_last_period_tolerance
 
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 	try:
 		acct = get_disposal_account(company, scrapping_type="Damage")
 		print(f"chain   disposal (Damage, {company}) -> {acct}")

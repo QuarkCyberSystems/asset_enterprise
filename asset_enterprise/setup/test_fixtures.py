@@ -8,6 +8,15 @@ import frappe
 from frappe.utils import add_months, nowdate
 
 
+def pick_company():
+	"""Deterministic company for smoke/UAT runs: prefer Badia Cement
+	(multi-company sites carry unrelated test companies)."""
+	return (
+		frappe.db.get_value("Company", {"company_name": ("like", "%Badia%")}, "name")
+		or frappe.db.get_value("Company", {}, "name")
+	)
+
+
 def _find_account(company, account_type, root_type=None):
 	filters = {"company": company, "account_type": account_type, "is_group": 0}
 	if root_type:

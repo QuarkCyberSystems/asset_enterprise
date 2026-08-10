@@ -20,7 +20,8 @@ def run():
 
 def _run():
 	ok = True
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 
 	from asset_enterprise.depreciation import (
 		build_daily_rate_rows,
@@ -96,8 +97,14 @@ def _run():
 	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 	frappe.db.savepoint("phase3_pya")
 	try:
+		from erpnext.accounts.utils import get_fiscal_year
+
 		for yr in ("2024", "2025"):
-			if not frappe.db.exists("Fiscal Year", yr):
+			# Guard by DATE COVERAGE, not name — live sites may already
+			# have an FY covering the year under another name.
+			try:
+				get_fiscal_year(f"{yr}-06-30", as_dict=True)
+			except Exception:
 				frappe.get_doc(
 					{
 						"doctype": "Fiscal Year",

@@ -15,7 +15,8 @@ def run():
 
 def _run():
 	ok = True
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 
 	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 	frappe.db.savepoint("phase7_verify")
@@ -48,7 +49,9 @@ def _run():
 		item.flags.ignore_permissions = True
 		item.save()
 
-		supplier = frappe.db.get_value("Supplier", {}, "name")
+		# dedicated supplier — existing suppliers on live sites may carry
+		# foreign-currency payable accounts (currency-mismatch throws).
+		supplier = frappe.db.get_value("Supplier", {"supplier_name": "AE Smoke Supplier"}, "name")
 		if not supplier:
 			supplier = (
 				frappe.get_doc({"doctype": "Supplier", "supplier_name": "AE Smoke Supplier"})

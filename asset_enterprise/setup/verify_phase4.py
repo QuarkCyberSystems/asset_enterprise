@@ -18,7 +18,8 @@ def run():
 
 def _run():
 	ok = True
-	company = frappe.db.get_value("Company", {}, "name")
+	from asset_enterprise.setup.test_fixtures import pick_company
+	company = pick_company()
 
 	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.overrides.asset_repair import is_fully_depreciated
