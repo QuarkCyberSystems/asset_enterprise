@@ -199,7 +199,9 @@ def merge_sources_into_composite(cap_doc):
 		tcc.apply(
 			source_doc=cap_doc,
 			category="Addition",
-			transaction_type="Capitalized Maintenance",
+			# GAP-017 (Phase 11b): the composite's history entry names the
+			# merged source directly.
+			transaction_type=_("Capitalized Maintenance ({0})").format(source.name),
 			asset=target.name,
 			posting_date=posting_date,
 			amount=snap["nbv"],
@@ -213,6 +215,7 @@ def merge_sources_into_composite(cap_doc):
 	target.flags.ignore_validate_update_after_submit = True
 	target.flags.ignore_permissions = True
 	target.flags.ignore_links = True
+	target.flags.via_capitalization = True  # sanctioned Merge Log writer (VR-039)
 	target.save()
 
 	_apply_fully_depreciated_treatment(cap_doc, target, total_nbv, posting_date)

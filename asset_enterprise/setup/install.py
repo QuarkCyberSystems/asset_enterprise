@@ -52,6 +52,29 @@ def seed_setting_defaults():
 	default until the form is saved). Option B (v2.16 CH-05) ships ON."""
 	if frappe.db.get_single_value("Asset Settings", "warn_invoice_below_receipt") is None:
 		frappe.db.set_single_value("Asset Settings", "warn_invoice_below_receipt", 1)
+	_warn_if_immutable_ledger_off()
+
+
+def _warn_if_immutable_ledger_off():
+	"""Go-live prerequisite (audit D1): with Accounts Settings
+	`enable_immutable_ledger` OFF, core make_reverse_gl_entries flags
+	the ORIGINAL GL entries is_cancelled=1 — breaking the
+	"original stays posted" invariant of every mirror reversal
+	(Repair / Capitalized Maintenance / restore paths)."""
+	try:
+		enterprise_on = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets")
+		immutable_on = frappe.db.get_single_value("Accounts Settings", "enable_immutable_ledger")
+		if enterprise_on and not immutable_on:
+			message = (
+				"asset_enterprise WARNING: Accounts Settings 'Enable Immutable Ledger' is OFF. "
+				"Mirror reversals (Asset Repair / Capitalized Maintenance / restore) will "
+				"flag original GL entries as cancelled instead of preserving them. "
+				"Turn the flag ON before go-live (GA-0001-01 prerequisite)."
+			)
+			print(message)
+			frappe.log_error(title="asset_enterprise: immutable ledger OFF", message=message)
+	except Exception:
+		pass  # settings not migrated yet on fresh installs
 
 
 def apply_property_setters():

@@ -37,7 +37,35 @@ class EnterpriseAsset(Asset):
 			):
 				frappe.throw(_("Available for use date is required (VR-002)."))
 			self._validate_tree_acyclic()
+			self._validate_pr_row_allocation()
 		super().validate()
+
+	def _validate_pr_row_allocation(self):
+		"""VR-004 (Phase 11b): amount-side over-allocation check at the
+		Asset level — covers assets linked or revalued after PR submit
+		(core validates only the qty sum)."""
+		row_name = self.get("purchase_receipt_item")
+		if not row_name or self.docstatus == 2:
+			return
+		row = frappe.db.get_value(
+			"Purchase Receipt Item", row_name, ["base_net_amount", "idx"], as_dict=True
+		)
+		if not row or not flt(row.base_net_amount):
+			return
+		others = flt(
+			frappe.db.sql(
+				"""select coalesce(sum(net_purchase_amount), 0) from `tabAsset`
+				   where purchase_receipt_item = %s and docstatus < 2 and name != %s""",
+				(row_name, self.name or ""),
+			)[0][0]
+		)
+		if others + flt(self.net_purchase_amount) > flt(row.base_net_amount) + 0.01:
+			frappe.throw(
+				_(
+					"Total value of assets linked to Purchase Receipt row {0} "
+					"({1}) exceeds the row amount {2} (VR-004)."
+				).format(row.idx, others + flt(self.net_purchase_amount), row.base_net_amount)
+			)
 
 	def validate_update_after_submit(self):
 		# Submitted-doc saves skip validate() — re-run the tree check so
@@ -45,6 +73,36 @@ class EnterpriseAsset(Asset):
 		super().validate_update_after_submit()
 		if self._enterprise():
 			self._validate_tree_acyclic()
+			self._guard_merge_log()
+
+	def _guard_merge_log(self):
+		"""VR-039 (Phase 11b): Merge Log rows change only through
+		Capitalization submit/reverse and component scrap — direct edits
+		via UI/API are rejected server-side."""
+		if self.flags.get("via_capitalization"):
+			return
+		db_rows = {
+			r.name: (r.merged_source_asset, r.merged_via_capitalization, r.status)
+			for r in frappe.get_all(
+				"Composite Merge Log Entry",
+				filters={"parent": self.name},
+				fields=["name", "merged_source_asset", "merged_via_capitalization", "status"],
+			)
+		}
+		doc_rows = {
+			r.name: (r.merged_source_asset, r.merged_via_capitalization, r.status)
+			for r in (self.get("merge_log") or [])
+			if r.name
+		}
+		added = [r for r in (self.get("merge_log") or []) if not r.name]
+		if added or db_rows != doc_rows:
+			frappe.throw(
+				_(
+					"Composite Merge Log rows are system-maintained (VR-039) — they "
+					"change only via Asset Capitalization submit/reversal or component "
+					"scrap, never by direct edit."
+				)
+			)
 
 	def validate_in_use_date(self):
 		"""GAP-002: optional on save; on submit required only when
@@ -86,11 +144,19 @@ class EnterpriseAsset(Asset):
 			or not self._receiving_date_basis()
 		):
 			return
-		receiving_date = frappe.db.get_value(
-			"Purchase Receipt", self.purchase_receipt, "posting_date"
+		pr = frappe.db.get_value(
+			"Purchase Receipt", self.purchase_receipt, ["posting_date", "docstatus"], as_dict=True
 		)
-		if receiving_date:
-			self.available_for_use_date = receiving_date
+		# VR-003 (Phase 11b): only a SUBMITTED receipt provides the basis.
+		if pr and pr.docstatus != 1:
+			frappe.throw(
+				_(
+					"Receiving-date depreciation basis requires the linked Purchase "
+					"Receipt {0} to be submitted (VR-003)."
+				).format(self.purchase_receipt)
+			)
+		if pr and pr.posting_date:
+			self.available_for_use_date = pr.posting_date
 
 	def _validate_tree_acyclic(self):
 		"""GAP-009 / VR-009: parent_asset must not point into the asset's
@@ -118,6 +184,22 @@ class EnterpriseAsset(Asset):
 				"replaced_by_asset",
 				self.name,
 				update_modified=False,
+			)
+			# §5.2 (Phase 11b): both sides of the recovery trail get a
+			# history row.
+			from asset_enterprise.tcc import add_snapshot_activity
+
+			add_snapshot_activity(
+				self.name,
+				_("Created as replacement of disposed Asset {0} (GAP-016 Path 2).").format(
+					self.replacement_of_asset
+				),
+				transaction_type="Replacement",
+			)
+			add_snapshot_activity(
+				self.replacement_of_asset,
+				_("Replaced by Asset {0} (GAP-016 Path 2).").format(self.name),
+				transaction_type="Replacement",
 			)
 		if self._enterprise():
 			self._post_existing_asset_opening()
@@ -229,6 +311,15 @@ class EnterpriseAsset(Asset):
 				| {"GL Entry", "Journal Entry", "Financial Treatment", "Asset Activity",
 				   "Scrap Transaction"}
 			)
+			# VR-005 (Phase 11b): clear the PR row flag once no live
+			# assets remain against it.
+			row_name = self.get("purchase_receipt_item")
+			if row_name and not frappe.db.exists(
+				"Asset", {"purchase_receipt_item": row_name, "docstatus": ("<", 2)}
+			):
+				frappe.db.set_value(
+					"Purchase Receipt Item", row_name, "asset_linked", 0, update_modified=False
+				)
 
 	def _reverse_existing_asset_opening(self):
 		"""§12.2 reversal (Phase 11 F4): the GAP-001 opening JE is a

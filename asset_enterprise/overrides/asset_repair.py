@@ -115,13 +115,14 @@ class EnterpriseAssetRepair(AssetRepair):
 
 		source.db_set("reversed_by_repair", self.name, update_modified=False)
 
-		from erpnext.assets.doctype.asset_activity.asset_activity import add_asset_activity
+		from asset_enterprise.tcc import add_snapshot_activity
 
-		add_asset_activity(
+		add_snapshot_activity(
 			self.asset,
 			_("Repair {0} reversed via Reversal Repair {1}; original JE remains posted.").format(
 				source.name, self.name
 			),
+			transaction_type="Reversal",
 		)
 
 	# ------------------------------------------------------------- cancel

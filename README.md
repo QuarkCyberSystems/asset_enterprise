@@ -69,6 +69,10 @@ switch off, every override passes through to stock erpnext behavior.
 | 7 | `over_billing_allowance` headroom | Accounts Settings | Allows PI above PR for upward adjustments |
 | 8 | `auto_create_assets` + `asset_naming_series` | Item (fixed-asset items) | PR-time asset creation |
 | 9 | Asset Location on PR items | Purchase Receipt entry practice | Mandatory for auto asset creation |
+| 10 | **`enable_immutable_ledger` = ON** | Accounts Settings | **Hard prerequisite** — with it off, core flags original GL entries cancelled on every mirror reversal (Repair / CM / restore). A migrate-time warning fires when violated |
+| 11 | `daily_prorata_based` = 1 | Asset Finance Book rows (Badia default) | §4.3 daily-rate model |
+| 12 | `calculate_depr_using_total_days` = 1 | Accounts Settings | §4.3 daily-rate model on core-generated schedules |
+| 13 | "Asset" registered as Accounting Dimension | Accounting Dimension | GAP-023 — GL filtering/grouping by asset (manual config; fixture pending client decision) |
 
 ## Architecture
 

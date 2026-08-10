@@ -25,17 +25,8 @@ frappe.ui.form.on("Asset", {
 					}),
 				__("Manage")
 			);
-			// Create Replacement Asset (GAP-016 Path 2)
-			frm.add_custom_button(
-				__("Create Replacement Asset"),
-				() =>
-					frappe.call({
-						method: "asset_enterprise.restore.create_replacement_asset",
-						args: { source_asset: frm.doc.name },
-						callback: (r) => frappe.set_route("Form", "Asset", r.message),
-					}),
-				__("Manage")
-			);
+			// (Create Replacement Asset is added below for all disposed
+			// statuses, not just Scrapped.)
 			// Cross-Period Restore (GAP-016 Path 3, v2.16) — catch-up
 			// depreciation covers the disposed periods in one entry.
 			frm.add_custom_button(
@@ -55,6 +46,20 @@ frappe.ui.form.on("Asset", {
 								callback: () => frm.reload_doc(),
 							})
 					),
+				__("Manage")
+			);
+		}
+
+		// Create Replacement Asset (GAP-016 Path 2) — any disposed state.
+		if (["Scrapped", "Sold", "Capitalized"].includes(frm.doc.status)) {
+			frm.add_custom_button(
+				__("Create Replacement Asset"),
+				() =>
+					frappe.call({
+						method: "asset_enterprise.restore.create_replacement_asset",
+						args: { source_asset: frm.doc.name },
+						callback: (r) => frappe.set_route("Form", "Asset", r.message),
+					}),
 				__("Manage")
 			);
 		}

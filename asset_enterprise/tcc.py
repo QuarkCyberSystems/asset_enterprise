@@ -156,6 +156,18 @@ def _source_ref(source_doc):
 	return source_doc.doctype, source_doc.name
 
 
+def _total_useful_life_months(asset_name):
+	fb = frappe.db.get_value(
+		"Asset Finance Book",
+		{"parent": asset_name},
+		["total_number_of_depreciations", "frequency_of_depreciation"],
+		as_dict=True,
+	)
+	if not fb or not fb.total_number_of_depreciations:
+		return 0
+	return flt(fb.total_number_of_depreciations) * flt(fb.frequency_of_depreciation or 1)
+
+
 def _add_asset_activity(ft, values):
 	"""§5.2 Asset History enrichment: one Asset Activity row per
 	treatment carrying the post-treatment financial snapshot."""
@@ -179,9 +191,33 @@ def _add_asset_activity(ft, values):
 			"accumulated_depreciation_after": values["accumulated_depreciation_value"],
 			"net_book_value_after": values["net_book_value"],
 			"remaining_useful_life_after": values["remaining_useful_life_months"],
+			"useful_life_after": _total_useful_life_months(ft.asset),
 			"linked_journal_entry": ft.journal_entry,
 			"source_doctype": ft.source_doctype,
 			"source_name": ft.source_name,
 			"reversal_reference": ft.reversal_reference,
+		}
+	).insert(ignore_permissions=True)
+
+
+def add_snapshot_activity(asset_name, subject, transaction_type=None, journal_entry=None):
+	"""§5.2 (Phase 11b): value-snapshot Asset Activity row for non-FT
+	events (movements, restore/repair/AVA notes) so every history row
+	carries the financial state, not just TCC-generated ones."""
+	values = recalculate_asset_values(asset_name, save=False)
+	frappe.get_doc(
+		{
+			"doctype": "Asset Activity",
+			"asset": asset_name,
+			"date": frappe.utils.now(),
+			"user": frappe.session.user or "Administrator",
+			"subject": subject,
+			"transaction_type": transaction_type,
+			"historical_asset_value_after": values["historical_asset_value"],
+			"accumulated_depreciation_after": values["accumulated_depreciation_value"],
+			"net_book_value_after": values["net_book_value"],
+			"remaining_useful_life_after": values["remaining_useful_life_months"],
+			"useful_life_after": _total_useful_life_months(asset_name),
+			"linked_journal_entry": journal_entry,
 		}
 	).insert(ignore_permissions=True)

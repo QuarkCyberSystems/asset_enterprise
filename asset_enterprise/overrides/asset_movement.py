@@ -37,6 +37,37 @@ class EnterpriseAssetMovement(AssetMovement):
 				).format(d.idx)
 			)
 
+		# VR-010 (Phase 11b): a parent asset with children cannot move as
+		# a group — transfer the children individually first.
+		if self.purpose in ("Transfer", "Transfer and Issue") and frappe.db.exists(
+			"Asset", {"parent_asset": d.asset, "docstatus": 1}
+		):
+			frappe.throw(
+				_(
+					"Asset {0} has child assets in its tree — group transfer is not "
+					"allowed (VR-010). Transfer the children individually first."
+				).format(d.asset)
+			)
+
+		# VR-025 (Phase 11b): target cost center must belong to the
+		# movement's company and be a leaf node.
+		if d.get("target_cost_center"):
+			cc = frappe.db.get_value(
+				"Cost Center", d.target_cost_center, ["company", "is_group"], as_dict=True
+			)
+			if not cc or cc.company != self.company:
+				frappe.throw(
+					_("Row {0}: Cost Center {1} does not belong to company {2} (VR-025).").format(
+						d.idx, d.target_cost_center, self.company
+					)
+				)
+			if cc.is_group:
+				frappe.throw(
+					_("Row {0}: Cost Center {1} is a group — pick a leaf cost center (VR-025).").format(
+						d.idx, d.target_cost_center
+					)
+				)
+
 		if d.get("target_location"):
 			current_location = frappe.db.get_value("Asset", d.asset, "location")
 			if d.get("source_location") and current_location != d.source_location:
@@ -66,6 +97,24 @@ class EnterpriseAssetMovement(AssetMovement):
 		super().on_submit()
 		if not self._enterprise():
 			return
+		from asset_enterprise.tcc import add_snapshot_activity
+
+		for d in self.assets:
+			# GAP-022 / §5.2 (Phase 11b): ONE history row summarising all
+			# changes of this movement, with the value snapshot.
+			changes = []
+			if d.get("target_location"):
+				changes.append(_("location → {0}").format(d.target_location))
+			if d.get("to_employee"):
+				changes.append(_("custodian → {0}").format(d.to_employee))
+			if d.get("target_cost_center"):
+				changes.append(_("cost center → {0}").format(d.target_cost_center))
+			if changes:
+				add_snapshot_activity(
+					d.asset,
+					_("Movement {0}: {1}").format(self.name, "; ".join(changes)),
+					transaction_type="Movement",
+				)
 		for d in self.assets:
 			if d.get("target_cost_center"):
 				prior = frappe.db.get_value("Asset", d.asset, "cost_center")

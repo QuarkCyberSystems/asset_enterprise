@@ -243,6 +243,13 @@ def pi_on_submit(doc, method=None):
 		ava.insert()
 		ava.submit()
 		row.db_set("purchase_receipt", frappe.db.get_value("Asset", row.asset, "purchase_receipt"))
+		# VR-005 (Phase 11b): flag the PI item row covering this asset.
+		pr_detail = frappe.db.get_value("Asset", row.asset, "purchase_receipt_item")
+		for item in doc.items:
+			if item.get("pr_detail") == pr_detail:
+				frappe.db.set_value(
+					"Purchase Invoice Item", item.name, "asset_linked", 1, update_modified=False
+				)
 		doc.add_comment(
 			"Comment",
 			_("Invoice Adjustment AVA {0} posted for Asset {1} (delta {2}).").format(
@@ -256,6 +263,11 @@ def pi_on_cancel(doc, method=None):
 	Reversal-AVA path, unwinding the delta via counter-documents."""
 	if not _enterprise():
 		return
+	for item in doc.items:
+		if item.get("asset_linked"):
+			frappe.db.set_value(
+				"Purchase Invoice Item", item.name, "asset_linked", 0, update_modified=False
+			)
 	for ava_name in frappe.get_all(
 		"Asset Value Adjustment",
 		filters={

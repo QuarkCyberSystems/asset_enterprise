@@ -77,13 +77,15 @@ def restore_asset(asset_name):
 	except frappe.ValidationError:
 		pass
 
-	from erpnext.assets.doctype.asset_activity.asset_activity import add_asset_activity
+	from asset_enterprise.tcc import add_snapshot_activity
 
-	add_asset_activity(
+	add_snapshot_activity(
 		asset.name,
 		_("Same-period restore: disposal reversed via {0}; original scrap JE remains posted.").format(
 			mirror
 		),
+		transaction_type="Restore (Same Period)",
+		journal_entry=mirror,
 	)
 	return mirror
 
@@ -201,14 +203,16 @@ def cross_period_restore(asset_name, restore_date=None):
 	except frappe.ValidationError:
 		pass
 
-	from erpnext.assets.doctype.asset_activity.asset_activity import add_asset_activity
+	from asset_enterprise.tcc import add_snapshot_activity
 
-	add_asset_activity(
+	add_snapshot_activity(
 		asset.name,
 		_(
 			"Cross-period restore (Path 3): disposal reversed via {0}; first "
 			"depreciation after restore catches up periods since {1}."
 		).format(mirror, disposal_date),
+		transaction_type="Restore (Cross-Period)",
+		journal_entry=mirror,
 	)
 	return mirror
 
@@ -249,6 +253,13 @@ def create_replacement_asset(source_asset):
 	replacement.flags.ignore_links = True  # source may be status-disposed
 	replacement.flags.ignore_mandatory = True  # user fills values before submit
 	replacement.insert()
+	from asset_enterprise.tcc import add_snapshot_activity
+
+	add_snapshot_activity(
+		source.name,
+		_("Replacement asset {0} drafted (GAP-016 Path 2).").format(replacement.name),
+		transaction_type="Replacement Drafted",
+	)
 	return replacement.name
 
 
@@ -306,7 +317,16 @@ def _mirror_je(source_je_name, remark):
 			],
 		}
 	)
+	# §12.22 / GA-0001-01 (Phase 11b T10): carry the two-way JE
+	# back-references when the site has the reversal fields.
+	je_meta = frappe.get_meta("Journal Entry")
+	if je_meta.has_field("reversal_of"):
+		mirror.reversal_of = source_je_name
 	mirror.flags.ignore_permissions = True
 	mirror.flags.ignore_links = True
 	mirror.submit()
+	if je_meta.has_field("reversed_by"):
+		frappe.db.set_value(
+			"Journal Entry", source_je_name, "reversed_by", mirror.name, update_modified=False
+		)
 	return mirror.name

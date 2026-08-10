@@ -27,6 +27,30 @@ class EnterpriseAVA(AssetValueAdjustment):
 	A Reversal AVA itself cannot be cancelled (loop guard).
 	"""
 
+	def validate(self):
+		# §3.5 / §12.14 / §12.15 (Phase 11b T8): default the difference
+		# account from the account-resolution chain by transaction type;
+		# the user can still override.
+		if self._enterprise() and not self.get("difference_account"):
+			field_by_type = {
+				"Initial Impairment": "impairment_loss_account",
+				"Upward Revaluation": "revaluation_surplus_oci_account",
+				"Invoice Adjustment": "asset_invoice_difference_account",
+			}
+			field = field_by_type.get(self.get("transaction_type"))
+			if field:
+				try:
+					from asset_enterprise.accounts import get_enterprise_account
+
+					self.difference_account = get_enterprise_account(
+						field,
+						self.company,
+						frappe.db.get_value("Asset", self.asset, "asset_category"),
+					)
+				except frappe.ValidationError:
+					pass  # unconfigured — core's mandatory check guides the user
+		super().validate()
+
 	# ------------------------------------------------------------- submit
 	def on_submit(self):
 		# UL-only adjustments (difference = 0) post no revaluation JE —
@@ -208,13 +232,14 @@ class EnterpriseAVA(AssetValueAdjustment):
 		reversal.insert()
 		reversal.submit()
 
-		from erpnext.assets.doctype.asset_activity.asset_activity import add_asset_activity
+		from asset_enterprise.tcc import add_snapshot_activity
 
-		add_asset_activity(
+		add_snapshot_activity(
 			self.asset,
 			_("AVA {0} reversed via Reversal AVA {1}; original JE remains posted.").format(
 				self.name, reversal.name
 			),
+			transaction_type="Reversal",
 		)
 
 	def _enterprise(self):

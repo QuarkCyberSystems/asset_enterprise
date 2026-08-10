@@ -17,6 +17,13 @@ def execute(filters=None):
 		conditions["merged_source_asset"] = filters["source_asset"]
 	if filters.get("status"):
 		conditions["status"] = filters["status"]
+	# GAP-035 req 6 (Phase 11b): date-range filterability.
+	if filters.get("from_date") and filters.get("to_date"):
+		conditions["merged_date"] = ("between", [filters["from_date"], filters["to_date"]])
+	elif filters.get("from_date"):
+		conditions["merged_date"] = (">=", filters["from_date"])
+	elif filters.get("to_date"):
+		conditions["merged_date"] = ("<=", filters["to_date"])
 
 	rows = frappe.get_all(
 		"Composite Merge Log Entry",
@@ -30,6 +37,8 @@ def execute(filters=None):
 			"historical_value_at_merge",
 			"accumulated_depreciation_at_merge",
 			"net_book_value_at_merge",
+			"remaining_useful_life_in_months",
+			"remaining_useful_life_in_years",
 			"status",
 		],
 		order_by="merged_date desc",
@@ -43,6 +52,8 @@ def execute(filters=None):
 		{"fieldname": "historical_value_at_merge", "label": "HAV at Merge", "fieldtype": "Currency", "width": 130},
 		{"fieldname": "accumulated_depreciation_at_merge", "label": "Accum at Merge", "fieldtype": "Currency", "width": 130},
 		{"fieldname": "net_book_value_at_merge", "label": "NBV at Merge", "fieldtype": "Currency", "width": 130},
+		{"fieldname": "remaining_useful_life_in_months", "label": "RUL at Merge (Months)", "fieldtype": "Int", "width": 110},
+		{"fieldname": "remaining_useful_life_in_years", "label": "RUL at Merge (Years)", "fieldtype": "Float", "width": 110},
 		{"fieldname": "status", "label": "Status", "fieldtype": "Data", "width": 90},
 	]
 	return columns, rows

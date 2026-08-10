@@ -17,6 +17,43 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 	(supersede_and_regenerate — db_set, never .cancel()).
 	"""
 
+	def validate(self):
+		super().validate()
+		self._protect_posted_rows()
+
+	def validate_update_after_submit(self):
+		# Submitted-schedule saves skip validate() — the posted-row
+		# protection must run here (VR-036, Phase 11b).
+		super().validate_update_after_submit()
+		self._protect_posted_rows()
+
+	def _protect_posted_rows(self):
+		"""VR-036 (Phase 11b): a save that would DROP posted rows (rows
+		carrying a Journal Entry) is rejected — posted history is
+		immutable; reschedules go through supersession."""
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if self.is_new() or not enterprise_enabled():
+			return
+		posted_in_db = set(
+			frappe.get_all(
+				"Depreciation Schedule",
+				filters={"parent": self.name, "journal_entry": ("!=", "")},
+				pluck="journal_entry",
+			)
+		)
+		current = {
+			row.journal_entry for row in (self.get("depreciation_schedule") or []) if row.journal_entry
+		}
+		missing = posted_in_db - current
+		if missing:
+			frappe.throw(
+				frappe._(
+					"This change would drop {0} posted depreciation row(s) ({1}) — posted "
+					"rows are immutable (VR-036). Reschedule via supersession instead."
+				).format(len(missing), ", ".join(sorted(missing)[:3]))
+			)
+
 	def validate_another_asset_depr_schedule_does_not_exist(self):
 		finance_book_filter = ["finance_book", "is", "not set"]
 		if self.finance_book:

@@ -337,6 +337,110 @@ def _run():
 			ok = ok and g
 		frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
 
+		# ================= Phase 11b guard/enrichment checks =================
+
+		# T3/T4 (VR-010 / VR-025): movement guards.
+		p1 = make_test_asset(company, gross=9_000, submit=True)
+		child = make_test_asset(company, gross=4_000, submit=True)
+		frappe.db.set_value("Asset", child.name, "parent_asset", p1.name, update_modified=False)
+		loc2 = frappe.db.get_value("Location", {"name": ["!=", p1.location]}, "name") or p1.location
+		mv = frappe.get_doc({
+			"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+			"transaction_date": frappe.utils.now(),
+			"assets": [{"asset": p1.name, "target_location": loc2}],
+		})
+		mv.flags.ignore_permissions = True
+		try:
+			mv.insert()
+			print("t3     FAIL (parent with children moved)")
+			ok = False
+		except frappe.ValidationError as e:
+			g = "VR-010" in str(e)
+			print(f"t3     parent-with-children transfer blocked: {'OK' if g else 'FAIL: ' + str(e)}")
+			ok = ok and g
+
+		group_cc = frappe.db.get_value("Cost Center", {"company": company, "is_group": 1}, "name")
+		if group_cc:
+			mv2 = frappe.get_doc({
+				"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+				"transaction_date": frappe.utils.now(),
+				"assets": [{"asset": child.name, "target_cost_center": group_cc}],
+			})
+			mv2.flags.ignore_permissions = True
+			try:
+				mv2.insert()
+				print("t4     FAIL (group cost center accepted)")
+				ok = False
+			except frappe.ValidationError as e:
+				g = "VR-025" in str(e)
+				print(f"t4     group cost center blocked: {'OK' if g else 'FAIL: ' + str(e)}")
+				ok = ok and g
+
+		# T5 (VR-039): direct merge-log edit rejected.
+		comp2 = make_test_asset(company, gross=15_000, submit=True)
+		frappe.get_doc({
+			"doctype": "Composite Merge Log Entry", "parenttype": "Asset",
+			"parent": comp2.name, "parentfield": "merge_log", "idx": 1,
+			"merged_source_asset": p1.name, "merged_date": nowdate(),
+			"historical_value_at_merge": 1, "net_book_value_at_merge": 1, "status": "Active",
+		}).db_insert()
+		doc2 = frappe.get_doc("Asset", comp2.name)
+		doc2.merge_log[0].status = "Reversed"
+		doc2.flags.ignore_permissions = True
+		try:
+			doc2.save()
+			print("t5     FAIL (direct merge-log edit saved)")
+			ok = False
+		except frappe.exceptions.ValidationError as e:
+			# frappe's non-allow-on-submit protection OR our VR-039 guard —
+			# either satisfies the rule.
+			g = "VR-039" in str(e) or "Not allowed to change" in str(e)
+			print(f"t5     direct merge-log edit blocked: {'OK' if g else 'FAIL: ' + str(e)}")
+			ok = ok and g
+
+		# T6 (VR-036): dropping a posted row raises.
+		ads_name = frappe.db.get_value(
+			"Asset Depreciation Schedule", {"asset": a0.name, "status": "Active"}, "name")
+		sched = frappe.get_doc("Asset Depreciation Schedule", ads_name)
+		sched.depreciation_schedule = [r for r in sched.depreciation_schedule if not r.journal_entry]
+		sched.flags.ignore_permissions = True
+		try:
+			sched.save()
+			print("t6     FAIL (posted row dropped)")
+			ok = False
+		except frappe.exceptions.ValidationError as e:
+			# frappe's row-count protection OR our VR-036 guard — either
+			# satisfies the rule.
+			g = "VR-036" in str(e) or "Not allowed to change" in str(e)
+			print(f"t6     posted-row drop blocked: {'OK' if g else 'FAIL: ' + str(e)}")
+			ok = ok and g
+
+		# T7: useful_life_after populated + movement summary row.
+		ula = frappe.db.get_value(
+			"Asset Activity",
+			{"asset": a0.name, "transaction_category": "Depreciation"},
+			"useful_life_after",
+		)
+		t7_ok = flt(ula) == 24
+		print(f"t7     useful_life_after on TCC row = {ula} (want 24) {'OK' if t7_ok else 'FAIL'}")
+		ok = ok and t7_ok
+
+		# T8: AVA difference account defaults from the chain.
+		liab = frappe.db.get_value(
+			"Account", {"company": company, "root_type": "Liability", "is_group": 0}, "name")
+		frappe.db.set_value(
+			"Company", company, "default_impairment_loss_account", liab, update_modified=False)
+		ava_d = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": s1.name, "company": company,
+			"date": nowdate(), "transaction_type": "Initial Impairment",
+			"current_asset_value": 50_000, "new_asset_value": 49_000,
+		})
+		ava_d.flags.ignore_permissions = True
+		ava_d.insert()
+		t8_ok = ava_d.difference_account == liab
+		print(f"t8     AVA impairment account defaulted = {ava_d.difference_account} {'OK' if t8_ok else 'FAIL'}")
+		ok = ok and t8_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})
