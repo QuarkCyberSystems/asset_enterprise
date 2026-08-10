@@ -27,15 +27,19 @@ the erpnext asset module. Zero erpnext source edits.
   composite through a Capitalization Clearing account (two-leg JE, nets to
   zero) with a value-snapshot Merge Log and bidirectional component↔parent
   links; fully-depreciated sources follow the configured treatment.
-- **Disposal & recovery** — Scrapping Type loss-account routing
+- **Disposal & recovery** — every scrap is a first-class **Scrap
+  Transaction** document (composite assets can scrap a selected merged
+  component at its value-at-merge), Scrapping Type loss-account routing
   (Scrapping Type → Asset Category Account override → Company default),
-  partial scrap by value or percentage, same-period restore window with
-  mirror JE, Create Replacement Asset with two-way links.
+  partial scrap by value or percentage, three recovery paths: same-period
+  restore, cross-period restore with catch-up depreciation, and Create
+  Replacement Asset with two-way links. Reversals are gated by NBV
+  coverage (VR-042).
 - **PR/PI flows** — assets created at delivery (PR rate), PR over-allocation
-  block, PI Asset Allocation (one submitted allocation per asset),
+  block, PI Asset Allocation (one submitted allocation per asset, qty-based),
   price/FX delta decomposition, automatic "Invoice Adjustment" value
-  adjustment through the invoice-difference account, optional
-  below-receipt block (ships default-off pending finance decision).
+  adjustment through the invoice-difference account, below-receipt
+  warning with acknowledgement (Option B, default on).
 - **Mass Asset Depreciation** with role-based authority for restricted
   modes; reports: Composite Merge Log, Replacement Chain, Asset Daily
   Reconciliation.
@@ -80,7 +84,7 @@ switch off, every override passes through to stock erpnext behavior.
   loudly instead of silently dropping behavior.
 - App-owned doctypes: Transaction Category, Scrapping Type, Asset Settings,
   Financial Treatment (append-only subledger), Composite Merge Log Entry,
-  PI Asset Allocation, Mass Asset Depreciation.
+  PI Asset Allocation, Mass Asset Depreciation, Scrap Transaction.
 
 ## Verification suite
 
@@ -88,7 +92,7 @@ Every build phase ships a savepoint-rolled-back end-to-end verification —
 safe to run on a live site; nothing persists:
 
 ```bash
-bench --site <site> execute asset_enterprise.setup.verify_all.run   # all 8 phases
+bench --site <site> execute asset_enterprise.setup.verify_all.run   # all 10 phase suites
 bench --site <site> execute asset_enterprise.setup.verify_phase3.run  # single phase
 ```
 
