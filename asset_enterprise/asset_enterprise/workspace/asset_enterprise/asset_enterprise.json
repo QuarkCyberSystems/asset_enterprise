@@ -1,4 +1,5 @@
 {
+ "app": "erpnext",
  "charts": [],
  "content": "[{\"id\":\"aehdr1\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Enterprise Fixed Assets</b></span>\",\"col\":12}},{\"id\":\"aesc1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Asset\",\"col\":3}},{\"id\":\"aesc2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Scrap Transaction\",\"col\":3}},{\"id\":\"aesc3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Mass Asset Depreciation\",\"col\":3}},{\"id\":\"aesc4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Financial Treatment\",\"col\":3}},{\"id\":\"aespc\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"aecard1\",\"type\":\"card\",\"data\":{\"card_name\":\"Transactions\",\"col\":4}},{\"id\":\"aecard2\",\"type\":\"card\",\"data\":{\"card_name\":\"Ledger & Audit\",\"col\":4}},{\"id\":\"aecard3\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"id\":\"aecard4\",\"type\":\"card\",\"data\":{\"card_name\":\"Setup\",\"col\":4}}]",
  "creation": "2026-08-10 15:00:00.000000",
@@ -186,7 +187,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-08-10 15:00:00.000000",
+ "modified": "2026-08-10 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Asset Enterprise",
  "name": "Asset Enterprise",
