@@ -112,6 +112,13 @@ class EnterpriseAVA(AssetValueAdjustment):
 				).format(self.name)
 			)
 
+		# VR-042: a reversal that removes value must be covered by NBV.
+		value_added = flt(self.new_asset_value) - flt(self.current_asset_value)
+		if value_added > 0:
+			from asset_enterprise.asset_values import assert_nbv_covers_reversal
+
+			assert_nbv_covers_reversal(self.asset, value_added, context=_("AVA {0}").format(self.name))
+
 		# Never touch the original JE. Post the mirror via a Reversal AVA.
 		# The reversal + FT/Activity rows deliberately link this doc —
 		# exempt them from frappe's cancel-time link check.

@@ -62,7 +62,10 @@ def _run():
 	print(f"tc016  prospective rate = {prate:.6f} (want 6164.383562)")
 	ok = ok and abs(prate - 6164.383562) < 0.000001
 
-	prows = build_prospective_rows(9_000_000, "2017-12-31", "2021-12-30", company)
+	# v2.16 §4.3 day-count rule: end of life is the REAL calendar end
+	# (31/12/2021); the rate denominator excludes 29/02/2020 → 1,460 —
+	# reproducing the xlsx rate exactly on a leap-containing span.
+	prows = build_prospective_rows(9_000_000, "2017-12-31", "2021-12-31", company)
 	pjan, pfeb = prows[0], prows[1]
 	m1 = pjan["amount"] == 191_095.89 and pjan["days_in_period"] == 31
 	m2 = pfeb["amount"] == 172_602.74 and pfeb["days_in_period"] == 28

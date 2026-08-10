@@ -44,6 +44,14 @@ def sync_customizations():
 	create_custom_fields(CUSTOM_FIELDS, ignore_validate=True)
 	apply_property_setters()
 	seed_masters()
+	seed_setting_defaults()
+
+
+def seed_setting_defaults():
+	"""Defaults that must hold at DB level (Singles store no schema
+	default until the form is saved). Option B (v2.16 CH-05) ships ON."""
+	if frappe.db.get_single_value("Asset Settings", "warn_invoice_below_receipt") is None:
+		frappe.db.set_single_value("Asset Settings", "warn_invoice_below_receipt", 1)
 
 
 def apply_property_setters():

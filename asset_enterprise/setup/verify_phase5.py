@@ -91,6 +91,8 @@ def _run():
 				"historical_value_at_merge",
 				"accumulated_depreciation_at_merge",
 				"net_book_value_at_merge",
+				"remaining_useful_life_in_months",
+				"remaining_useful_life_in_years",
 				"status",
 			],
 		)

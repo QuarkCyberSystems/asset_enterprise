@@ -86,6 +86,7 @@ def merge_sources_into_composite(cap_doc):
 		hav = flt(values["historical_asset_value"])
 		accum = flt(values["accumulated_depreciation_value"])
 		nbv = fa_module_round(hav - accum, company)
+		rul_months = flt(values["remaining_useful_life_months"])
 		if nbv < 0:
 			frappe.throw(_("Source Asset {0} has negative NBV.").format(source.name))
 
@@ -139,7 +140,7 @@ def merge_sources_into_composite(cap_doc):
 				}
 			)
 
-		merged.append((source, {"hav": hav, "accum": accum, "nbv": nbv}))
+		merged.append((source, {"hav": hav, "accum": accum, "nbv": nbv, "rul_months": rul_months}))
 
 	je = frappe.get_doc(
 		{
@@ -172,6 +173,9 @@ def merge_sources_into_composite(cap_doc):
 				"historical_value_at_merge": snap["hav"],
 				"accumulated_depreciation_at_merge": snap["accum"],
 				"net_book_value_at_merge": snap["nbv"],
+				# v2.16 CH-06: RUL snapshot for later scrap sizing.
+				"remaining_useful_life_in_months": int(round(snap["rul_months"])),
+				"remaining_useful_life_in_years": flt(snap["rul_months"] / 12, 2),
 				"status": "Active",
 			},
 		)

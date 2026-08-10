@@ -116,3 +116,24 @@ def recalculate_asset_values(asset_name, save=True):
 	if save:
 		frappe.db.set_value("Asset", asset_name, values, update_modified=False)
 	return values
+
+
+def assert_nbv_covers_reversal(asset_name, amount, context=None):
+	"""VR-042 (2026-07-23 review): a reversal that reduces asset value
+	is blocked when the current NBV cannot cover the amount being
+	reversed — it would drive NBV negative / below salvage."""
+	from frappe import _
+
+	amount = flt(amount)
+	if amount <= 0:
+		return
+	nbv = flt(recalculate_asset_values(asset_name, save=False)["net_book_value"])
+	if amount > nbv + 0.005:
+		frappe.throw(
+			_(
+				"Reversal amount {0} cannot be covered by the current Net Book Value "
+				"{1} of Asset {2}{3}. The reversal is not allowed (VR-042) — handle "
+				"the correction via Asset Value Adjustment."
+			).format(amount, nbv, asset_name, f" ({context})" if context else ""),
+			title=_("Reversal Not Covered by NBV"),
+		)

@@ -117,14 +117,24 @@ def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
 		journal_entry=je,
 	)
 	_freeze_schedule(asset.name, scrap_date, _("Asset scrapped via {0}").format(je))
+	_record_scrap_transaction(asset.name, "Full Scrap", scrapping_type, scrap_date, je)
 	return je
 
 
 @frappe.whitelist()
 def partial_scrap_asset(
-	asset_name, scrap_value=None, percentage=None, scrapping_type=None, scrap_date=None
+	asset_name,
+	scrap_value=None,
+	percentage=None,
+	scrapping_type=None,
+	scrap_date=None,
+	composite_component=None,
 ):
-	"""GAP-018: partial scrap by value or percentage. Asset stays active."""
+	"""GAP-018: partial scrap by value or percentage. Asset stays active.
+
+	composite_component (v2.16 CH-09): scrap a specific Active merged
+	component of a composite — its NBV-at-merge snapshot defaults the
+	scrap value and the Merge Log row is marked Scrapped."""
 	from asset_enterprise import tcc
 	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.depreciation import enterprise_enabled
@@ -142,6 +152,23 @@ def partial_scrap_asset(
 			)
 		)
 	assert_fully_invoiced(asset)  # GAP-010 / VR-011
+
+	if composite_component:
+		component_row = frappe.db.get_value(
+			"Composite Merge Log Entry",
+			{"parent": asset_name, "merged_source_asset": composite_component, "status": "Active"},
+			["name", "net_book_value_at_merge"],
+			as_dict=True,
+		)
+		if not component_row:
+			frappe.throw(
+				_(
+					"{0} is not an Active merged component of {1} — pick a component "
+					"from the composite's Merge Log."
+				).format(composite_component, asset_name)
+			)
+		if not flt(scrap_value) and not flt(percentage):
+			scrap_value = flt(component_row.net_book_value_at_merge)
 
 	scrap_date = getdate(scrap_date or today())
 	values = recalculate_asset_values(asset.name, save=False)
@@ -181,7 +208,54 @@ def partial_scrap_asset(
 		)
 	except frappe.ValidationError:
 		pass
+	if composite_component:
+		# The component row records that this scrap consumed it.
+		frappe.db.set_value(
+			"Composite Merge Log Entry", component_row.name, "status", "Scrapped",
+			update_modified=False,
+		)
+	_record_scrap_transaction(
+		asset.name, "Partial Scrap", scrapping_type, scrap_date, je,
+		scrap_value=scrap_value, percentage=percentage,
+		composite_component=composite_component,
+	)
 	return je
+
+
+def _record_scrap_transaction(
+	asset_name,
+	scrap_type,
+	scrapping_type,
+	scrap_date,
+	je,
+	scrap_value=None,
+	percentage=None,
+	composite_component=None,
+):
+	"""v2.16 CH-09: every scrap is a first-class Scrap Transaction. When
+	the posting was triggered from a Scrap Transaction itself, the doc
+	already exists; otherwise (core Scrap button / API) record one."""
+	if frappe.flags.get("in_scrap_transaction"):
+		return
+	doc = frappe.get_doc(
+		{
+			"doctype": "Scrap Transaction",
+			"asset": asset_name,
+			"company": frappe.db.get_value("Asset", asset_name, "company"),
+			"transaction_date": scrap_date,
+			"scrap_type": scrap_type,
+			"scrapping_type": scrapping_type or frappe.db.get_value("Scrapping Type", {}, "name"),
+			"mode": "By Value" if scrap_value else "By Percentage",
+			"scrap_value": flt(scrap_value) if scrap_value else None,
+			"percentage": flt(percentage) if percentage else None,
+			"composite_component": composite_component,
+			"journal_entry": je,
+		}
+	)
+	doc.flags.ignore_permissions = True
+	doc.flags.auto_recorded = True  # posting already done — record only
+	doc.insert()
+	doc.submit()
 
 
 def _post_disposal_je(asset, posting_date, scrapping_type, accum_debit, loss_debit, fa_credit):

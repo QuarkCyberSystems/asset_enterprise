@@ -60,7 +60,9 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		target = frappe.get_doc("Asset", self.target_asset)
 		if target.docstatus != 1:
 			frappe.throw(_("Capitalized Maintenance target must be a submitted Asset."))
-		if target.status in ("Sold", "Scrapped", "Capitalized"):
+		# VR-037 (v2.16): "Capitalized" no longer blocks — a composite that
+		# was itself capitalized stays a valid CM target (2026-07-23 review).
+		if target.status in ("Sold", "Scrapped"):
 			frappe.throw(
 				_("Target Asset {0} is {1} — not eligible for Capitalized Maintenance.").format(
 					target.name, target.status
@@ -142,6 +144,26 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 					"{0} is a Reversal of Capitalized Maintenance and cannot be "
 					"cancelled. To undo it, submit a fresh Capitalized Maintenance."
 				).format(self.name)
+			)
+
+		# VR-042: the composite must be able to give the merged value back.
+		merged_nbv = sum(
+			frappe.utils.flt(r.net_book_value_at_merge)
+			for r in frappe.get_all(
+				"Composite Merge Log Entry",
+				filters={
+					"parent": self.target_asset,
+					"merged_via_capitalization": self.name,
+					"status": "Active",
+				},
+				fields=["net_book_value_at_merge"],
+			)
+		)
+		if merged_nbv > 0:
+			from asset_enterprise.asset_values import assert_nbv_covers_reversal
+
+			assert_nbv_covers_reversal(
+				self.target_asset, merged_nbv, context=_("Capitalized Maintenance {0}").format(self.name)
 			)
 
 		# Cancel of a CM -> auto-create the dedicated reversal doc.

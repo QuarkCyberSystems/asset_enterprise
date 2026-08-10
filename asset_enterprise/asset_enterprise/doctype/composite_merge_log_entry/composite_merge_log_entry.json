@@ -13,6 +13,8 @@
   "historical_value_at_merge",
   "accumulated_depreciation_at_merge",
   "net_book_value_at_merge",
+  "remaining_useful_life_in_months",
+  "remaining_useful_life_in_years",
   "status"
  ],
  "fields": [
@@ -66,12 +68,25 @@
    "read_only": 1
   },
   {
+   "fieldname": "remaining_useful_life_in_months",
+   "fieldtype": "Int",
+   "label": "RUL at Merge (Months)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "remaining_useful_life_in_years",
+   "fieldtype": "Float",
+   "label": "RUL at Merge (Years)",
+   "precision": "2",
+   "read_only": 1
+  },
+  {
    "default": "Active",
    "fieldname": "status",
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Active\nReversed",
+   "options": "Active\nReversed\nScrapped",
    "read_only": 1
   }
  ],

@@ -38,12 +38,30 @@ def daily_rate(depreciable_base, remaining_days):
 	return flt(depreciable_base) / remaining_days
 
 
+def day_count_365(start_date, end_date):
+	"""§4.3 day-count rule (v2.16 CH-12, finance formula 23/07/2026):
+	inclusive calendar days minus any 29 February in the span — equals
+	months ÷ 12 × 365 for whole-month spans, matching the client xlsx
+	daily-rate DENOMINATOR. Row allocation keeps actual calendar days;
+	the final row absorbs the leap-day difference."""
+	start, end = getdate(start_date), getdate(end_date)
+	days = date_diff(end, start) + 1
+	leap_days = 0
+	for year in range(start.year, end.year + 1):
+		if calendar.isleap(year):
+			feb29 = date(year, 2, 29)
+			if start <= feb29 <= end:
+				leap_days += 1
+	return days - leap_days
+
+
 def build_daily_rate_rows(
 	depreciable_base,
 	start_date,
 	total_days,
 	company,
 	first_posting_date=None,
+	rate_days=None,
 ):
 	"""Generate EOM schedule rows for `depreciable_base` over `total_days`
 	starting `start_date` (the depreciation-start basis, §4.4).
@@ -59,7 +77,10 @@ def build_daily_rate_rows(
 	"""
 	start = getdate(start_date)
 	end_of_life = add_days(start, total_days - 1)
-	rate = daily_rate(depreciable_base, total_days)
+	# §4.3 (v2.16): the rate DENOMINATOR may differ from the row span
+	# (365-day-year basis excludes leap days); rows still lay out over
+	# the real calendar and the final row absorbs the difference.
+	rate = daily_rate(depreciable_base, rate_days or total_days)
 
 	# First schedule date: EOM of the basis month, or of the catch-up
 	# posting month when supplied.
@@ -107,13 +128,21 @@ def build_daily_rate_rows(
 	return rows
 
 
-def build_prospective_rows(nbv_base, as_of_date, end_of_life_date, company):
+def build_prospective_rows(nbv_base, as_of_date, end_of_life_date, company, first_posting_date=None):
 	"""Post-adjustment regeneration (§4.3): current NBV over remaining
 	days from the day AFTER as_of_date to end of life. Never touches the
-	past."""
+	past. Rate denominator follows the §4.3 365-day rule (v2.16)."""
 	start = add_days(getdate(as_of_date), 1)
-	total_days = date_diff(getdate(end_of_life_date), start) + 1
-	return build_daily_rate_rows(nbv_base, start, total_days, company)
+	end = getdate(end_of_life_date)
+	total_days = date_diff(end, start) + 1
+	return build_daily_rate_rows(
+		nbv_base,
+		start,
+		total_days,
+		company,
+		first_posting_date=first_posting_date,
+		rate_days=day_count_365(start, end),
+	)
 
 
 def is_prior_fiscal_year(schedule_date, posting_date):
@@ -145,7 +174,12 @@ def split_period_for_cc_change(row_amount, days_in_period, change_day_offset, co
 
 
 def supersede_and_regenerate(
-	asset_name, finance_book=None, as_of_date=None, reason=None, end_of_life_override=None
+	asset_name,
+	finance_book=None,
+	as_of_date=None,
+	reason=None,
+	end_of_life_override=None,
+	first_posting_date=None,
 ):
 	"""Replace reschedule-by-cancel with supersession.
 
@@ -179,11 +213,14 @@ def supersede_and_regenerate(
 	unposted = [r for r in old.get("depreciation_schedule") if not r.journal_entry]
 
 	# Remaining life: the OLD schedule's horizon, unless explicitly
-	# extended (GAP-014 "Add Value and Extend Life").
-	if not old.get("depreciation_schedule"):
+	# extended (GAP-014 "Add Value and Extend Life") or supplied by the
+	# caller (Path 3 restore regenerates a post-scrap EMPTY schedule
+	# from the pre-disposal horizon).
+	if not old.get("depreciation_schedule") and not end_of_life_override:
 		frappe.throw(_("Schedule {0} has no rows.").format(old_name))
 	end_of_life = getdate(
-		end_of_life_override or old.get("depreciation_schedule")[-1].schedule_date
+		end_of_life_override
+		or old.get("depreciation_schedule")[-1].schedule_date
 	)
 
 	from asset_enterprise.asset_values import recalculate_asset_values
@@ -192,7 +229,13 @@ def supersede_and_regenerate(
 	nbv_base = values["net_book_value"]
 
 	future_rows = (
-		build_prospective_rows(nbv_base, as_of_date, end_of_life, company)
+		# first_posting_date (v2.16 Path 3): the first regenerated row
+		# accumulates every day from as_of to that posting month's EOM in
+		# ONE catch-up entry (§4.5) — e.g. a September restore of a July
+		# disposal posts 3 months in September.
+		build_prospective_rows(
+			nbv_base, as_of_date, end_of_life, company, first_posting_date=first_posting_date
+		)
 		if getdate(end_of_life) > as_of_date and nbv_base > 0
 		else []
 	)
@@ -305,7 +348,10 @@ def enable_depreciation(
 
 	end_of_life = add_days(add_months(start, months), -1)
 	total_days = date_diff(end_of_life, start) + 1
-	rows = build_daily_rate_rows(base, start, total_days, asset.company)
+	rows = build_daily_rate_rows(
+		base, start, total_days, asset.company,
+		rate_days=day_count_365(start, end_of_life),  # §4.3 v2.16 rule
+	)
 
 	fb_row = frappe.get_doc(
 		{
@@ -397,7 +443,8 @@ def post_depreciation_entries(date=None):
 	due = frappe.db.sql(
 		"""
 		select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
-		       ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book
+		       ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+		       ds.daily_rate, ds.days_in_period
 		from `tabDepreciation Schedule` ds
 		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
 		where ads.status = 'Active' and ads.docstatus = 1
@@ -409,6 +456,10 @@ def post_depreciation_entries(date=None):
 		as_dict=True,
 	)
 	for row in due:
+		if final_row_requires_manual_post(row):
+			# §4.10 point 4 (v2.16 CH-01): beyond-tolerance final row is
+			# never auto-posted — manual posting with approval required.
+			continue
 		try:
 			_post_one(row, posting_date)
 		except Exception:
@@ -419,6 +470,89 @@ def post_depreciation_entries(date=None):
 			frappe.db.rollback()
 		else:
 			frappe.db.commit()
+
+
+def final_row_requires_manual_post(row):
+	"""§4.10 point 4 (v2.16 CH-01): True when `row` is the FINAL row of
+	its schedule and its absorbed drift exceeds the company tolerance —
+	such a row must be posted manually (post_final_row), optionally
+	overriding the tolerance with Tolerance Approver approval."""
+	last = frappe.db.sql(
+		"select max(schedule_date) from `tabDepreciation Schedule` where parent = %s",
+		row.schedule,
+	)[0][0]
+	if not last or getdate(row.schedule_date) != getdate(last):
+		return False
+	if not flt(row.get("daily_rate")) or not flt(row.get("days_in_period")):
+		return False  # core-generated rows carry no drift metadata
+
+	from asset_enterprise.accounts import get_last_period_tolerance
+
+	company = frappe.db.get_value("Asset", row.asset, "company")
+	nominal = fa_module_round(flt(row.daily_rate) * flt(row.days_in_period), company)
+	drift = abs(flt(row.depreciation_amount) - nominal)
+	return drift > flt(get_last_period_tolerance(company))
+
+
+@frappe.whitelist()
+def post_final_row(asset_name, override_tolerance=0):
+	"""Manual posting of the final schedule row (§4.10 point 4, v2.16).
+
+	Within tolerance: posts like any row. Beyond tolerance: requires
+	override_tolerance=1 AND the session user holding the company's
+	Tolerance Approver role from Asset Settings."""
+	from frappe.utils import cint
+
+	if not enterprise_enabled():
+		frappe.throw(_("Enterprise Assets is not enabled."))
+	frappe.has_permission("Asset", "write", asset_name, throw=True)
+
+	row = frappe.db.sql(
+		"""
+		select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+		       ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+		       ds.daily_rate, ds.days_in_period
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		  and ifnull(ds.journal_entry, '') = ''
+		order by ds.schedule_date desc
+		limit 1
+		""",
+		asset_name,
+		as_dict=True,
+	)
+	if not row:
+		frappe.throw(_("No unposted schedule row found for {0}.").format(asset_name))
+	row = row[0]
+
+	if final_row_requires_manual_post(row):
+		if not cint(override_tolerance):
+			frappe.throw(
+				_(
+					"Final-row drift on {0} exceeds the company tolerance. Posting "
+					"requires the tolerance override (with Tolerance Approver "
+					"approval) — §4.10 point 4."
+				).format(asset_name),
+				title=_("Tolerance Exceeded"),
+			)
+		company = frappe.db.get_value("Asset", asset_name, "company")
+		approver = frappe.db.get_value(
+			"Asset Settings Tolerance",
+			{"parent": "Asset Settings", "company": company},
+			"tolerance_approver",
+		)
+		if approver and approver not in frappe.get_roles():
+			frappe.throw(
+				_(
+					"Overriding the tolerance requires the '{0}' role (Tolerance "
+					"Approver, Asset Settings)."
+				).format(approver),
+				title=_("Approval Required"),
+			)
+
+	_post_one(row, getdate(nowdate()))
+	return frappe.db.get_value("Depreciation Schedule", row.row_name, "journal_entry")
 
 
 def _post_one(row, posting_date):

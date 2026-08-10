@@ -22,7 +22,8 @@ def execute_mass_depreciation(doc):
 	rows = frappe.db.sql(
 		"""
 		select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
-		       ds.depreciation_amount, ds.cost_center, ads.asset
+		       ds.depreciation_amount, ds.cost_center, ads.asset,
+		       ds.daily_rate, ds.days_in_period
 		from `tabDepreciation Schedule` ds
 		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
 		join `tabAsset` a on a.name = ads.asset
@@ -43,12 +44,31 @@ def execute_mass_depreciation(doc):
 			{"asset": None, "outcome": "Skipped", "reason": _("No due unposted rows found.")},
 		)
 
-	from asset_enterprise.depreciation import _post_one, enterprise_enabled
+	from asset_enterprise.depreciation import (
+		_post_one,
+		enterprise_enabled,
+		final_row_requires_manual_post,
+	)
 
 	if not enterprise_enabled():
 		frappe.throw(_("Mass Asset Depreciation requires Enterprise Assets to be enabled."))
 
 	for row in rows:
+		if final_row_requires_manual_post(row):
+			# §4.10 point 4 (v2.16): beyond-tolerance final rows are never
+			# auto-posted — surfaced here for the manual/approved flow.
+			doc.append(
+				"result_summary",
+				{
+					"asset": row.asset,
+					"outcome": "Manual Posting Required",
+					"reason": _(
+						"Final-row drift exceeds tolerance — post via 'Post Final Row' "
+						"with Tolerance Approver approval (§4.10)."
+					),
+				},
+			)
+			continue
 		already = frappe.db.get_value("Depreciation Schedule", row.row_name, "journal_entry")
 		if already:  # VR-007 — re-check at execution time
 			doc.append(
@@ -59,7 +79,11 @@ def execute_mass_depreciation(doc):
 		try:
 			_post_one(row, getdate(doc.posting_date))
 			je = frappe.db.get_value("Depreciation Schedule", row.row_name, "journal_entry")
-			doc.append("result_summary", {"asset": row.asset, "outcome": "Posted", "reason": je})
+			# TC-008 (v2.16 CH-11): visible JE link per posted row.
+			doc.append(
+				"result_summary",
+				{"asset": row.asset, "outcome": "Posted", "reason": je, "journal_entry": je},
+			)
 		except Exception as e:
 			doc.append(
 				"result_summary",

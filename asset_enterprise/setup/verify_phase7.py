@@ -186,8 +186,9 @@ def _run():
 			print(f"reselect blocked: {'OK' if g else 'FAIL'}")
 			ok = ok and g
 
-		# ------------------------------------------- Option C flag (default off)
-		frappe.db.set_single_value("Asset Settings", "block_invoice_below_receipt", 1)
+		# --------------------- Option B (v2.16 CH-05): warn, never block
+		frappe.db.set_single_value("Asset Settings", "warn_invoice_below_receipt", 1)
+		frappe.clear_messages()
 		pi3 = frappe.get_doc(
 			{
 				"doctype": "Purchase Invoice",
@@ -209,13 +210,15 @@ def _run():
 		pi3.flags.ignore_permissions = True
 		try:
 			pi3.insert()
-			print("optionc FAIL (below-receipt PI allowed with flag on)")
-			ok = False
+			warned = any(
+				"Below Receipt" in str(m.get("message", "")) or "below its receipt" in str(m.get("message", ""))
+				for m in frappe.get_message_log()
+			)
+			print(f"optionb below-receipt PI saved with warning: {'OK' if warned else 'FAIL (no warning)'}")
+			ok = ok and warned
 		except frappe.ValidationError as e:
-			g = "Block Invoice Below Receipt" in str(e)
-			print(f"optionc below-receipt blocked when flag on: {'OK' if g else 'FAIL'}")
-			ok = ok and g
-		frappe.db.set_single_value("Asset Settings", "block_invoice_below_receipt", 0)
+			print(f"optionb FAIL (below-receipt PI blocked under Option B): {e}")
+			ok = False
 
 		# ------------------------------------------- PI cancel unwinds via Reversal AVA
 		pi.reload()

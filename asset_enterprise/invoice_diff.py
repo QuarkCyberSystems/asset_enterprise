@@ -19,8 +19,9 @@ PI side (N2/N3):
   the Asset Invoice Difference / Clearing chain account) and FX delta
   (Exchange Gain/Loss — never capitalized). Both directions flow per
   the client ASSET_MVT matrix rows 10-14.
-- `block_invoice_below_receipt` (Asset Settings, DEFAULT OFF — GAP-012
-  OPEN A/B/C): when on, a PI priced below the PR is blocked (Option C).
+- `warn_invoice_below_receipt` (Asset Settings, DEFAULT ON — GAP-012
+  Option B per finance 23/07/2026): a PI priced below the PR raises a
+  warning the user acknowledges; both directions then flow.
 
 PI cancel: the auto-AVAs are cancelled, which flows through the
 Phase 4 Reversal-AVA path — deltas unwind via counter-documents.
@@ -129,8 +130,10 @@ def pi_validate(doc, method=None):
 				).format(row.asset, asset.purchase_receipt or _("(none)"))
 			)
 
-		# Fully-invoiced assets cannot be re-selected (pi_amount >= pr_amount
-		# rule collapses to: one submitted PI allocation per asset).
+		# Fully-invoiced assets cannot be re-selected. Per the 2026-07-23
+		# review this is a QUANTITY rule — value differences never block.
+		# With 1:1 asset allocation, qty-covered == one submitted PI
+		# allocation per asset.
 		prior = frappe.db.sql(
 			"""
 			select paa.parent from `tabPI Asset Allocation` paa
@@ -148,22 +151,26 @@ def pi_validate(doc, method=None):
 				).format(row.asset, prior[0][0])
 			)
 
-	_maybe_block_below_receipt(doc)
+	_maybe_warn_below_receipt(doc)
 
 
-def _maybe_block_below_receipt(doc):
-	"""GAP-012 OPEN Option C — DEFAULT OFF. Until finance picks A/B/C,
-	both directions flow per the ASSET_MVT matrix."""
-	if not frappe.db.get_single_value("Asset Settings", "block_invoice_below_receipt", cache=False):
+def _maybe_warn_below_receipt(doc):
+	"""GAP-012 Option B (finance decision 23/07/2026): a PI priced below
+	the PR raises a WARNING the user acknowledges — never a block. Both
+	GL directions then flow per the ASSET_MVT matrix."""
+	if not frappe.db.get_single_value("Asset Settings", "warn_invoice_below_receipt", cache=False):
 		return
 	for row in doc.pi_asset_allocation:
 		price_delta, _fx = _compute_deltas(doc, row.asset)
 		if price_delta < 0:
-			frappe.throw(
+			frappe.msgprint(
 				_(
 					"Invoice prices Asset {0} below its receipt value (delta {1}). "
-					"Blocked per Asset Settings 'Block Invoice Below Receipt Amount'."
-				).format(row.asset, price_delta)
+					"Proceeding will post an Invoice Adjustment Decrease per the "
+					"ASSET_MVT matrix (Option B, finance 23/07/2026)."
+				).format(row.asset, price_delta),
+				title=_("Invoice Below Receipt Amount"),
+				indicator="orange",
 			)
 
 

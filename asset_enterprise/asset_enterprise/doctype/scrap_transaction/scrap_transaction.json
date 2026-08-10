@@ -1,0 +1,171 @@
+{
+ "actions": [],
+ "autoname": "format:SCR-{YYYY}-{#####}",
+ "creation": "2026-08-10 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "asset",
+  "company",
+  "transaction_date",
+  "column_break_1",
+  "scrap_type",
+  "scrapping_type",
+  "details_section",
+  "composite_component",
+  "mode",
+  "column_break_2",
+  "scrap_value",
+  "percentage",
+  "posting_section",
+  "journal_entry",
+  "amended_from"
+ ],
+ "fields": [
+  {
+   "fieldname": "asset",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Asset",
+   "options": "Asset",
+   "reqd": 1
+  },
+  {
+   "fetch_from": "asset.company",
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "Company",
+   "options": "Company",
+   "read_only": 1
+  },
+  {
+   "default": "Today",
+   "fieldname": "transaction_date",
+   "fieldtype": "Date",
+   "in_list_view": 1,
+   "label": "Transaction Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Full Scrap",
+   "fieldname": "scrap_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Scrap Type",
+   "options": "Full Scrap\nPartial Scrap",
+   "reqd": 1
+  },
+  {
+   "fieldname": "scrapping_type",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Scrapping Type",
+   "options": "Scrapping Type",
+   "reqd": 1
+  },
+  {
+   "fieldname": "details_section",
+   "fieldtype": "Section Break",
+   "label": "Details"
+  },
+  {
+   "depends_on": "eval:doc.scrap_type==='Partial Scrap'",
+   "description": "Composite assets only (2026-07-23 review, 27/07/2026): pick the Active merged component to scrap; its NBV-at-merge snapshot defaults the scrap value.",
+   "fieldname": "composite_component",
+   "fieldtype": "Link",
+   "label": "Composite Component",
+   "options": "Asset"
+  },
+  {
+   "default": "By Value",
+   "depends_on": "eval:doc.scrap_type==='Partial Scrap'",
+   "fieldname": "mode",
+   "fieldtype": "Select",
+   "label": "Mode",
+   "options": "By Value\nBy Percentage"
+  },
+  {
+   "fieldname": "column_break_2",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.scrap_type==='Partial Scrap' && doc.mode==='By Value'",
+   "fieldname": "scrap_value",
+   "fieldtype": "Currency",
+   "label": "Scrap Value"
+  },
+  {
+   "depends_on": "eval:doc.scrap_type==='Partial Scrap' && doc.mode==='By Percentage'",
+   "fieldname": "percentage",
+   "fieldtype": "Percent",
+   "label": "Percentage of HAV"
+  },
+  {
+   "fieldname": "posting_section",
+   "fieldtype": "Section Break",
+   "label": "Posting"
+  },
+  {
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "label": "Journal Entry",
+   "options": "Journal Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "amended_from",
+   "fieldtype": "Link",
+   "label": "Amended From",
+   "no_copy": 1,
+   "options": "Scrap Transaction",
+   "print_hide": 1,
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "is_submittable": 1,
+ "links": [],
+ "modified": "2026-08-10 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Enterprise",
+ "name": "Scrap Transaction",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  },
+  {
+   "cancel": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "submit": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

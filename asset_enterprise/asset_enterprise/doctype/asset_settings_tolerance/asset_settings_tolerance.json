@@ -7,7 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "company",
-  "default_last_period_tolerance_amount"
+  "default_last_period_tolerance_amount",
+  "tolerance_approver"
  ],
  "fields": [
   {
@@ -23,6 +24,14 @@
    "fieldtype": "Currency",
    "in_list_view": 1,
    "label": "Last-Period Tolerance Amount"
+  },
+  {
+   "description": "Role that approves tolerance overrides on the manual final posting (2026-07-23 review).",
+   "fieldname": "tolerance_approver",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Tolerance Approver",
+   "options": "Role"
   }
  ],
  "index_web_pages_for_search": 1,

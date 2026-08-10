@@ -1,0 +1,107 @@
+"""Scrap Transaction — GA-0005-01 v2.16 CH-09 (2026-07-23 review).
+
+"Scrapping is a transaction": every full or partial scrap is recorded
+as a first-class submittable document that posts through the existing
+GAP-018/019 disposal engine. For composite assets, the user selects
+the Active merged component (from the Composite Merge Log) and its
+NBV-at-merge snapshot defaults the scrap value.
+
+A Scrap Transaction cannot be cancelled — undo goes through the
+GAP-016 restore paths (same-period restore / cross-period restore /
+replacement asset), keeping the ledger immutable.
+"""
+
+import frappe
+from frappe import _
+from frappe.model.document import Document
+from frappe.utils import flt
+
+
+class ScrapTransaction(Document):
+	def validate(self):
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if not enterprise_enabled():
+			frappe.throw(_("Scrap Transaction requires Enterprise Assets to be enabled."))
+
+		asset = frappe.db.get_value(
+			"Asset", self.asset, ["docstatus", "status", "company"], as_dict=True
+		)
+		if not asset or asset.docstatus != 1:
+			frappe.throw(_("Asset {0} must be submitted.").format(self.asset))
+
+		if self.get("composite_component"):
+			self._validate_component()
+
+		if self.scrap_type == "Partial Scrap" and not (
+			flt(self.scrap_value) or flt(self.percentage)
+		):
+			frappe.throw(_("Partial Scrap requires a Scrap Value or a Percentage."))
+
+	def _validate_component(self):
+		"""Component must be an Active Merge Log row of this asset; its
+		NBV-at-merge defaults the scrap value (2026-07-23 review)."""
+		row = frappe.db.get_value(
+			"Composite Merge Log Entry",
+			{
+				"parent": self.asset,
+				"merged_source_asset": self.composite_component,
+				"status": "Active",
+			},
+			["net_book_value_at_merge"],
+			as_dict=True,
+		)
+		if not row:
+			frappe.throw(
+				_(
+					"{0} is not an Active merged component of {1} — pick a component "
+					"from the composite's Merge Log."
+				).format(self.composite_component, self.asset)
+			)
+		if self.scrap_type != "Partial Scrap":
+			frappe.throw(_("Component scrap is a Partial Scrap of the composite."))
+		if not flt(self.scrap_value) and not flt(self.percentage):
+			self.scrap_value = flt(row.net_book_value_at_merge)
+
+	def on_submit(self):
+		if self.flags.get("auto_recorded"):
+			return  # posting already happened in the engine; this doc is the record
+
+		from asset_enterprise import disposal
+
+		frappe.flags.in_scrap_transaction = True
+		try:
+			if self.scrap_type == "Full Scrap":
+				je = disposal.scrap_asset(
+					self.asset, scrap_date=self.transaction_date, scrapping_type=self.scrapping_type
+				)
+			else:
+				# Component defaulting + Merge Log marking live in the engine.
+				je = disposal.partial_scrap_asset(
+					self.asset,
+					scrap_value=flt(self.scrap_value) or None,
+					percentage=flt(self.percentage) or None,
+					scrapping_type=self.scrapping_type,
+					scrap_date=self.transaction_date,
+					composite_component=self.get("composite_component"),
+				)
+		finally:
+			frappe.flags.in_scrap_transaction = False
+		self.db_set("journal_entry", je, update_modified=False)
+
+		if self.get("composite_component"):
+			self.add_comment(
+				"Comment",
+				_("Component {0} scrapped out of composite {1}.").format(
+					self.composite_component, self.asset
+				),
+			)
+
+	def on_cancel(self):
+		frappe.throw(
+			_(
+				"A Scrap Transaction cannot be cancelled (immutable ledger). To recover "
+				"the asset use Restore (same period), Cross-Period Restore, or Create "
+				"Replacement Asset — GAP-016."
+			)
+		)

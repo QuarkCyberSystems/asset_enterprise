@@ -177,13 +177,23 @@ class EnterpriseAssetRepair(AssetRepair):
 		reversal.submit()
 
 	def _fully_depreciated_gate(self, repair_source):
-		"""VR-038: block reversal when the asset is fully depreciated."""
+		"""VR-038: block reversal when the asset is fully depreciated.
+		Generalized by VR-042 (2026-07-23 review): the reversal must be
+		covered by current NBV — full depreciation is the limiting case."""
 		if is_fully_depreciated(repair_source.asset):
 			frappe.throw(
 				_(
 					"Asset {0} is fully depreciated. Repair reversal is not permitted; "
 					"handle any correction via Asset Value Adjustment."
 				).format(repair_source.asset)
+			)
+		if repair_source.get("capitalize_repair_cost"):
+			from asset_enterprise.asset_values import assert_nbv_covers_reversal
+
+			assert_nbv_covers_reversal(
+				repair_source.asset,
+				flt(repair_source.total_repair_cost),
+				context=_("Repair {0}").format(repair_source.name),
 			)
 
 	def _enterprise(self):

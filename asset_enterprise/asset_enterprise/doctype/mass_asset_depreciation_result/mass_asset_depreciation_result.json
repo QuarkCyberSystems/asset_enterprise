@@ -7,7 +7,8 @@
  "field_order": [
   "asset",
   "outcome",
-  "reason"
+  "reason",
+  "journal_entry"
  ],
  "fields": [
   {
@@ -23,7 +24,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Outcome",
-   "options": "Posted\nSkipped\nFailed",
+   "options": "Posted\nSkipped\nFailed\nManual Posting Required",
    "read_only": 1
   },
   {
@@ -31,6 +32,14 @@
    "fieldtype": "Small Text",
    "in_list_view": 1,
    "label": "Reason / JE",
+   "read_only": 1
+  },
+  {
+   "fieldname": "journal_entry",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Journal Entry",
+   "options": "Journal Entry",
    "read_only": 1
   }
  ],

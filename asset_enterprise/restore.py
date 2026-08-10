@@ -8,9 +8,17 @@ depreciation has been posted since. A mirror JE reverses the disposal
 mirror; the FT pair nets; future depreciation resumes prospectively.
 Applies to full scrap AND partial scrap.
 
-Path 2 — beyond the window: `restore_asset` raises and directs the
-user to Create Replacement Asset — a new Asset with a two-way link to
-the disposed source. No GL is re-posted on the disposed Asset.
+Path 2 — beyond the window: Create Replacement Asset — a new Asset
+with a two-way link to the disposed source. No GL is re-posted on the
+disposed Asset.
+
+Path 3 (v2.16 CH-08, 2026-07-23 review) — cross-period restore with
+catch-up: a Scrapped asset may be restored directly after the window.
+The disposal JE is mirrored (value as of the disposal date), the
+disposal FT pairs off, and the schedule regenerates from the disposal
+date with first_posting_date = restore date, so the FIRST post-restore
+depreciation entry accumulates the disposed periods in one posting
+(§4.5 mechanics). Finance chooses between Path 2 and Path 3 per case.
 """
 
 import frappe
@@ -118,6 +126,94 @@ def restore_partial_scrap(asset_name, financial_treatment):
 
 
 @frappe.whitelist()
+def cross_period_restore(asset_name, restore_date=None):
+	"""GAP-016 Path 3 (v2.16): restore a Scrapped asset after the
+	same-period window, with catch-up depreciation on the first
+	post-restore posting."""
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled():
+		frappe.throw(_("Cross-period restore requires Enterprise Assets to be enabled."))
+	frappe.has_permission("Asset", "write", asset_name, throw=True)
+
+	asset = frappe.get_doc("Asset", asset_name)
+	if asset.status != "Scrapped" or not asset.get("journal_entry_for_scrap"):
+		frappe.throw(_("Asset {0} is not scrapped — nothing to restore.").format(asset_name))
+
+	restore_date = getdate(restore_date or nowdate())
+	disposal_date = getdate(asset.disposal_date)
+
+	mirror = _mirror_je(
+		asset.journal_entry_for_scrap,
+		_("Cross-period restore (Path 3) of Asset {0} — value as of disposal {1}").format(
+			asset.name, disposal_date
+		),
+	)
+
+	asset.db_set("scrap_reversal_journal_entry", mirror)
+	asset.db_set(
+		"status", "Partially Depreciated" if asset.calculate_depreciation else "Submitted"
+	)
+	asset.db_set("disposal_date", None)
+
+	from asset_enterprise import tcc
+
+	disposal_ft = frappe.db.get_value(
+		"Financial Treatment",
+		{
+			"asset": asset.name,
+			"transaction_category": "Disposal",
+			"status": "Posted",
+			"journal_entry": asset.journal_entry_for_scrap,
+		},
+		"name",
+	)
+	if disposal_ft:
+		tcc.reverse(disposal_ft, ("Asset", asset.name), journal_entry=mirror)
+
+	# Schedule resumes FROM THE DISPOSAL DATE; the first regenerated row
+	# catches up every disposed period in one entry (posted on the next
+	# depreciation run at/after the restore date). A full scrap left an
+	# EMPTY Active schedule, so the pre-disposal horizon is re-derived
+	# from the superseded generations.
+	from asset_enterprise.depreciation import supersede_and_regenerate
+
+	# All generations count — core's mid-flow proration can leave the
+	# original full-horizon schedule Cancelled while the surviving
+	# docstatus-1 generations only carry the prorated row.
+	horizon = frappe.db.sql(
+		"""
+		select max(ds.schedule_date)
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s
+		""",
+		asset.name,
+	)[0][0]
+	try:
+		supersede_and_regenerate(
+			asset.name,
+			as_of_date=disposal_date,
+			first_posting_date=restore_date,
+			end_of_life_override=horizon,
+			reason=_("Cross-period restore (Path 3) via {0}").format(mirror),
+		)
+	except frappe.ValidationError:
+		pass
+
+	from erpnext.assets.doctype.asset_activity.asset_activity import add_asset_activity
+
+	add_asset_activity(
+		asset.name,
+		_(
+			"Cross-period restore (Path 3): disposal reversed via {0}; first "
+			"depreciation after restore catches up periods since {1}."
+		).format(mirror, disposal_date),
+	)
+	return mirror
+
+
+@frappe.whitelist()
 def create_replacement_asset(source_asset):
 	"""Path 2: draft a new Asset pre-filled from the disposed source with
 	the two-way replacement link. User adjusts values and submits."""
@@ -180,7 +276,8 @@ def _same_period_gate(asset, disposal_date):
 			_(
 				"Restore window has passed (disposal {0}; same-period restores only, "
 				"with no depreciation posted since). Use 'Create Replacement Asset' "
-				"on the source Asset instead. See GAP-016."
+				"(Path 2) or 'Cross-Period Restore' with catch-up depreciation "
+				"(Path 3). See GAP-016."
 			).format(disposal_date)
 		)
 

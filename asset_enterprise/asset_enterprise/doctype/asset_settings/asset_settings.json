@@ -12,7 +12,7 @@
   "tolerance_settings",
   "controls_section",
   "prevent_disposal_before_full_invoicing",
-  "block_invoice_below_receipt",
+  "warn_invoice_below_receipt",
   "mass_depreciation_section",
   "mass_depreciation_authority_roles"
  ],
@@ -54,11 +54,11 @@
    "label": "Prevent Disposal Before Full Invoicing"
   },
   {
-   "default": "0",
-   "description": "OPEN pending finance decision (GA-0005-01 GAP-012 A/B/C). Default off: both PI directions flow per the ASSET_MVT matrix.",
-   "fieldname": "block_invoice_below_receipt",
+   "default": "1",
+   "description": "Option B per finance 23/07/2026 (GAP-012): a PI priced below its PR raises a warning the user acknowledges to proceed; both GL directions then flow per the ASSET_MVT matrix.",
+   "fieldname": "warn_invoice_below_receipt",
    "fieldtype": "Check",
-   "label": "Block Invoice Below Receipt Amount"
+   "label": "Warn When Invoice Is Below Receipt Amount"
   },
   {
    "fieldname": "mass_depreciation_section",

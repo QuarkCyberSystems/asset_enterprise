@@ -36,6 +36,36 @@ frappe.ui.form.on("Asset", {
 					}),
 				__("Manage")
 			);
+			// Cross-Period Restore (GAP-016 Path 3, v2.16) — catch-up
+			// depreciation covers the disposed periods in one entry.
+			frm.add_custom_button(
+				__("Cross-Period Restore"),
+				() =>
+					frappe.confirm(
+						__(
+							"Restore {0} with its value as of the disposal date? The first " +
+								"depreciation after restore will catch up the disposed periods " +
+								"in one posting (Path 3).",
+							[frm.doc.name]
+						),
+						() =>
+							frappe.call({
+								method: "asset_enterprise.restore.cross_period_restore",
+								args: { asset_name: frm.doc.name },
+								callback: () => frm.reload_doc(),
+							})
+					),
+				__("Manage")
+			);
+		}
+
+		// Post Final Row with tolerance handling (§4.10 point 4, v2.16).
+		if (frm.doc.calculate_depreciation) {
+			frm.add_custom_button(
+				__("Post Final Row (Tolerance)"),
+				() => post_final_row_dialog(frm),
+				__("Manage")
+			);
 		}
 
 		// Recalculate ledger-derived values (GAP-006)
@@ -143,6 +173,11 @@ function enable_depreciation_dialog(frm) {
 }
 
 function partial_scrap_dialog(frm) {
+	// v2.16 CH-09: composite assets may scrap a specific Active merged
+	// component — offer them from the Merge Log.
+	const components = (frm.doc.merge_log || [])
+		.filter((r) => r.status === "Active")
+		.map((r) => r.merged_source_asset);
 	const d = new frappe.ui.Dialog({
 		title: __("Partial Scrap — {0}", [frm.doc.name]),
 		fields: [
@@ -153,6 +188,19 @@ function partial_scrap_dialog(frm) {
 				label: __("Scrapping Type"),
 				reqd: 1,
 			},
+			...(components.length
+				? [
+						{
+							fieldname: "composite_component",
+							fieldtype: "Select",
+							options: [""].concat(components).join("\n"),
+							label: __("Composite Component"),
+							description: __(
+								"Optional: scrap one merged component; its value at merge defaults the scrap value."
+							),
+						},
+					]
+				: []),
 			{
 				fieldname: "mode",
 				fieldtype: "Select",
@@ -184,6 +232,45 @@ function partial_scrap_dialog(frm) {
 					percentage: values.mode === "By Percentage" ? values.percentage : null,
 					scrapping_type: values.scrapping_type,
 					scrap_date: values.scrap_date,
+					composite_component: values.composite_component || null,
+				},
+				callback: () => {
+					d.hide();
+					frm.reload_doc();
+				},
+			});
+		},
+	});
+	d.show();
+}
+
+function post_final_row_dialog(frm) {
+	const d = new frappe.ui.Dialog({
+		title: __("Post Final Depreciation Row — {0}", [frm.doc.name]),
+		fields: [
+			{
+				fieldname: "note",
+				fieldtype: "HTML",
+				options: __(
+					"Posts the last unposted schedule row. A row whose drift exceeds the " +
+						"company tolerance requires the override below, approved by the " +
+						"Tolerance Approver role (Asset Settings)."
+				),
+			},
+			{
+				fieldname: "override_tolerance",
+				fieldtype: "Check",
+				label: __("Override Tolerance (requires approver role)"),
+				default: 0,
+			},
+		],
+		primary_action_label: __("Post"),
+		primary_action(values) {
+			frappe.call({
+				method: "asset_enterprise.depreciation.post_final_row",
+				args: {
+					asset_name: frm.doc.name,
+					override_tolerance: values.override_tolerance ? 1 : 0,
 				},
 				callback: () => {
 					d.hide();
