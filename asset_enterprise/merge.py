@@ -74,6 +74,11 @@ def merge_sources_into_composite(cap_doc):
 		if source.name == target.name:
 			frappe.throw(_("An asset cannot be merged into itself."))
 
+		# GAP-015 step 1 (Phase 11 F6): a full-period depreciation JE
+		# already posted PAST the merge date is reversed via mirror JE
+		# (original stays posted); the row drops out of the accum fold.
+		_reverse_straddling_depreciation(source.name, posting_date, cap_doc)
+
 		# Mid-period proration (GAP-015) via existing engine.
 		if source.calculate_depreciation:
 			try:
@@ -215,6 +220,52 @@ def merge_sources_into_composite(cap_doc):
 	return je.name
 
 
+def _reverse_straddling_depreciation(asset_name, merge_date, cap_doc):
+	"""Mirror-reverse posted depreciation rows dated after the merge
+	date. The row keeps its JE (immutable) and gains
+	`reversal_journal_entry`; its row-backed FT pairs off."""
+	from asset_enterprise import tcc
+	from asset_enterprise.restore import _mirror_je
+
+	rows = frappe.db.sql(
+		"""
+		select ds.name, ds.journal_entry, ds.schedule_date
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		  and ifnull(ds.journal_entry, '') != ''
+		  and ifnull(ds.reversal_journal_entry, '') = ''
+		  and ds.schedule_date > %s
+		""",
+		(asset_name, merge_date),
+		as_dict=True,
+	)
+	for row in rows:
+		mirror = _mirror_je(
+			row.journal_entry,
+			_("Reversal of straddling depreciation ({0}) on merge via {1}").format(
+				row.schedule_date, cap_doc.name
+			),
+		)
+		frappe.db.set_value(
+			"Depreciation Schedule", row.name, "reversal_journal_entry", mirror,
+			update_modified=False,
+		)
+		ft = frappe.db.get_value(
+			"Financial Treatment",
+			{
+				"asset": asset_name,
+				"journal_entry": row.journal_entry,
+				"transaction_category": "Depreciation",
+				"status": "Posted",
+			},
+			"name",
+		)
+		if ft:
+			tcc.reverse(ft, cap_doc, posting_date=getdate(cap_doc.posting_date or nowdate()),
+				journal_entry=mirror)
+
+
 def _apply_fully_depreciated_treatment(cap_doc, target, total_nbv, posting_date):
 	"""GAP-014 both-options support (per 2026-07-14 meeting)."""
 	treatment = cap_doc.get("fully_depreciated_treatment")
@@ -279,6 +330,172 @@ def _resupersede(target_name, posting_date, cap_doc):
 		)
 	except frappe.ValidationError:
 		pass  # composite without an Active schedule — value-only
+
+
+def reclassify(cap_doc):
+	"""GAP-014 Reclassification sub-type (Phase 11 F5) — §3.6/§12.13
+	corrected model: standard Disposal (old category) + Addition (new
+	category) in ONE JE, NO clearing account, gross AND accumulated
+	depreciation re-established under the new category. The source is
+	Cancelled under the old category; the pre-created new-category
+	asset takes over with a two-way `reclassified_from` trace. No
+	Merge Log rows (reclassification is a category move, not a merge).
+	"""
+	from asset_enterprise import tcc
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from erpnext.assets.doctype.asset.depreciation import depreciate_asset
+
+	if len(cap_doc.asset_items or []) != 1:
+		frappe.throw(_("Reclassification moves exactly one source Asset."))
+	source = frappe.get_doc("Asset", cap_doc.asset_items[0].asset)
+	if source.docstatus != 1:
+		frappe.throw(_("Source Asset {0} must be submitted.").format(source.name))
+	target = frappe.get_doc("Asset", cap_doc.target_asset)
+	posting_date = getdate(cap_doc.posting_date or nowdate())
+
+	# Standard-disposal proration up to the transfer date.
+	if source.calculate_depreciation:
+		try:
+			depreciate_asset(source, posting_date, _("Reclassified via {0}").format(cap_doc.name))
+			source.reload()
+		except Exception:
+			pass
+
+	values = recalculate_asset_values(source.name, save=False)
+	gross = flt(values["historical_asset_value"])
+	accum = flt(values["accumulated_depreciation_value"])
+	rul_months = flt(values["remaining_useful_life_months"])
+	salvage = flt(
+		frappe.db.get_value(
+			"Asset Finance Book", {"parent": source.name}, "expected_value_after_useful_life"
+		)
+		or 0
+	)
+
+	src_accounts = _category_accounts(source)
+	tgt_accounts = _category_accounts(target)
+	cc = source.get("cost_center")
+
+	accounts = []
+	if accum:
+		accounts.append(
+			{
+				"account": src_accounts.accumulated_depreciation_account,
+				"debit_in_account_currency": accum,
+				"cost_center": cc,
+				"reference_type": "Asset",
+				"reference_name": source.name,
+			}
+		)
+	accounts.append(
+		{
+			"account": src_accounts.fixed_asset_account,
+			"credit_in_account_currency": gross,
+			"cost_center": cc,
+			"reference_type": "Asset",
+			"reference_name": source.name,
+		}
+	)
+	accounts.append(
+		{
+			"account": tgt_accounts.fixed_asset_account,
+			"debit_in_account_currency": gross,
+			"cost_center": target.get("cost_center") or cc,
+			"reference_type": "Asset",
+			"reference_name": target.name,
+		}
+	)
+	if accum:
+		accounts.append(
+			{
+				"account": tgt_accounts.accumulated_depreciation_account,
+				"credit_in_account_currency": accum,
+				"reference_type": "Asset",
+				"reference_name": target.name,
+			}
+		)
+
+	je = frappe.get_doc(
+		{
+			"doctype": "Journal Entry",
+			"voucher_type": "Journal Entry",
+			"company": source.company,
+			"posting_date": posting_date,
+			"user_remark": _("Reclassification of {0} to category {1} via {2}").format(
+				source.name, target.asset_category, cap_doc.name
+			),
+			"accounts": accounts,
+		}
+	)
+	je.flags.ignore_permissions = True
+	je.flags.ignore_links = True
+	je.submit()
+
+	# Source leaves the register under the old category.
+	source.db_set("status", "Capitalized", update_modified=False)
+	source.db_set("docstatus", 2, update_modified=False)
+
+	# Target carries gross + opening accum; the reclassification JE is
+	# its booking — GAP-001's suspense path is suppressed by the trace.
+	target.db_set("reclassified_from", source.name, update_modified=False)
+	if target.docstatus == 0:
+		target.purchase_amount = gross
+		target.net_purchase_amount = gross
+		target.opening_accumulated_depreciation = accum
+		target.is_existing_asset = 1
+		target.reclassified_from = source.name
+		target.flags.ignore_permissions = True
+		target.flags.ignore_links = True
+		target.save()
+		target.submit()
+
+	tcc.apply(
+		source_doc=cap_doc,
+		category="Disposal",
+		transaction_type="Reclassification — Out",
+		asset=source.name,
+		posting_date=posting_date,
+		amount=gross,
+		hav_delta=-gross,
+		accum_delta=-accum,
+		journal_entry=je.name,
+	)
+	# Target values derive from net_purchase_amount + opening accum —
+	# the FT is the audit record + JE link (zero deltas, GAP-001 style).
+	tcc.apply(
+		source_doc=cap_doc,
+		category="Addition",
+		transaction_type="Reclassification — In",
+		asset=target.name,
+		posting_date=posting_date,
+		amount=gross,
+		journal_entry=je.name,
+	)
+
+	# Schedule resets under the new category over the remaining life.
+	if source.calculate_depreciation and rul_months >= 1 and not target.calculate_depreciation:
+		from asset_enterprise.depreciation import enable_depreciation
+
+		try:
+			enable_depreciation(
+				target.name,
+				total_number_of_depreciations=int(round(rul_months)),
+				frequency_of_depreciation=1,
+				depreciation_start_date=add_days_safe(posting_date),
+				expected_value_after_useful_life=salvage,
+			)
+		except Exception:
+			frappe.log_error(
+				title=f"Reclassification schedule reset failed: {target.name}",
+				message=frappe.get_traceback(),
+			)
+	return je.name
+
+
+def add_days_safe(posting_date):
+	from frappe.utils import add_days
+
+	return add_days(posting_date, 1)
 
 
 def reverse_merge(reversal_doc):

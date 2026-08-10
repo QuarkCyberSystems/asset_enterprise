@@ -132,6 +132,7 @@ class EnterpriseAsset(Asset):
 			not self.get("is_existing_asset")
 			or self.get("purchase_receipt")
 			or self.get("purchase_invoice")
+			or self.get("reclassified_from")  # booking came via the reclassification JE
 		):
 			return
 
@@ -217,19 +218,77 @@ class EnterpriseAsset(Asset):
 	def on_cancel(self):
 		if self._enterprise():
 			self._block_when_depreciation_posted()
+			self._reverse_existing_asset_opening()
 		super().on_cancel()
+		if self._enterprise():
+			# Core just overwrote ignore_linked_doctypes with its own
+			# tuple — re-extend it so the mirror JE / FT / Activity rows
+			# created above don't trip the post-cancel link check.
+			self.ignore_linked_doctypes = tuple(
+				set(tuple(self.get("ignore_linked_doctypes") or ()))
+				| {"GL Entry", "Journal Entry", "Financial Treatment", "Asset Activity",
+				   "Scrap Transaction"}
+			)
+
+	def _reverse_existing_asset_opening(self):
+		"""§12.2 reversal (Phase 11 F4): the GAP-001 opening JE is a
+		standalone Journal Entry that core's asset-cancel reversal never
+		touches — mirror it and pair the Addition FT."""
+		if not self.get("is_existing_asset"):
+			return
+		ft = frappe.db.get_value(
+			"Financial Treatment",
+			{
+				"asset": self.name,
+				"transaction_type": "Existing-Asset Opening",
+				"status": "Posted",
+			},
+			["name", "journal_entry"],
+			as_dict=True,
+		)
+		if not ft or not ft.journal_entry:
+			return
+
+		from asset_enterprise import tcc
+		from asset_enterprise.restore import _mirror_je
+
+		self.ignore_linked_doctypes = tuple(
+			set(tuple(self.get("ignore_linked_doctypes") or ()))
+			| {"GL Entry", "Journal Entry", "Financial Treatment", "Asset Activity"}
+		)
+		mirror = _mirror_je(
+			ft.journal_entry,
+			_("Reversal of Existing-Asset Opening for {0} (asset reversal)").format(self.name),
+		)
+		tcc.reverse(ft.name, ("Asset", self.name), journal_entry=mirror)
+		self.add_comment(
+			"Comment",
+			_("Existing-Asset Opening JE {0} reversed via {1}; original stays posted.").format(
+				ft.journal_entry, mirror
+			),
+		)
 
 	def _block_when_depreciation_posted(self):
-		posted = frappe.db.sql(
-			"""
-			select count(*) from `tabDepreciation Schedule` ds
-			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-			where ads.asset = %s and ads.docstatus = 1
-			  and ifnull(ds.journal_entry, '') != ''
-			""",
-			self.name,
-		)[0][0]
-		if posted:
+		"""GAP-027 / VR-031: block reversal while LIVE depreciation
+		exists — schedule-linked JEs AND manual depreciation JEs
+		(Phase 11 F3). A JE already reversed per GA-0001-01 (a live JE
+		points back via reversal_of) no longer counts (TC-042c)."""
+		je_names = [
+			r[0]
+			for r in frappe.db.sql(
+				"""
+				select ds.journal_entry from `tabDepreciation Schedule` ds
+				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+				where ads.asset = %s and ads.docstatus = 1
+				  and ifnull(ds.journal_entry, '') != ''
+				""",
+				self.name,
+			)
+		]
+		je_names += [d.name for d in self.get_manual_depreciation_entries()]
+
+		live = [je for je in set(je_names) if not self._je_is_reversed(je)]
+		if live:
 			frappe.throw(
 				_(
 					"Asset has {0} posted depreciation entries. Asset reversal under the "
@@ -237,8 +296,18 @@ class EnterpriseAsset(Asset):
 					"Reverse the linked depreciation JEs (via Reversal Journal Entry per "
 					"GA-0001-01) before retrying asset reversal, OR contact accounts to "
 					"handle the cleanup."
-				).format(posted)
+				).format(len(live))
 			)
+
+	@staticmethod
+	def _je_is_reversed(je_name):
+		"""True when a live GA-0001-01 Reversal JE points at this JE.
+		Sites without the reversal_of field treat every JE as live."""
+		if not frappe.get_meta("Journal Entry").has_field("reversal_of"):
+			return False
+		return bool(
+			frappe.db.exists("Journal Entry", {"reversal_of": je_name, "docstatus": 1})
+		)
 
 	def _enterprise(self):
 		from asset_enterprise.depreciation import enterprise_enabled

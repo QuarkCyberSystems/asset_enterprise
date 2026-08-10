@@ -46,6 +46,17 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		if not self._enterprise() or ttype == "Standard Capitalization":
 			return super().validate()
 
+		# Category display fields (GAP-014, Phase 11): fetched
+		# server-side from the linked assets, both read-only.
+		if self.get("asset_items"):
+			self.source_asset_category = frappe.db.get_value(
+				"Asset", self.asset_items[0].asset, "asset_category"
+			)
+		if self.get("target_asset"):
+			self.target_asset_category = frappe.db.get_value(
+				"Asset", self.target_asset, "asset_category"
+			)
+
 		# CM / Reversal validations (core validate assumes the standard
 		# consume-items pipeline, which CM does not use).
 		if ttype == "Capitalized Maintenance":
@@ -58,7 +69,12 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		if not self.get("target_asset"):
 			frappe.throw(_("Capitalized Maintenance requires a target Asset."))
 		target = frappe.get_doc("Asset", self.target_asset)
-		if target.docstatus != 1:
+		reclass = (
+			self.get("transaction_sub_type") == "Reclassification / Asset Category Transfer"
+		)
+		# Reclassification pre-creates the new-category asset as a DRAFT
+		# (Phase 11 F5); every other CM needs a submitted target.
+		if target.docstatus == 2 or (target.docstatus != 1 and not reclass):
 			frappe.throw(_("Capitalized Maintenance target must be a submitted Asset."))
 		# VR-037 (v2.16): "Capitalized" no longer blocks — a composite that
 		# was itself capitalized stays a valid CM target (2026-07-23 review).
@@ -126,6 +142,14 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		from asset_enterprise import merge
 
 		if ttype == "Capitalized Maintenance":
+			if self.get("transaction_sub_type") == "Reclassification / Asset Category Transfer":
+				# Phase 11 F5: category transfer posts its own model —
+				# no clearing, gross+accum re-established, no Merge Log.
+				je = merge.reclassify(self)
+				self.add_comment(
+					"Comment", _("Reclassification posted via Journal Entry {0}.").format(je)
+				)
+				return
 			je = merge.merge_sources_into_composite(self)
 			self.add_comment("Comment", _("Merge posted via Journal Entry {0}.").format(je))
 		else:  # Reversal of Capitalized Maintenance

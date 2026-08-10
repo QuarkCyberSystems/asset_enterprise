@@ -100,6 +100,28 @@ def pr_before_cancel(doc, method=None):
 		)
 
 
+# ---------------------------------------------------------------- SI side
+
+
+def si_validate(doc, method=None):
+	"""GAP-010 / VR-011 (Phase 11 F7): the SALE disposal path honors
+	the prevent-disposal-before-full-invoicing control too."""
+	if not _enterprise():
+		return
+	from asset_enterprise.disposal import assert_fully_invoiced
+
+	for row in doc.items:
+		if row.get("asset"):
+			asset = frappe.db.get_value(
+				"Asset",
+				row.asset,
+				["name", "purchase_receipt", "purchase_invoice"],
+				as_dict=True,
+			)
+			if asset:
+				assert_fully_invoiced(asset)
+
+
 # ---------------------------------------------------------------- PI side
 
 

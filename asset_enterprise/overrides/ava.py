@@ -29,7 +29,17 @@ class EnterpriseAVA(AssetValueAdjustment):
 
 	# ------------------------------------------------------------- submit
 	def on_submit(self):
-		super().on_submit()
+		# UL-only adjustments (difference = 0) post no revaluation JE —
+		# core's make_asset_revaluation_entry crashes on a zero
+		# difference (credit_entry unbound), and the reschedule is ours
+		# via _apply_life_adjustment anyway (Phase 11 F2).
+		ul_only = (
+			self._enterprise()
+			and not flt(self.difference_amount)
+			and flt(self.get("adjusted_life_months") or 0)
+		)
+		if not ul_only:
+			super().on_submit()
 		if not self._enterprise():
 			return
 
@@ -54,6 +64,9 @@ class EnterpriseAVA(AssetValueAdjustment):
 				"Asset Value Adjustment", self.reversal_of_ava,
 				"reversed_by_ava", self.name, update_modified=False,
 			)
+			# A reversed life adjustment must swing the horizon back too.
+			if flt(self.get("adjusted_life_months") or 0):
+				self._apply_life_adjustment(flt(self.adjusted_life_months))
 			return
 
 		category, hav_delta, life_delta = self._classify()
@@ -69,13 +82,57 @@ class EnterpriseAVA(AssetValueAdjustment):
 			journal_entry=self.get("journal_entry"),
 		)
 
-		# UL-only adjustments post no JE; still need prospective recalc.
-		if life_delta and not flt(self.difference_amount):
-			from asset_enterprise.depreciation import supersede_and_regenerate
+		# GAP-013 (Phase 11 F2): a life delta genuinely moves the
+		# schedule horizon and the finance-book period count; RUL
+		# exhausted -> immediate depreciation of the remaining base.
+		if life_delta:
+			self._apply_life_adjustment(life_delta)
 
+	def _apply_life_adjustment(self, life_delta):
+		from frappe.utils import add_months, cint, getdate
+
+		from asset_enterprise.depreciation import (
+			active_schedule_horizon,
+			depreciate_remaining_base_now,
+			supersede_and_regenerate,
+		)
+
+		horizon = active_schedule_horizon(self.asset)
+		if not horizon:
+			return  # no Active schedule — nothing to reshape
+		new_end = add_months(getdate(horizon), cint(round(life_delta)))
+
+		fb = frappe.db.get_value(
+			"Asset Finance Book",
+			{"parent": self.asset},
+			["name", "total_number_of_depreciations", "frequency_of_depreciation"],
+			as_dict=True,
+		)
+		if fb:
+			periods_delta = cint(round(flt(life_delta) / flt(fb.frequency_of_depreciation or 1)))
+			frappe.db.set_value(
+				"Asset Finance Book", fb.name, "total_number_of_depreciations",
+				max(0, cint(fb.total_number_of_depreciations) + periods_delta),
+				update_modified=False,
+			)
+
+		if getdate(new_end) <= getdate(self.date):
+			# VR-018: shortening below the adjustment date exhausts RUL —
+			# post the full remaining base now, then freeze the schedule.
+			depreciate_remaining_base_now(
+				self.asset, self.date, self,
+				transaction_type=_("Immediate Depreciation — RUL Exhausted via {0}").format(self.name),
+			)
 			supersede_and_regenerate(
-				self.asset, as_of_date=self.date,
-				reason=_("Useful Life Adjustment via {0}").format(self.name),
+				self.asset, as_of_date=self.date, end_of_life_override=self.date,
+				reason=_("Useful life exhausted via {0}").format(self.name),
+			)
+		else:
+			supersede_and_regenerate(
+				self.asset, as_of_date=self.date, end_of_life_override=new_end,
+				reason=_("Useful Life Adjustment via {0} ({1:+} months)").format(
+					self.name, cint(round(life_delta))
+				),
 			)
 
 	def _classify(self):

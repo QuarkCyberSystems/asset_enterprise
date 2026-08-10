@@ -287,7 +287,9 @@ def _mirror_je(source_je_name, remark):
 	mirror = frappe.get_doc(
 		{
 			"doctype": "Journal Entry",
-			"voucher_type": "Journal Entry",
+			# Keep the source's voucher type — core requires Depreciation
+			# Entry for JEs carrying asset depreciation references.
+			"voucher_type": source_je.voucher_type,
 			"company": source_je.company,
 			"posting_date": nowdate(),
 			"user_remark": remark,

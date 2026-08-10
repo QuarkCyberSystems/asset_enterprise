@@ -44,6 +44,11 @@ doc_events = {
 		"on_submit": "asset_enterprise.invoice_diff.pi_on_submit",
 		"on_cancel": "asset_enterprise.invoice_diff.pi_on_cancel",
 	},
+	# GAP-010 / VR-011 (Phase 11): sale disposals honor the
+	# prevent-disposal-before-full-invoicing control.
+	"Sales Invoice": {
+		"validate": "asset_enterprise.invoice_diff.si_validate",
+	},
 }
 
 # Upgrade guard (build plan §2.3 / §6): every bench migrate re-verifies

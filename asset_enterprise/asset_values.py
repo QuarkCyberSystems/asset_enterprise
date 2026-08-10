@@ -30,11 +30,17 @@ from asset_enterprise.rounding import fa_module_round
 
 
 def _posted_ft_sums(asset_name):
+	# Row-backed engine depreciation (source = Asset Depreciation
+	# Schedule) is ALREADY counted through the posted schedule rows —
+	# folding its accum_delta again double-counts (Phase 11 F0 fix).
+	# Standalone Depreciation FTs (e.g. Expense-Immediately on merge)
+	# have no row and must keep folding.
 	row = frappe.db.sql(
 		"""
 		select
 			coalesce(sum(hav_delta), 0)         as hav_delta,
-			coalesce(sum(accum_delta), 0)       as accum_delta,
+			coalesce(sum(case when source_doctype = 'Asset Depreciation Schedule'
+			                  then 0 else accum_delta end), 0) as accum_delta,
 			coalesce(sum(life_delta_months), 0) as life_delta_months
 		from `tabFinancial Treatment`
 		where asset = %s
@@ -64,6 +70,7 @@ def _posted_depreciation_total(asset_name):
 			  and ads.docstatus = 1
 			  and ads.status = 'Active'
 			  and ifnull(ds.journal_entry, '') != ''
+			  and ifnull(ds.reversal_journal_entry, '') = ''
 			""",
 			asset_name,
 		)[0][0]

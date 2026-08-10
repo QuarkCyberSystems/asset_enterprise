@@ -211,6 +211,8 @@ def supersede_and_regenerate(
 
 	posted = [r for r in old.get("depreciation_schedule") if r.journal_entry]
 	unposted = [r for r in old.get("depreciation_schedule") if not r.journal_entry]
+	# Reversed rows (F6) still count as "posted" for verbatim copying —
+	# their reversal_journal_entry flag must survive every generation.
 
 	# Remaining life: the OLD schedule's horizon, unless explicitly
 	# extended (GAP-014 "Add Value and Extend Life") or supplied by the
@@ -226,7 +228,17 @@ def supersede_and_regenerate(
 	from asset_enterprise.asset_values import recalculate_asset_values
 
 	values = recalculate_asset_values(asset_name, save=False)
-	nbv_base = values["net_book_value"]
+	# §4.3 (Phase 11 F1): salvage is subtracted from the depreciable
+	# base in EVERY rate computation — the regenerated schedule must
+	# land NBV on salvage, not zero.
+	fb_filters = {"parent": asset_name}
+	if finance_book:
+		fb_filters["finance_book"] = finance_book
+	salvage = flt(
+		frappe.db.get_value("Asset Finance Book", fb_filters, "expected_value_after_useful_life")
+		or 0
+	)
+	nbv_base = fa_module_round(flt(values["net_book_value"]) - salvage, company)
 
 	future_rows = (
 		# first_posting_date (v2.16 Path 3): the first regenerated row
@@ -255,6 +267,7 @@ def supersede_and_regenerate(
 				"depreciation_amount": r.depreciation_amount,
 				"accumulated_depreciation_amount": r.accumulated_depreciation_amount,
 				"journal_entry": r.journal_entry,
+				"reversal_journal_entry": r.get("reversal_journal_entry"),
 				"cost_center": r.get("cost_center"),
 				"is_pya_entry": r.get("is_pya_entry"),
 				"days_in_period": r.get("days_in_period"),
@@ -292,6 +305,90 @@ def supersede_and_regenerate(
 			_("{0} unposted rows regenerated prospectively in {1}.").format(len(unposted), new.name),
 		)
 	return new
+
+
+def active_schedule_horizon(asset_name):
+	"""Last schedule date of the Active generation (the end of life)."""
+	return frappe.db.sql(
+		"""
+		select max(ds.schedule_date)
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		""",
+		asset_name,
+	)[0][0]
+
+
+def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transaction_type):
+	"""GAP-013 / VR-018 (Phase 11 F2): when an adjustment drives RUL to
+	zero, the full remaining depreciable base (NBV − salvage) posts as
+	one immediate depreciation entry on the adjustment date."""
+	from asset_enterprise import tcc
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	asset = frappe.get_doc("Asset", asset_name)
+	values = recalculate_asset_values(asset_name, save=False)
+	salvage = flt(
+		frappe.db.get_value(
+			"Asset Finance Book", {"parent": asset_name}, "expected_value_after_useful_life"
+		)
+		or 0
+	)
+	base = fa_module_round(flt(values["net_book_value"]) - salvage, asset.company)
+	if base <= 0:
+		return None
+
+	aca = frappe.db.get_value(
+		"Asset Category Account",
+		{"parent": asset.asset_category, "company_name": asset.company},
+		["depreciation_expense_account", "accumulated_depreciation_account"],
+		as_dict=True,
+	)
+	if not aca:
+		frappe.throw(
+			_("Asset Category Account missing for {0} / {1}").format(asset.asset_category, asset.company)
+		)
+	je = frappe.get_doc(
+		{
+			"doctype": "Journal Entry",
+			"voucher_type": "Depreciation Entry",
+			"company": asset.company,
+			"posting_date": posting_date,
+			"user_remark": _("Immediate depreciation — remaining useful life exhausted ({0})").format(
+				transaction_type
+			),
+			"accounts": [
+				{
+					"account": aca.depreciation_expense_account,
+					"debit_in_account_currency": base,
+					"cost_center": asset.get("cost_center"),
+					"reference_type": "Asset",
+					"reference_name": asset.name,
+				},
+				{
+					"account": aca.accumulated_depreciation_account,
+					"credit_in_account_currency": base,
+					"reference_type": "Asset",
+					"reference_name": asset.name,
+				},
+			],
+		}
+	)
+	je.flags.ignore_permissions = True
+	je.submit()
+
+	tcc.apply(
+		source_doc=source_doc,
+		category="Depreciation",
+		transaction_type=transaction_type,
+		asset=asset_name,
+		posting_date=posting_date,
+		amount=base,
+		accum_delta=base,
+		journal_entry=je.name,
+	)
+	return je.name
 
 
 # --------------------------------------------------------------------------

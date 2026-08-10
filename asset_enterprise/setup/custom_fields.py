@@ -126,6 +126,17 @@ CUSTOM_FIELDS = {
 			"description": "Composite this Asset was merged into via Capitalized Maintenance (GAP-035 bidirectional linkage).",
 		},
 		{
+			"fieldname": "reclassified_from",
+			"fieldtype": "Link",
+			"label": "Reclassified From",
+			"options": "Asset",
+			"read_only": 1,
+			"insert_after": "merged_into_asset",
+			"description": "GAP-014 Reclassification (Phase 11): source asset this one "
+			"was created from on category transfer. Suppresses the GAP-001 "
+			"opening JE — the reclassification JE carries the booking.",
+		},
+		{
 			"fieldname": "merge_log_section",
 			"fieldtype": "Section Break",
 			"label": "Composite Merge Log",
@@ -380,6 +391,17 @@ CUSTOM_FIELDS = {
 			"precision": "9",
 			"read_only": 1,
 			"insert_after": "days_in_period",
+		},
+		{
+			"fieldname": "reversal_journal_entry",
+			"fieldtype": "Link",
+			"label": "Reversal Journal Entry",
+			"options": "Journal Entry",
+			"read_only": 1,
+			"insert_after": "daily_rate",
+			"description": "GAP-015 (Phase 11): mirror JE that reversed this posted row "
+			"(e.g. straddling depreciation reversed at merge). Row drops out of "
+			"the accumulated fold; original JE stays posted.",
 		},
 	],
 	# ------------------------------------------------- Asset Movement Item
