@@ -47,6 +47,116 @@ def sync_customizations():
 	seed_setting_defaults()
 	register_asset_accounting_dimension()
 	rebuild_asset_tree_nodes()
+	extend_assets_sidebar()
+
+
+ENTERPRISE_SIDEBAR_GROUP = "Enterprise Assets"
+ENTERPRISE_SIDEBAR_ITEMS = [
+	{"label": "Scrap Transaction", "link_type": "DocType", "link_to": "Scrap Transaction", "icon": "delete"},
+	{"label": "Mass Asset Depreciation", "link_type": "DocType", "link_to": "Mass Asset Depreciation", "icon": "stack"},
+	{"label": "Financial Treatment", "link_type": "DocType", "link_to": "Financial Treatment", "icon": "file"},
+	{"label": "Asset Settings", "link_type": "DocType", "link_to": "Asset Settings", "icon": "setting-gear"},
+	{"label": "Scrapping Type", "link_type": "DocType", "link_to": "Scrapping Type", "icon": "tag"},
+	{"label": "Transaction Category", "link_type": "DocType", "link_to": "Transaction Category", "icon": "folder-normal"},
+]
+ENTERPRISE_SIDEBAR_REPORTS = [
+	"Asset Tree",
+	"Composite Merge Log Report",
+	"Replacement Chain",
+	"Asset Daily Reconciliation",
+]
+
+
+def extend_assets_sidebar():
+	"""v16 desk: the app sidebar is a Workspace Sidebar doc synced from
+	erpnext's workspace_sidebar/assets.json. Extend it in place — an
+	'Enterprise Assets' group after Asset Movement, and our reports in
+	the existing Reports group. Idempotent; our app migrates after
+	erpnext, so this self-heals whenever erpnext resyncs its sidebar."""
+	try:
+		if not frappe.db.exists("Workspace Sidebar", "Assets"):
+			return
+		# the old Workspace-page approach is superseded by this
+		frappe.delete_doc("Workspace", "Asset Enterprise", force=1, ignore_missing=True)
+
+		sidebar = frappe.get_doc("Workspace Sidebar", "Assets")
+		rows = [
+			{
+				"label": i.label,
+				"type": i.type,
+				"link_type": i.link_type,
+				"link_to": i.link_to,
+				"icon": i.icon,
+				"child": i.child,
+				"indent": i.indent,
+				"collapsible": i.collapsible,
+				"keep_closed": i.keep_closed,
+				"show_arrow": i.show_arrow,
+				"url": i.url,
+			}
+			for i in sidebar.items
+		]
+		labels = [r["label"] for r in rows]
+		changed = False
+
+		if ENTERPRISE_SIDEBAR_GROUP not in labels:
+			anchor = labels.index("Asset Movement") + 1 if "Asset Movement" in labels else len(rows)
+			group = [
+				{
+					"label": ENTERPRISE_SIDEBAR_GROUP,
+					"type": "Section Break",
+					"link_type": "DocType",
+					"indent": 1,
+					"collapsible": 1,
+				}
+			] + [
+				{
+					"label": item["label"],
+					"type": "Link",
+					"link_type": item["link_type"],
+					"link_to": item["link_to"],
+					"icon": item.get("icon"),
+					"child": 1,
+					"collapsible": 1,
+				}
+				for item in ENTERPRISE_SIDEBAR_ITEMS
+			]
+			rows[anchor:anchor] = group
+			changed = True
+
+		labels = [r["label"] for r in rows]
+		if "Reports" in labels:
+			start = labels.index("Reports")
+			end = start + 1
+			while end < len(rows) and rows[end].get("child"):
+				end += 1
+			existing = {rows[i].get("link_to") for i in range(start + 1, end)}
+			additions = [
+				{
+					"label": report,
+					"type": "Link",
+					"link_type": "Report",
+					"link_to": report,
+					"child": 1,
+					"collapsible": 1,
+				}
+				for report in ENTERPRISE_SIDEBAR_REPORTS
+				if report not in existing
+			]
+			if additions:
+				rows[end:end] = additions
+				changed = True
+
+		if changed:
+			sidebar.set("items", rows)
+			sidebar.flags.ignore_permissions = True
+			sidebar.save()
+			frappe.clear_cache()
+			print("asset_enterprise: Assets sidebar extended (Enterprise Assets group + reports)")
+	except Exception:
+		frappe.log_error(
+			title="asset_enterprise: sidebar extension failed", message=frappe.get_traceback()
+		)
 
 
 def rebuild_asset_tree_nodes():
