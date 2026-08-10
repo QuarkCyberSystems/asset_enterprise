@@ -61,6 +61,7 @@ def run():
 	from asset_enterprise import tcc
 	from asset_enterprise.asset_values import recalculate_asset_values
 
+	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 	frappe.db.savepoint("phase2_verify")
 	created_fixture = False
 	asset_name = frappe.db.get_value("Asset", {"docstatus": ["<", 2]}, "name")

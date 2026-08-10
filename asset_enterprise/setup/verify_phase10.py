@@ -28,6 +28,8 @@ def _run():
 	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.setup.test_fixtures import make_test_asset
 
+	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
+	scr_before = frappe.db.count("Scrap Transaction")
 	frappe.db.savepoint("phase10_verify")
 	try:
 		frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
@@ -309,12 +311,12 @@ def _run():
 	finally:
 		frappe.db.rollback(save_point="phase10_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})
-		left_tx = frappe.db.count("Scrap Transaction")
+		left_tx = frappe.db.count("Scrap Transaction") - scr_before
 		switch = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 		print(
 			f"clean  rollback: leftovers={left} scrap-tx={left_tx} switch={switch} "
-			f"{'OK' if left == 0 and left_tx == 0 and not switch else 'FAIL'}"
+			f"{'OK' if left == 0 and left_tx == 0 and switch == switch_before else 'FAIL'}"
 		)
-		ok = ok and left == 0 and left_tx == 0 and not switch
+		ok = ok and left == 0 and left_tx == 0 and switch == switch_before
 
 	print("PHASE 10:", "PASS" if ok else "FAIL")

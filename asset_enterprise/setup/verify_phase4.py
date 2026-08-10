@@ -24,6 +24,8 @@ def _run():
 	from asset_enterprise.overrides.asset_repair import is_fully_depreciated
 	from asset_enterprise.setup.test_fixtures import make_test_asset
 
+	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
+	ft_before = frappe.db.count("Financial Treatment")
 	frappe.db.savepoint("phase4_verify")
 	try:
 		# Master switch ON inside the savepoint.
@@ -181,11 +183,11 @@ def _run():
 
 	finally:
 		frappe.db.rollback(save_point="phase4_verify")
-		leftovers = frappe.db.count("Asset", {"asset_name": "AE Smoke Asset"}) + frappe.db.count(
-			"Financial Treatment"
+		leftovers = frappe.db.count("Asset", {"asset_name": "AE Smoke Asset"}) + (
+			frappe.db.count("Financial Treatment") - ft_before
 		)
 		switch = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
-		print(f"clean  rollback: leftovers={leftovers} switch={switch} {'OK' if leftovers == 0 and not switch else 'FAIL'}")
-		ok = ok and leftovers == 0 and not switch
+		print(f"clean  rollback: leftovers={leftovers} switch={switch} {'OK' if leftovers == 0 and switch == switch_before else 'FAIL'}")
+		ok = ok and leftovers == 0 and switch == switch_before
 
 	print("PHASE 4:", "PASS" if ok else "FAIL")

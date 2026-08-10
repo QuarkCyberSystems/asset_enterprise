@@ -17,6 +17,7 @@ def _run():
 	ok = True
 	company = frappe.db.get_value("Company", {}, "name")
 
+	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 	frappe.db.savepoint("phase7_verify")
 	try:
 		frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
@@ -309,7 +310,7 @@ def _run():
 		frappe.db.rollback(save_point="phase7_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})
 		switch = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
-		print(f"clean  rollback: leftovers={left} switch={switch} {'OK' if left == 0 and not switch else 'FAIL'}")
-		ok = ok and left == 0 and not switch
+		print(f"clean  rollback: leftovers={left} switch={switch} {'OK' if left == 0 and switch == switch_before else 'FAIL'}")
+		ok = ok and left == 0 and switch == switch_before
 
 	print("PHASE 7:", "PASS" if ok else "FAIL")

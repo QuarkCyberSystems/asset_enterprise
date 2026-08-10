@@ -93,6 +93,7 @@ def _run():
 
 	# ------------------------------------------------------------- §4.7 PYA
 	# Site may lack prior FY records — create temp FYs inside a savepoint.
+	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 	frappe.db.savepoint("phase3_pya")
 	try:
 		for yr in ("2024", "2025"):
