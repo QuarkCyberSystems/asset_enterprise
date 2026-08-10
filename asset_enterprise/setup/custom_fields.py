@@ -141,7 +141,9 @@ CUSTOM_FIELDS = {
 			"fieldtype": "Section Break",
 			"label": "Composite Merge Log",
 			"insert_after": "merged_into_asset",
-			"depends_on": "eval:doc.asset_type==='Composite Asset'",
+			# GAP-035 visibility: CM targets ANY submitted asset (asset_type
+			# agnostic) — show the parts whenever merges exist.
+			"depends_on": "eval:doc.asset_type==='Composite Asset' || (doc.merge_log && doc.merge_log.length)",
 		},
 		{
 			"fieldname": "merge_log",
