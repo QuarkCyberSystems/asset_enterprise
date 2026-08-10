@@ -1,0 +1,231 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"aehdr1\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Enterprise Fixed Assets</b></span>\",\"col\":12}},{\"id\":\"aesc1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Asset\",\"col\":3}},{\"id\":\"aesc2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Scrap Transaction\",\"col\":3}},{\"id\":\"aesc3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Mass Asset Depreciation\",\"col\":3}},{\"id\":\"aesc4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Financial Treatment\",\"col\":3}},{\"id\":\"aespc\",\"type\":\"spacer\",\"data\":{\"col\":12}},{\"id\":\"aecard1\",\"type\":\"card\",\"data\":{\"card_name\":\"Transactions\",\"col\":4}},{\"id\":\"aecard2\",\"type\":\"card\",\"data\":{\"card_name\":\"Ledger & Audit\",\"col\":4}},{\"id\":\"aecard3\",\"type\":\"card\",\"data\":{\"card_name\":\"Reports\",\"col\":4}},{\"id\":\"aecard4\",\"type\":\"card\",\"data\":{\"card_name\":\"Setup\",\"col\":4}}]",
+ "creation": "2026-08-10 15:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "asset",
+ "idx": 0,
+ "indicator_color": "",
+ "is_hidden": 0,
+ "label": "Asset Enterprise",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Transactions",
+   "link_count": 5,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Scrap Transaction",
+   "link_count": 0,
+   "link_to": "Scrap Transaction",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Mass Asset Depreciation",
+   "link_count": 0,
+   "link_to": "Mass Asset Depreciation",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Asset Capitalization",
+   "link_count": 0,
+   "link_to": "Asset Capitalization",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Asset Value Adjustment",
+   "link_count": 0,
+   "link_to": "Asset Value Adjustment",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Asset Movement",
+   "link_count": 0,
+   "link_to": "Asset Movement",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Ledger & Audit",
+   "link_count": 2,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Financial Treatment",
+   "link_count": 0,
+   "link_to": "Financial Treatment",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Asset Activity",
+   "link_count": 0,
+   "link_to": "Asset Activity",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Reports",
+   "link_count": 4,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Asset Tree",
+   "link_count": 0,
+   "link_to": "Asset Tree",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Composite Merge Log Report",
+   "link_count": 0,
+   "link_to": "Composite Merge Log Report",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Replacement Chain",
+   "link_count": 0,
+   "link_to": "Replacement Chain",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 1,
+   "label": "Asset Daily Reconciliation",
+   "link_count": 0,
+   "link_to": "Asset Daily Reconciliation",
+   "link_type": "Report",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Setup",
+   "link_count": 3,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Asset Settings",
+   "link_count": 0,
+   "link_to": "Asset Settings",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Scrapping Type",
+   "link_count": 0,
+   "link_to": "Scrapping Type",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "Transaction Category",
+   "link_count": 0,
+   "link_to": "Transaction Category",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-08-10 15:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Enterprise",
+ "name": "Asset Enterprise",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "Assets",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [],
+ "sequence_id": 7.1,
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Asset",
+   "link_to": "Asset",
+   "type": "DocType"
+  },
+  {
+   "color": "Orange",
+   "doc_view": "List",
+   "label": "Scrap Transaction",
+   "link_to": "Scrap Transaction",
+   "type": "DocType"
+  },
+  {
+   "color": "Blue",
+   "doc_view": "List",
+   "label": "Mass Asset Depreciation",
+   "link_to": "Mass Asset Depreciation",
+   "type": "DocType"
+  },
+  {
+   "color": "Green",
+   "doc_view": "List",
+   "label": "Financial Treatment",
+   "link_to": "Financial Treatment",
+   "type": "DocType"
+  }
+ ],
+ "title": "Asset Enterprise"
+}
