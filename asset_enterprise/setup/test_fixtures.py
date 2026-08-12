@@ -24,7 +24,9 @@ def pick_plain_account(company, root_type):
 	rows = frappe.db.sql(
 		"""select name from tabAccount where company = %s and root_type = %s
 		   and is_group = 0 and ifnull(account_type, '') not in
-		   ('Receivable', 'Payable', 'Stock', 'Bank', 'Cash') limit 1""",
+		   ('Receivable', 'Payable', 'Stock', 'Bank', 'Cash',
+		    'Depreciation', 'Accumulated Depreciation', 'Fixed Asset')
+		   limit 1""",
 		(company, root_type),
 	)
 	return rows[0][0] if rows else None

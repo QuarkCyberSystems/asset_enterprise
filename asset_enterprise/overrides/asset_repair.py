@@ -148,9 +148,11 @@ class EnterpriseAssetRepair(AssetRepair):
 		self.ignore_linked_doctypes = (
 			"GL Entry",
 			"Stock Ledger Entry",
+			"Stock Entry",  # core's consumption SE + our return SE link this repair
 			"Asset Repair",
 			"Financial Treatment",
 			"Asset Activity",
+			"Journal Entry",
 		)
 		self.cancel_sabb()
 

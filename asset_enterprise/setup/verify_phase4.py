@@ -34,9 +34,9 @@ def _run():
 
 		asset = make_test_asset(company, gross=120_000, submit=False, with_depreciation=True)
 		asset.submit()
-		expense_account = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name"
-		)
+		from asset_enterprise.setup.test_fixtures import pick_plain_account
+
+		expense_account = pick_plain_account(company, "Expense")
 		cost_center = frappe.db.get_value(
 			"Cost Center", {"company": company, "is_group": 0}, "name"
 		)

@@ -28,13 +28,19 @@ def _run():
 	try:
 		frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
 
-		# Scrapping Type "Damage" gets a per-company account (chain tier 1).
+		# Scrapping Type "Damage" per-company account (chain tier 1). A
+		# live site may already carry a row for this company (UAT seed) —
+		# reuse it; a second row would win the get_value lottery.
 		damage_account = frappe.db.get_value(
-			"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name"
+			"Scrapping Type Account", {"parent": "Damage", "company": company}, "gl_account"
 		)
-		st = frappe.get_doc("Scrapping Type", "Damage")
-		st.append("accounts", {"company": company, "gl_account": damage_account})
-		st.save(ignore_permissions=True)
+		if not damage_account:
+			damage_account = frappe.db.get_value(
+				"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name"
+			)
+			st = frappe.get_doc("Scrapping Type", "Damage")
+			st.append("accounts", {"company": company, "gl_account": damage_account})
+			st.save(ignore_permissions=True)
 		print(f"setup  Damage -> {damage_account}")
 
 		# ------------------------------------------- full scrap (GAP-019)
