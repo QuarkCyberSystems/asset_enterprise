@@ -235,23 +235,33 @@ class EnterpriseAsset(Asset):
 	def _is_opening_balance_asset(self):
 		"""GAP-001 scope in ERPNext v16.
 
-		v15's `is_existing_asset` checkbox NO LONGER EXISTS in v16, so an
-		"existing asset" is identified by what it is: an asset brought
-		onto the books with NO purchase document — precisely the case
-		where core books no GL at all (`validate_make_gl_entry` returns
-		False without a purchase document). Excluded:
-		- purchased assets (PR / PI book the value),
-		- composite assets (core posts their capitalization GL),
-		- reclassification targets (our §12.13 JE is the booking),
-		- anything core already booked (`booked_fixed_asset`).
+		v15's `is_existing_asset` checkbox was REPLACED in v16 by
+		`asset_type = "Existing Asset"` (core forbids a Purchase Invoice
+		against one, skips purchase-document mapping, and exempts it from
+		the CWIP "create a PR/PI" requirement). That is the primary
+		signal.
+
+		An asset with NO asset_type and NO purchase document is also an
+		opening-balance asset in substance: core books no GL for it
+		(`validate_make_gl_entry` returns False), so without GAP-001 it
+		would sit on the register with no accounting at all.
+
+		Excluded either way: composite assets/components (core posts
+		their capitalization GL), purchase-document-backed assets (the
+		PR/PI books the value), reclassification targets (our §12.13 JE
+		is the booking), and anything core already booked.
 		"""
-		return not (
+		asset_type = self.get("asset_type")
+		if asset_type in ("Composite Asset", "Composite Component"):
+			return False
+		if (
 			self.get("purchase_receipt")
 			or self.get("purchase_invoice")
 			or self.get("reclassified_from")
 			or self.get("booked_fixed_asset")
-			or self.get("asset_type") == "Composite Asset"
-		)
+		):
+			return False
+		return asset_type == "Existing Asset" or not asset_type
 
 	def _post_existing_asset_opening(self):
 		"""GAP-001: auto-JE via TCC Addition (Existing-Asset Opening).
