@@ -28,6 +28,9 @@ def execute_mass_depreciation(doc):
 		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
 		join `tabAsset` a on a.name = ads.asset
 		where ads.status = 'Active' and ads.docstatus = 1
+		  -- a reversed asset keeps its schedule for audit; posting against
+		  -- it would link a cancelled document and abort the whole run
+		  and a.docstatus = 1
 		  and a.company = %(company)s
 		  and ifnull(ds.journal_entry, '') = ''
 		  and ds.schedule_date <= %(posting_date)s
