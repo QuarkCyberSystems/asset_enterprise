@@ -310,6 +310,49 @@ def _run():
 		)
 		ok = ok and s4_ok
 
+		# ===== S4b: value adjustment must RE-SPREAD the new value (TC-016)
+		v2 = make_test_asset(company, gross=240_000, submit=True)
+		enable_depreciation(
+			v2.name, total_number_of_depreciations=24, frequency_of_depreciation=1,
+			depreciation_start_date=get_first_day(add_months(nowdate(), -2)),
+		)
+		_post_one(
+			frappe.db.sql(
+				"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+				   ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+				   ds.daily_rate, ds.days_in_period
+				from `tabDepreciation Schedule` ds
+				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+				where ads.asset = %s and ads.status='Active' and ifnull(ds.journal_entry,'')=''
+				order by ds.schedule_date limit 1""", v2.name, as_dict=True)[0],
+			getdate(nowdate()),
+		)
+		ava2 = frappe.get_doc(
+			{"doctype": "Asset Value Adjustment", "asset": v2.name, "company": company,
+			 "date": nowdate(), "transaction_type": "Upward Revaluation",
+			 "current_asset_value": flt(recalculate_asset_values(v2.name, save=False)["net_book_value"]),
+			 "new_asset_value": flt(recalculate_asset_values(v2.name, save=False)["net_book_value"]) + 24_000,
+			 "difference_account": pick_plain_account(company, "Liability")}
+		)
+		ava2.flags.ignore_permissions = True
+		ava2.insert()
+		ava2.submit()
+		vals2 = recalculate_asset_values(v2.name, save=False)
+		sched_total = flt(frappe.db.sql(
+			"""select coalesce(sum(ds.depreciation_amount),0) from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent=ads.name
+			where ads.asset=%s and ads.status='Active' and ads.docstatus=1""", v2.name)[0][0])
+		s4b_ok = (
+			flt(vals2["historical_asset_value"]) == 264_000
+			and abs(sched_total - 264_000) <= 0.05   # schedule must carry the NEW value
+		)
+		print(
+			f"s4b adjustment re-spread | HAV={vals2['historical_asset_value']:,.2f} "
+			f"Active-schedule total={sched_total:,.2f} (want 264,000 — new value fully "
+			f"depreciable) {'OK' if s4b_ok else 'FAIL'}"
+		)
+		ok = ok and bool(s4b_ok)
+
 		# ================= S5: composite merge (§12.21, TC-029/049) ======
 		cap_clearing = frappe.db.get_value("Company", company, "default_capitalization_clearing_account")
 		if not cap_clearing:

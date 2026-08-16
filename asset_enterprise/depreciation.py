@@ -307,6 +307,35 @@ def supersede_and_regenerate(
 	return new
 
 
+def regenerate_after_value_change(asset_name, adjustment_date, reason, end_of_life_override=None):
+	"""Supersede + regenerate once the value change is recorded.
+
+	`as_of` is never earlier than the last POSTED schedule date, so an
+	already-posted period is not regenerated (which would duplicate it).
+	"""
+	last_posted = frappe.db.sql(
+		"""
+		select max(ds.schedule_date) from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		  and ifnull(ds.journal_entry, '') != ''
+		""",
+		asset_name,
+	)[0][0]
+	as_of = getdate(adjustment_date or nowdate())
+	if last_posted and getdate(last_posted) > as_of:
+		as_of = getdate(last_posted)
+	try:
+		return supersede_and_regenerate(
+			asset_name,
+			as_of_date=as_of,
+			reason=reason,
+			end_of_life_override=end_of_life_override,
+		)
+	except frappe.ValidationError:
+		return None  # no Active schedule (non-depreciating asset)
+
+
 def active_schedule_horizon(asset_name):
 	"""Last schedule date of the Active generation (the end of life)."""
 	return frappe.db.sql(

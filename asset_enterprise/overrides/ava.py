@@ -62,8 +62,15 @@ class EnterpriseAVA(AssetValueAdjustment):
 			and not flt(self.difference_amount)
 			and flt(self.get("adjusted_life_months") or 0)
 		)
-		if not ul_only:
-			super().on_submit()
+		if self._enterprise():
+			# core reschedules inside on_submit, BEFORE our TCC records the
+			# value change — defer it and regenerate below (§4.3).
+			frappe.flags.ae_defer_reschedule = self.asset
+		try:
+			if not ul_only:
+				super().on_submit()
+		finally:
+			frappe.flags.ae_defer_reschedule = None
 		if not self._enterprise():
 			return
 
@@ -91,6 +98,13 @@ class EnterpriseAVA(AssetValueAdjustment):
 			# A reversed life adjustment must swing the horizon back too.
 			if flt(self.get("adjusted_life_months") or 0):
 				self._apply_life_adjustment(flt(self.adjusted_life_months))
+			elif flt(self.difference_amount):
+				from asset_enterprise.depreciation import regenerate_after_value_change
+
+				regenerate_after_value_change(
+					self.asset, self.date,
+					_("Reversal AVA {0} — prospective recalculation").format(self.name),
+				)
 			return
 
 		category, hav_delta, life_delta = self._classify()
@@ -111,6 +125,17 @@ class EnterpriseAVA(AssetValueAdjustment):
 		# exhausted -> immediate depreciation of the remaining base.
 		if life_delta:
 			self._apply_life_adjustment(life_delta)
+		elif hav_delta:
+			# §4.3 prospective recalc — runs HERE (not inside core's
+			# on_submit) so the new NBV is already recorded.
+			from asset_enterprise.depreciation import regenerate_after_value_change
+
+			regenerate_after_value_change(
+				self.asset, self.date,
+				_("{0} via {1} — prospective recalculation").format(
+					self.get("transaction_type") or "Value adjustment", self.name
+				),
+			)
 
 	def _apply_life_adjustment(self, life_delta):
 		from frappe.utils import add_months, cint, getdate

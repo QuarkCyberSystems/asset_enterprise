@@ -104,6 +104,13 @@ def apply_patches():
 	def reschedule_depreciation(asset_doc, notes, disposal_date=None):
 		from asset_enterprise.depreciation import enterprise_enabled, supersede_and_regenerate
 
+		# Ordering guard: core triggers this from inside on_submit BEFORE
+		# our TCC records the value change, so a regeneration here would
+		# re-spread the PRE-adjustment NBV. The controller sets this flag
+		# and regenerates itself once the Financial Treatment exists.
+		if frappe.flags.get("ae_defer_reschedule") == asset_doc.name:
+			return None
+
 		has_active_schedule = frappe.db.exists(
 			"Asset Depreciation Schedule",
 			{"asset": asset_doc.name, "status": "Active", "docstatus": 1},

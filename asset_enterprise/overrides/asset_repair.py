@@ -30,7 +30,12 @@ class EnterpriseAssetRepair(AssetRepair):
 		if self._enterprise() and self.get("transaction_type") == "Reversal":
 			return self._submit_reversal()
 
-		super().on_submit()
+		if self._enterprise():
+			frappe.flags.ae_defer_reschedule = self.asset  # regenerate after the TCC
+		try:
+			super().on_submit()
+		finally:
+			frappe.flags.ae_defer_reschedule = None
 
 		if self._enterprise() and self.get("capitalize_repair_cost"):
 			from asset_enterprise import tcc
@@ -44,6 +49,12 @@ class EnterpriseAssetRepair(AssetRepair):
 				amount=flt(self.total_repair_cost),
 				hav_delta=flt(self.total_repair_cost),
 				life_delta_months=flt(self.get("increase_in_asset_life") or 0),
+			)
+			from asset_enterprise.depreciation import regenerate_after_value_change
+
+			regenerate_after_value_change(
+				self.asset, self.completion_date or nowdate(),
+				_("Capitalized Repair {0} — prospective recalculation").format(self.name),
 			)
 
 	def _submit_reversal(self):
