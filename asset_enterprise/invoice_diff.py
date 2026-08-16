@@ -54,8 +54,14 @@ def stamp_asset_dimension(doc, method=None):
 	for row in doc.get("accounts") or []:
 		if row.get("asset"):
 			continue
-		if row.get("reference_type") == "Asset" and row.get("reference_name"):
-			row.asset = row.reference_name
+		if row.get("reference_type") != "Asset" or not row.get("reference_name"):
+			continue
+		# A merge or reversal posts against an asset that is on its way to
+		# docstatus 2; the dimension is a Link field and frappe refuses to
+		# link a cancelled document, so leave those rows alone.
+		if frappe.db.get_value("Asset", row.reference_name, "docstatus") == 2:
+			continue
+		row.asset = row.reference_name
 
 
 def pr_on_submit(doc, method=None):
