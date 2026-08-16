@@ -11,7 +11,7 @@ returns consumed stock via Material Receipt).
 import traceback
 
 import frappe
-from frappe.utils import add_days, add_months, flt, get_first_day, get_last_day, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, flt, get_first_day, get_last_day, getdate, nowdate
 
 from asset_enterprise.setup.test_fixtures import make_test_asset, pick_company, pick_plain_account
 
@@ -154,6 +154,39 @@ def _run():
 			f"(want PYA {pya_account}) {'OK' if tc21_ok else 'FAIL'}"
 		)
 		ok = ok and tc21_ok
+
+		# ---- TC-019 / §4.5: first posting batches the elapsed periods ----
+		cu = make_test_asset(company, gross=8_500_000, submit=False, with_depreciation=True)
+		cu.purchase_date = "2025-02-01"
+		cu.available_for_use_date = "2025-02-01"       # calculation basis
+		cu.finance_books[0].depreciation_start_date = "2025-06-30"   # first POSTING
+		cu.finance_books[0].total_number_of_depreciations = 36
+		cu.flags.ignore_permissions = True
+		cu.save()
+		cu.submit()
+		cu_rows = frappe.db.sql(
+			"""select ds.schedule_date, ds.depreciation_amount, ds.days_in_period, ds.daily_rate
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status='Active' and ads.docstatus=1
+			   order by ds.schedule_date""", cu.name, as_dict=True)
+		first = cu_rows[0] if cu_rows else None
+		total = sum(flt(r.depreciation_amount) for r in cu_rows)
+		# design: 150 days (01/02 -> 30/06) x 8,500,000/1,095 = 1,164,383.56
+		tc19_ok = (
+			first
+            and str(first.schedule_date) == "2025-06-30"
+			and cint(first.days_in_period) == 150
+			and abs(flt(first.depreciation_amount) - 1_164_383.56) <= 0.05
+			and abs(flt(first.daily_rate) - 8_500_000 / 1_095) < 0.001
+			and abs(total - 8_500_000) <= 0.05
+		)
+		print(
+			f"tc019  catch-up first row {first and first.schedule_date}: "
+			f"{first and first.depreciation_amount} over {first and first.days_in_period} days "
+			f"(want 1,164,383.56 / 150) total={total:,.2f} {'OK' if tc19_ok else 'FAIL'}"
+		)
+		ok = ok and bool(tc19_ok)
 
 		# --------------- TC-044b: AVA reversal with subsequent depreciation
 		v1 = make_test_asset(company, gross=24_000, submit=True)

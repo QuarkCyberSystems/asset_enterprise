@@ -363,12 +363,29 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 	)
 	if getdate(end_of_life) <= as_of:
 		return None
+
+	# §4.5 first-posting catch-up: when the first POSTING date is later
+	# than the month end of the calculation basis, the first entry
+	# accumulates every period in between (TC-019).
+	first_posting = None
+	if not last_posted:
+		fb_filters = {"parent": asset_name}
+		if finance_book:
+			fb_filters["finance_book"] = finance_book
+		fb_start = frappe.db.get_value(
+			"Asset Finance Book", fb_filters, "depreciation_start_date"
+		)
+		basis = getdate(asset.available_for_use_date)
+		if fb_start and getdate(fb_start) > get_last_day(basis):
+			first_posting = getdate(fb_start)
+
 	try:
 		return supersede_and_regenerate(
 			asset_name,
 			finance_book=finance_book,
 			as_of_date=as_of,
 			end_of_life_override=end_of_life,
+			first_posting_date=first_posting,
 			reason=reason or _("§4.3 day-count rule applied"),
 		)
 	except frappe.ValidationError:
@@ -749,6 +766,33 @@ def post_final_row(asset_name, override_tolerance=0):
 	return frappe.db.get_value("Depreciation Schedule", row.row_name, "journal_entry")
 
 
+def _split_row_by_fiscal_year(row, posting_date, company):
+	"""(prior_year_amount, current_year_amount) for one schedule row.
+
+	A normal row sits wholly in one fiscal year. A §4.5 catch-up row can
+	span several, so its days are apportioned: days falling in a fiscal
+	year earlier than the posting year go to Prior Year Adjustment."""
+	amount = flt(row.depreciation_amount)
+	days = cint(row.get("days_in_period") or 0)
+	end = getdate(row.schedule_date)
+	if days <= 1:
+		return (amount, 0.0) if is_prior_fiscal_year(end, posting_date) else (0.0, amount)
+
+	start = add_days(end, -(days - 1))
+	prior_days = 0
+	cursor = start
+	while cursor <= end:
+		if is_prior_fiscal_year(cursor, posting_date):
+			prior_days += 1
+		cursor = add_days(cursor, 1)
+	if not prior_days:
+		return 0.0, amount
+	if prior_days >= days:
+		return amount, 0.0
+	prior_amount = fa_module_round(amount * prior_days / days, company)
+	return prior_amount, fa_module_round(amount - prior_amount, company)
+
+
 def _post_one(row, posting_date):
 	from asset_enterprise import tcc
 	from asset_enterprise.accounts import get_enterprise_account
@@ -766,13 +810,17 @@ def _post_one(row, posting_date):
 			_("Asset Category Account missing for {0} / {1}").format(asset.asset_category, company)
 		)
 
-	pya = is_prior_fiscal_year(row.schedule_date, posting_date)
-	debit_account = (
-		get_enterprise_account("pya_expense_account", company, asset.asset_category)
-		if pya
-		else aca.depreciation_expense_account
-	)
 	cost_center = row.cost_center or asset.cost_center
+	pya_account = None
+	# §4.7: split a row that SPANS fiscal years into a prior-year and a
+	# current-year debit inside ONE entry (catch-up rows can span years).
+	pya_amount, current_amount = _split_row_by_fiscal_year(row, posting_date, company)
+	if flt(pya_amount):
+		pya_account = get_enterprise_account(
+			"pya_expense_account", company, asset.asset_category
+		)
+	pya = bool(flt(pya_amount)) and not flt(current_amount)
+	debit_account = pya_account if pya else aca.depreciation_expense_account
 
 	je = frappe.get_doc(
 		{
@@ -781,19 +829,34 @@ def _post_one(row, posting_date):
 			"company": company,
 			"posting_date": posting_date,
 			"accounts": [
-				{
-					"account": debit_account,
-					"debit_in_account_currency": row.depreciation_amount,
-					"cost_center": cost_center,
-					"reference_type": "Asset",
-					"reference_name": asset.name,
-				},
-				{
-					"account": aca.accumulated_depreciation_account,
-					"credit_in_account_currency": row.depreciation_amount,
-					"reference_type": "Asset",
-					"reference_name": asset.name,
-				},
+				leg
+				for leg in (
+					{
+						"account": pya_account,
+						"debit_in_account_currency": flt(pya_amount),
+						"cost_center": cost_center,
+						"reference_type": "Asset",
+						"reference_name": asset.name,
+					}
+					if flt(pya_amount)
+					else None,
+					{
+						"account": aca.depreciation_expense_account,
+						"debit_in_account_currency": flt(current_amount),
+						"cost_center": cost_center,
+						"reference_type": "Asset",
+						"reference_name": asset.name,
+					}
+					if flt(current_amount)
+					else None,
+					{
+						"account": aca.accumulated_depreciation_account,
+						"credit_in_account_currency": row.depreciation_amount,
+						"reference_type": "Asset",
+						"reference_name": asset.name,
+					},
+				)
+				if leg
 			],
 		}
 	)
