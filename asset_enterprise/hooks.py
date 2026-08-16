@@ -52,11 +52,15 @@ doc_events = {
 		"on_submit": "asset_enterprise.invoice_diff.pr_on_submit",
 		"before_cancel": "asset_enterprise.invoice_diff.pr_before_cancel",
 	},
-	"Journal Entry": {
-		# GAP-023 / TC-038: fill the Asset accounting dimension from the
-		# row's own Asset reference so GL reports can group by asset.
-		"validate": "asset_enterprise.invoice_diff.stamp_asset_dimension",
-	},
+	# GAP-023 / TC-038: filling the Asset accounting dimension from the
+	# row's own Asset reference makes the General Ledger groupable by
+	# asset, but the dimension is a Link field and frappe refuses to link
+	# a cancelled document — merge and reversal flows post against assets
+	# that are on their way to docstatus 2 (verify_phase8 on the UAT
+	# server). Re-enable once those rows are handled; TC-038 stays open.
+	# "Journal Entry": {
+	# 	"validate": "asset_enterprise.invoice_diff.stamp_asset_dimension",
+	# },
 	"Purchase Invoice": {
 		"validate": "asset_enterprise.invoice_diff.pi_validate",
 		"on_submit": "asset_enterprise.invoice_diff.pi_on_submit",
