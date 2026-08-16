@@ -311,6 +311,118 @@ def _run():
 		)
 		ok = ok and a02_ok
 
+		# ------- GAP-012 client defect (2026-08-16): the allocation table
+		# is a partial-invoice disambiguator, NOT the on-switch for the
+		# invoice-difference treatment. An ordinary invoice that names no
+		# assets must still route its delta.
+		pr5 = frappe.get_doc(
+			{
+				"doctype": "Purchase Receipt",
+				"company": company,
+				"supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [
+					{"item_code": "AE-SMOKE-ITEM", "qty": 1, "rate": 1000,
+					 "asset_location": seed.location}
+				],
+			}
+		)
+		pr5.flags.ignore_permissions = True
+		pr5.insert()
+		pr5.submit()
+		asset5 = frappe.get_all("Asset", filters={"purchase_receipt": pr5.name}, pluck="name")[0]
+		a5 = frappe.get_doc("Asset", asset5)
+		a5.available_for_use_date = nowdate()
+		a5.flags.ignore_permissions = True
+		a5.save()
+		a5.submit()
+
+		pi5 = frappe.get_doc(
+			{
+				"doctype": "Purchase Invoice",
+				"company": company,
+				"supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [
+					{"item_code": "AE-SMOKE-ITEM", "qty": 1, "rate": 1300,  # +300 delta
+					 "purchase_receipt": pr5.name, "pr_detail": pr5.items[0].name}
+				],
+				# deliberately NO pi_asset_allocation — the client's case
+			}
+		)
+		pi5.flags.ignore_permissions = True
+		pi5.insert()
+		pi5.submit()
+
+		auto_rows = frappe.get_all(
+			"PI Asset Allocation", filters={"parent": pi5.name},
+			fields=["asset", "pi_delta_amount"],
+		)
+		auto_ava = frappe.db.get_value(
+			"Asset Value Adjustment",
+			{"asset": asset5, "transaction_type": "Invoice Adjustment", "docstatus": 1},
+			["name", "difference_amount"], as_dict=True,
+		)
+		auto_je = frappe.db.get_value(
+			"Journal Entry",
+			{"user_remark": ("like", f"Invoice delta transfer for {pi5.name}%"), "docstatus": 1},
+			"name",
+		)
+		hav5 = recalculate_asset_values(asset5, save=False)["historical_asset_value"]
+		auto_ok = (
+			len(auto_rows) == 1
+			and auto_rows[0].asset == asset5
+			and flt(auto_rows[0].pi_delta_amount) == 300
+			and auto_ava
+			and flt(auto_ava.difference_amount) == 300
+			and bool(auto_je)
+			and flt(hav5) == 1300
+		)
+		print(
+			f"autoall unallocated PI auto-resolved rows={[(r.asset, r.pi_delta_amount) for r in auto_rows]} "
+			f"AVA={auto_ava and auto_ava.difference_amount} JE={auto_je} HAV={hav5} (want 1300) "
+			f"{'OK' if auto_ok else 'FAIL'}"
+		)
+		ok = ok and bool(auto_ok)
+
+		# Ambiguous partial invoice still asks the user — but SAYS so.
+		pr6 = frappe.get_doc(
+			{
+				"doctype": "Purchase Receipt",
+				"company": company,
+				"supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [
+					{"item_code": "AE-SMOKE-ITEM", "qty": 3, "rate": 1000,
+					 "asset_location": seed.location}
+				],
+			}
+		)
+		pr6.flags.ignore_permissions = True
+		pr6.insert()
+		pr6.submit()
+		pi6 = frappe.get_doc(
+			{
+				"doctype": "Purchase Invoice",
+				"company": company,
+				"supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [
+					{"item_code": "AE-SMOKE-ITEM", "qty": 1, "rate": 1100,
+					 "purchase_receipt": pr6.name, "pr_detail": pr6.items[0].name}
+				],
+			}
+		)
+		pi6.flags.ignore_permissions = True
+		try:
+			pi6.insert()
+			print("ambig  FAIL (partial invoice accepted without an asset selection)")
+			ok = False
+		except frappe.ValidationError as e:
+			g = "Asset Allocation" in str(e)
+			print(f"ambig  partial invoice asks for the asset selection: {'OK' if g else 'FAIL'}")
+			ok = ok and g
+
 	finally:
 		frappe.db.rollback(save_point="phase7_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

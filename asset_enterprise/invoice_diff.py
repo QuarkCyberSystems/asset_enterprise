@@ -125,8 +125,121 @@ def si_validate(doc, method=None):
 # ---------------------------------------------------------------- PI side
 
 
+def _uncovered_assets_for_pr_row(pr_detail, exclude_pi=None):
+	"""Assets created from a PR row that no submitted PI allocation
+	already covers (the qty-only "fully invoiced" rule, CH-04)."""
+	assets = frappe.get_all(
+		"Asset",
+		filters={"purchase_receipt_item": pr_detail, "docstatus": ["<", 2]},
+		order_by="creation asc",
+		pluck="name",
+	)
+	if not assets:
+		return []
+	covered = {
+		row[0]
+		for row in frappe.db.sql(
+			"""
+			select paa.asset from `tabPI Asset Allocation` paa
+			join `tabPurchase Invoice` pi on pi.name = paa.parent
+			where paa.asset in %(assets)s and pi.docstatus = 1
+			  and pi.name != %(pi)s
+			""",
+			{"assets": assets, "pi": exclude_pi or ""},
+		)
+	}
+	return [name for name in assets if name not in covered]
+
+
+def autofill_asset_allocation(doc):
+	"""GAP-012: the allocation table exists to disambiguate PARTIAL
+	invoices (design §GAP-012 N2) — it is not a switch that turns the
+	invoice-difference treatment on. For an ordinary invoice covering
+	the whole receipt row, resolve the assets automatically so the
+	delta routes without the user having to know the table exists.
+
+	Only a genuinely ambiguous partial invoice (more uncovered assets
+	on the PR row than this invoice's qty) still needs a manual pick —
+	and then we say so instead of silently doing nothing.
+	"""
+	if doc.get("pi_asset_allocation"):
+		return  # an explicit selection always wins
+
+	from frappe.utils import cint
+
+	resolved, ambiguous = [], []
+	for item in doc.items:
+		if not item.get("is_fixed_asset") or not item.get("pr_detail"):
+			continue
+		candidates = _uncovered_assets_for_pr_row(item.pr_detail, exclude_pi=doc.name)
+		if not candidates:
+			continue
+		needed = max(1, cint(item.qty))
+		if len(candidates) <= needed:
+			resolved.extend(candidates)
+		else:
+			ambiguous.append((item, candidates, needed))
+
+	if ambiguous:
+		item, candidates, needed = ambiguous[0]
+		frappe.throw(
+			_(
+				"Row {0}: this invoice covers {1} of the {2} assets still uninvoiced "
+				"on receipt row {3}. Pick which ones under <b>Asset Allocation</b> "
+				"so the invoice-vs-receipt difference lands on the right assets "
+				"(GAP-012)."
+			).format(item.idx, needed, len(candidates), item.get("purchase_receipt") or ""),
+			title=_("Select the Assets this Invoice Covers"),
+		)
+
+	for asset_name in resolved:
+		doc.append(
+			"pi_asset_allocation",
+			{
+				"asset": asset_name,
+				"purchase_receipt": frappe.db.get_value("Asset", asset_name, "purchase_receipt"),
+			},
+		)
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def allocatable_assets(doctype, txt, searchfield, start, page_len, filters):
+	"""Link query for PI Asset Allocation → Asset: only assets received
+	on a PR this invoice references, minus the ones a submitted invoice
+	already covers (design §GAP-012 — "the Asset lookup filters out
+	fully-invoiced Assets")."""
+	invoice = (filters or {}).get("purchase_invoice")
+	pr_details = frappe.get_all(
+		"Purchase Invoice Item",
+		filters={"parent": invoice, "is_fixed_asset": 1},
+		pluck="pr_detail",
+	)
+	names = []
+	for pr_detail in filter(None, pr_details):
+		names.extend(_uncovered_assets_for_pr_row(pr_detail, exclude_pi=invoice))
+	if not names:
+		return []
+	return frappe.db.sql(
+		"""
+		select name, asset_name from `tabAsset`
+		where name in %(names)s and (name like %(txt)s or asset_name like %(txt)s)
+		order by name limit %(start)s, %(page_len)s
+		""",
+		{
+			"names": names,
+			"txt": f"%{txt or ''}%",
+			"start": start or 0,
+			"page_len": page_len or 20,
+		},
+	)
+
+
 def pi_validate(doc, method=None):
-	if not _enterprise() or not doc.get("pi_asset_allocation"):
+	if not _enterprise():
+		return
+	autofill_asset_allocation(doc)
+	if not doc.get("pi_asset_allocation"):
 		return
 
 	referenced_prs = {row.purchase_receipt for row in doc.items if row.get("purchase_receipt")}

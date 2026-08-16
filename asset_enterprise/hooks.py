@@ -35,6 +35,9 @@ doctype_js = {
 	# transaction_type — core allows only draft composite assets, which
 	# no valid Capitalized Maintenance target ever is.
 	"Asset Capitalization": "public/js/asset_capitalization.js",
+	# GAP-012: scope the Asset Allocation picker to assets this invoice
+	# can cover, and surface the section on fixed-asset invoices.
+	"Purchase Invoice": "public/js/purchase_invoice.js",
 }
 
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).

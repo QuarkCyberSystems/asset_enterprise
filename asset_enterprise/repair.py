@@ -86,6 +86,112 @@ def repair_missing_opening_entries(company=None, asset=None, dry_run=1):
 	return posted
 
 
+def find_unrouted_invoice_differences(company=None, purchase_invoice=None):
+	"""Submitted Purchase Invoices whose asset rows carry a PI−PR delta
+	that never routed, because the invoice named no assets under Asset
+	Allocation (the pre-2026-08-16 behaviour silently skipped GAP-012)."""
+	from asset_enterprise.invoice_diff import _uncovered_assets_for_pr_row
+
+	conditions, values = ["pi.docstatus = 1"], {}
+	if company:
+		conditions.append("pi.company = %(company)s")
+		values["company"] = company
+	if purchase_invoice:
+		conditions.append("pi.name = %(pi)s")
+		values["pi"] = purchase_invoice
+
+	stuck = []
+	rows = frappe.db.sql(
+		f"""
+		select pi.name pi, pi.posting_date, pi.company, pii.name item, pii.idx,
+		       pii.pr_detail, pii.net_rate pi_rate, pii.qty
+		from `tabPurchase Invoice` pi
+		join `tabPurchase Invoice Item` pii on pii.parent = pi.name
+		where {" and ".join(conditions)}
+		  and pii.is_fixed_asset = 1 and ifnull(pii.pr_detail, '') != ''
+		order by pi.posting_date
+		""",
+		values,
+		as_dict=True,
+	)
+	for row in rows:
+		if frappe.db.count("PI Asset Allocation", {"parent": row.pi}):
+			continue  # allocation exists — GAP-012 already ran
+		pr_rate = frappe.db.get_value("Purchase Receipt Item", row.pr_detail, "net_rate")
+		delta = flt(row.pi_rate) - flt(pr_rate or 0)
+		if not delta:
+			continue
+		candidates = _uncovered_assets_for_pr_row(row.pr_detail, exclude_pi=row.pi)
+		if not candidates:
+			continue
+		row.update({"delta": delta, "assets": candidates})
+		stuck.append(row)
+	return stuck
+
+
+def repair_invoice_differences(company=None, purchase_invoice=None, dry_run=1):
+	"""Replay GAP-012 for invoices that submitted before the allocation
+	auto-resolve fix. The original invoice is never touched — the delta
+	routes through the same transfer JE + Invoice-Adjustment AVA a fresh
+	submit would produce.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.repair_invoice_differences \\
+	        --kwargs "{'purchase_invoice': 'ACC-PINV-2026-00107', 'dry_run': 0}"
+	"""
+	from asset_enterprise.depreciation import enterprise_enabled
+	from asset_enterprise.invoice_diff import pi_on_submit
+
+	if not enterprise_enabled():
+		frappe.throw(_("Enterprise Assets is not enabled."))
+
+	stuck = find_unrouted_invoice_differences(company=company, purchase_invoice=purchase_invoice)
+	if not stuck:
+		print("no invoice differences are stuck")
+		return []
+
+	print(f"{len(stuck)} invoice row(s) with an unrouted difference:")
+	for row in stuck:
+		print(
+			f"  {row.pi} row {row.idx} | delta {row.delta} | "
+			f"asset(s) {', '.join(row.assets[: max(1, int(row.qty or 1))])}"
+		)
+	if cint(dry_run):
+		print("dry run — nothing posted. Re-run with dry_run=0 to route.")
+		return [r.pi for r in stuck]
+
+	by_invoice = {}
+	for row in stuck:
+		by_invoice.setdefault(row.pi, []).extend(row.assets[: max(1, int(row.qty or 1))])
+
+	done = []
+	for pi_name, assets in by_invoice.items():
+		try:
+			for idx, asset_name in enumerate(assets, start=1):
+				frappe.get_doc(
+					{
+						"doctype": "PI Asset Allocation",
+						"parent": pi_name,
+						"parenttype": "Purchase Invoice",
+						"parentfield": "pi_asset_allocation",
+						"idx": idx,
+						"asset": asset_name,
+						"purchase_receipt": frappe.db.get_value(
+							"Asset", asset_name, "purchase_receipt"
+						),
+					}
+				).db_insert()
+			doc = frappe.get_doc("Purchase Invoice", pi_name)
+			pi_on_submit(doc)
+			frappe.db.commit()
+			print(f"  routed {pi_name}: assets {', '.join(assets)}")
+			done.append(pi_name)
+		except Exception as e:
+			frappe.db.rollback()
+			print(f"  FAILED {pi_name}: {str(e)[:160]}")
+	return done
+
+
 def rebuild_schedules_under_daycount_rule(company=None, asset=None, dry_run=1):
 	"""Re-apply the §4.3 day-count rule to schedules that core built
 	(non-uniform daily rate across a leap year). Posted rows are kept.
