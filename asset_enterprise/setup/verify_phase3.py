@@ -145,22 +145,49 @@ def _run():
 		print(f"super  fixture {asset.name} -> active schedule {ads} {'OK' if ads else 'FAIL'}")
 		ok = ok and bool(ads)
 		if ads:
-			new = supersede_and_regenerate(asset.name, as_of_date=frappe.utils.nowdate(), reason="Phase3 smoke")
-			old_status = frappe.db.get_value("Asset Depreciation Schedule", ads, "status")
-			old_docstatus = frappe.db.get_value("Asset Depreciation Schedule", ads, "docstatus")
-			link_ok = new.supersedes == ads
+			# A schedule that never booked anything is a working copy —
+			# regenerating over it must leave no Superseded leftover.
+			interim = supersede_and_regenerate(
+				asset.name, as_of_date=frappe.utils.nowdate(), reason="Phase3 unposted"
+			)
+			gone = not frappe.db.exists("Asset Depreciation Schedule", ads)
+			print(
+				f"super  unposted schedule {ads} removed, not superseded: {'OK' if gone else 'FAIL'}"
+			)
+			ok = ok and gone
+
+			# Once an entry is posted the schedule IS history — supersede it.
+			from erpnext.assets.doctype.asset.depreciation import make_depreciation_entry
+
+			first_row = interim.depreciation_schedule[0]
+			make_depreciation_entry(interim.name, str(first_row.schedule_date))
+			interim.reload()
+
+			new = supersede_and_regenerate(
+				asset.name, as_of_date=frappe.utils.nowdate(), reason="Phase3 smoke"
+			)
+			old_status = frappe.db.get_value("Asset Depreciation Schedule", interim.name, "status")
+			old_docstatus = frappe.db.get_value(
+				"Asset Depreciation Schedule", interim.name, "docstatus"
+			)
+			link_ok = new.supersedes == interim.name
 			rows_n = len(new.depreciation_schedule)
 			future_sum = flt(sum(r.depreciation_amount for r in new.depreciation_schedule), 2)
 			from asset_enterprise.asset_values import recalculate_asset_values
 
-			nbv = recalculate_asset_values(asset.name, save=False)["net_book_value"]
+			values = recalculate_asset_values(asset.name, save=False)
+			total_want = flt(values["net_book_value"]) + flt(values["accumulated_depreciation_value"])
 			print(
-				f"super  old: status={old_status} docstatus={old_docstatus} (want Superseded/1) "
+				f"super  posted schedule: status={old_status} docstatus={old_docstatus} "
+				f"(want Superseded/1) "
 				f"{'OK' if old_status == 'Superseded' and old_docstatus == 1 else 'FAIL'}"
 			)
-			print(f"super  new {new.name}: supersedes-link {'OK' if link_ok else 'FAIL'}; rows={rows_n}; sum={future_sum} vs NBV {nbv}")
+			print(
+				f"super  new {new.name}: supersedes-link {'OK' if link_ok else 'FAIL'}; "
+				f"rows={rows_n}; sum={future_sum} vs cost {total_want}"
+			)
 			ok = ok and old_status == "Superseded" and old_docstatus == 1 and link_ok and rows_n > 0
-			ok = ok and flt(future_sum, 2) == flt(nbv, 2)
+			ok = ok and flt(future_sum, 2) == flt(total_want, 2)
 	finally:
 		frappe.db.rollback(save_point="phase3_verify")
 		leftover = frappe.db.count("Asset", {"asset_name": "AE Smoke Asset"})

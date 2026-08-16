@@ -86,6 +86,73 @@ def repair_missing_opening_entries(company=None, asset=None, dry_run=1):
 	return posted
 
 
+def remove_empty_superseded_schedules(company=None, asset=None, dry_run=1):
+	"""Delete Superseded depreciation schedules that never posted a
+	single entry — working copies left behind before the engine started
+	dropping them (core builds one at Asset submit that the §4.3 rebuild
+	replaces milliseconds later). Anything with a posted or reversed row
+	is history and is never touched.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.remove_empty_superseded_schedules \\
+	        --kwargs "{'dry_run': 0}"
+	"""
+	filters = {"status": "Superseded", "docstatus": 1}
+	if company:
+		filters["company"] = company
+	if asset:
+		filters["asset"] = asset
+
+	targets = []
+	for row in frappe.get_all(
+		"Asset Depreciation Schedule", filters=filters, fields=["name", "asset"]
+	):
+		booked = frappe.db.sql(
+			"""select count(*) from `tabDepreciation Schedule`
+			   where parent = %s and (ifnull(journal_entry, '') != ''
+			                          or ifnull(reversal_journal_entry, '') != '')""",
+			row.name,
+		)[0][0]
+		if not booked:
+			targets.append(row)
+
+	if not targets:
+		print("no empty superseded schedules")
+		return []
+
+	print(f"{len(targets)} superseded schedule(s) that never booked anything:")
+	for row in targets:
+		print(f"  {row.name}  ({row.asset})")
+	if cint(dry_run):
+		print("dry run — nothing deleted. Re-run with dry_run=0 to remove.")
+		return [r.name for r in targets]
+
+	removed = []
+	for row in targets:
+		try:
+			# Re-point anything that chains through this schedule.
+			for child in frappe.get_all(
+				"Asset Depreciation Schedule", filters={"supersedes": row.name}, pluck="name"
+			):
+				frappe.db.set_value(
+					"Asset Depreciation Schedule",
+					child,
+					"supersedes",
+					frappe.db.get_value("Asset Depreciation Schedule", row.name, "supersedes"),
+					update_modified=False,
+				)
+			from asset_enterprise.depreciation import delete_unposted_schedule
+
+			delete_unposted_schedule(row.name)
+			frappe.db.commit()
+			print(f"  removed {row.name}")
+			removed.append(row.name)
+		except Exception as e:
+			frappe.db.rollback()
+			print(f"  FAILED {row.name}: {str(e)[:140]}")
+	return removed
+
+
 def find_unrouted_invoice_differences(company=None, purchase_invoice=None):
 	"""Submitted Purchase Invoices whose asset rows carry a PI−PR delta
 	that never routed, because the invoice named no assets under Asset

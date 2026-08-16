@@ -252,9 +252,17 @@ def supersede_and_regenerate(
 		else []
 	)
 
+	# A schedule that never posted anything is not history — it is a
+	# working copy (core builds one at Asset submit that our §4.3
+	# rebuild replaces milliseconds later). Drop it instead of leaving
+	# a Superseded row, so supersession always means a real event.
+	drop_old = not posted and not any(
+		r.get("reversal_journal_entry") for r in old.get("depreciation_schedule")
+	)
+
 	new = frappe.copy_doc(old)
 	new.status = "Active"
-	new.supersedes = old.name
+	new.supersedes = old.get("supersedes") if drop_old else old.name
 	new.superseded_on = as_of_date
 	new.set("depreciation_schedule", [])
 	accumulated = 0.0
@@ -295,6 +303,15 @@ def supersede_and_regenerate(
 	new.insert()
 	new.submit()
 
+	if drop_old:
+		delete_unposted_schedule(old.name)
+		if reason:
+			new.add_comment(
+				"Comment",
+				_("Replaced an unposted schedule (nothing had been booked): {0}").format(reason),
+			)
+		return new
+
 	if reason:
 		old.add_comment("Comment", _("Superseded by {0}: {1}").format(new.name, reason))
 
@@ -305,6 +322,22 @@ def supersede_and_regenerate(
 			_("{0} unposted rows regenerated prospectively in {1}.").format(len(unposted), new.name),
 		)
 	return new
+
+
+def delete_unposted_schedule(schedule_name):
+	"""Remove a depreciation schedule that never booked an entry. The
+	doc is submitted, so drop its docstatus first — there is nothing to
+	reverse, which is exactly why it qualifies."""
+	frappe.db.set_value(
+		"Asset Depreciation Schedule", schedule_name, "docstatus", 2, update_modified=False
+	)
+	frappe.delete_doc(
+		"Asset Depreciation Schedule",
+		schedule_name,
+		force=1,
+		ignore_permissions=True,
+		delete_permanently=True,
+	)
 
 
 def schedule_horizon_from_life(asset_name, finance_book=None):
