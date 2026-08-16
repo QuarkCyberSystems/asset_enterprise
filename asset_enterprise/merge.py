@@ -422,6 +422,9 @@ def reclassify(cap_doc):
 		{
 			"doctype": "Journal Entry",
 			"voucher_type": "Journal Entry",
+			# opening-style booking under the new category — not a
+			# revaluation for the Fixed Asset Register's adjustment map
+			"is_opening": "Yes",
 			"company": source.company,
 			"posting_date": posting_date,
 			"user_remark": _("Reclassification of {0} to category {1} via {2}").format(

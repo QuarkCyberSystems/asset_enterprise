@@ -10,7 +10,7 @@ import importlib
 
 def run():
 	results = {}
-	for phase in range(1, 13):
+	for phase in range(1, 14):
 		mod = importlib.import_module(f"asset_enterprise.setup.verify_phase{phase}")
 		print(f"\n{'=' * 20} PHASE {phase} {'=' * 20}")
 		try:

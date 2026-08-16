@@ -305,6 +305,9 @@ class EnterpriseAsset(Asset):
 			{
 				"doctype": "Journal Entry",
 				"voucher_type": "Journal Entry",
+				# opening-style booking: excluded from the Fixed Asset
+				# Register's adjustment map (it is not a revaluation)
+				"is_opening": "Yes",
 				"company": self.company,
 				"posting_date": self.get("available_for_use_date") or frappe.utils.nowdate(),
 				"user_remark": _("Existing-Asset Opening for {0} (GAP-001)").format(self.name),
