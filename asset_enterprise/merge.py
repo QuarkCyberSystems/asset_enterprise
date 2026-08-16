@@ -353,6 +353,13 @@ def capitalize_service_costs(cap_doc):
 	posting_date = getdate(cap_doc.posting_date or nowdate())
 	rows = [r for r in (cap_doc.get("service_items") or []) if flt(r.amount)]
 	if not rows:
+		if cap_doc.get("service_items"):
+			frappe.throw(
+				_(
+					"Every service row on {0} has a zero amount — nothing would be "
+					"capitalized onto {1}. Set the quantity and rate."
+				).format(cap_doc.name, cap_doc.target_asset)
+			)
 		return None
 
 	total = 0.0

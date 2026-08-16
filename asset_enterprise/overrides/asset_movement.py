@@ -116,6 +116,14 @@ class EnterpriseAssetMovement(AssetMovement):
 					transaction_type="Movement",
 				)
 		for d in self.assets:
+			# GAP-022 / TC-037: core assigns the custodian only on the
+			# Issue purposes, so a combined Transfer that also names an
+			# employee recorded the change in history but left the asset's
+			# Custodian blank.
+			if d.get("to_employee") and self.purpose == "Transfer":
+				frappe.db.set_value(
+					"Asset", d.asset, "custodian", d.to_employee, update_modified=False
+				)
 			if d.get("target_cost_center"):
 				prior = frappe.db.get_value("Asset", d.asset, "cost_center")
 				if not d.get("source_cost_center"):

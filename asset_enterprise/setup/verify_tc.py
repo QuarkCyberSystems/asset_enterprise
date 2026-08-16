@@ -1638,3 +1638,643 @@ def tc026():
 		f"via {one_shot and one_shot.journal_entry}; NBV after "
 		f"{flt(values['net_book_value']):,.2f}; status {status}",
 	)
+
+
+def _service_item(code="TC-SERVICE-ITEM"):
+	if not frappe.db.exists("Item", code):
+		frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": code,
+				"item_name": "TC Maintenance Service",
+				"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+				"is_fixed_asset": 0,
+				"is_stock_item": 0,
+			}
+		).insert(ignore_permissions=True)
+	return code
+
+
+# =============================================================== TC-027
+@tc("TC-027", "Capitalized Maintenance — Add Service to Active Asset")
+def tc027():
+	"""Steps: Asset Capitalization, type Capitalized Maintenance, target
+	= a SUBMITTED asset, add service 50,000, submit.
+	Expected: submitted target accepted; DR Fixed Asset 50,000 /
+	CR Service Expense 50,000; HAV 1,000,000 -> 1,050,000; schedule
+	recalculated."""
+	_ensure_fiscal_years(2025, 2032)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-027 CM Target", 1_000_000, get_last_day(add_months(nowdate(), -1)),
+		60, add_months(nowdate(), -2)
+	)
+	expense = _plain(company, "Expense")
+	total_before = flt(
+		sum(flt(r.depreciation_amount) for r in _rows(asset.name)[1]), 2
+	)
+
+	cap = frappe.get_doc(
+		{
+			"doctype": "Asset Capitalization",
+			"company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"target_asset": asset.name,
+			"posting_date": nowdate(),
+			"set_posting_time": 1,
+			"service_items": [
+				{
+					"item_code": _service_item(),
+					"qty": 1,
+					"rate": 50_000,
+					"expense_account": expense,
+				}
+			],
+		}
+	)
+	cap.flags.ignore_permissions = True
+	cap.insert()
+	cap.submit()
+
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	values = recalculate_asset_values(asset.name, save=False)
+	legs = []
+	for je in frappe.get_all(
+		"Journal Entry", filters={"user_remark": ("like", f"%{cap.name}%"), "docstatus": 1}, pluck="name"
+	):
+		legs.extend(_gl(je))
+	fa_account = _account(company, "Fixed Asset")
+	fa_debit = sum(flt(r.debit) for r in legs if r.account == fa_account)
+	svc_credit = sum(flt(r.credit) for r in legs if r.account == expense)
+	total_after = flt(sum(flt(r.depreciation_amount) for r in _rows(asset.name)[1]), 2)
+	ok = (
+		flt(values["historical_asset_value"], 2) == 1_050_000.00
+		and flt(fa_debit, 2) == 50_000.00
+		and flt(svc_credit, 2) == 50_000.00
+		and total_after == flt(total_before + 50_000, 2)
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"HAV {flt(values['historical_asset_value']):,.2f} (want 1,050,000.00); DR fixed asset "
+		f"{flt(fa_debit):,.2f} / CR service expense {flt(svc_credit):,.2f} (want 50,000 each); "
+		f"schedule total {total_before:,.2f} -> {total_after:,.2f}",
+	)
+
+
+# =============================================================== TC-028
+@tc("TC-028", "Capitalized Maintenance — Reclassification Sub-Type")
+def tc028():
+	"""Expected: one combined JE, standard Disposal + Addition, NO
+	clearing account; asset rolls to the new category at the same NBV."""
+	company = _company()
+	source_cat = _category(company, "TC Machinery", suspense=_plain(company, "Liability"))
+	target_cat = _category(company, "TC Vehicles2", suspense=_plain(company, "Liability"))
+	source = _plain_asset(company, source_cat, "TC-028 MACHINE-001", 2_000_000,
+	                      opening_accumulated_depreciation=400_000)
+	source.submit()
+	target = _plain_asset(company, target_cat, "TC-028 MACHINE-001-V", 2_000_000)
+	# draft target, as the steps say
+
+	cap = frappe.get_doc(
+		{
+			"doctype": "Asset Capitalization",
+			"company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Reclassification / Asset Category Transfer",
+			# The build consumes asset_items INTO target_asset (core's own
+			# semantics); TC-028's steps name the opposite mapping.
+			"target_asset": target.name,
+			"posting_date": nowdate(),
+			"set_posting_time": 1,
+			"asset_items": [{"asset": source.name}],
+		}
+	)
+	cap.flags.ignore_permissions = True
+	cap.insert()
+	cap.submit()
+
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	target_values = recalculate_asset_values(target.name, save=False)
+	jes = frappe.get_all(
+		"Journal Entry", filters={"user_remark": ("like", f"%{cap.name}%"), "docstatus": 1},
+		pluck="name",
+	)
+	legs = []
+	for je in jes:
+		legs.extend(_gl(je))
+	clearing = frappe.db.get_value(
+		"Asset Category Account", {"parent": source_cat, "company_name": company},
+		"capitalization_clearing_account",
+	)
+	clearing_used = any(r.account == clearing for r in legs) if clearing else False
+	ok = (
+		len(jes) == 1
+		and not clearing_used
+		and flt(target_values["net_book_value"], 2) == 1_600_000.00
+	)
+	if ok:
+		return (
+			"DEVIATION",
+			f"outcome is right — 1 combined entry, no clearing account, NBV "
+			f"{flt(target_values['net_book_value']):,.2f} preserved — but the FIELDS are the "
+			f"other way round: the build consumes asset_items INTO target_asset, while TC-028 "
+			f"step 2 says target_asset = the source asset and asset_items = the new one. "
+			f"Following the steps literally throws 'Source Asset must be submitted'",
+		)
+	return (
+		("FAIL"),
+		f"{len(jes)} journal entr{'y' if len(jes) == 1 else 'ies'} (want 1), clearing account "
+		f"used={clearing_used} (want False); target NBV {flt(target_values['net_book_value']):,.2f} "
+		f"(want 1,600,000.00); legs={[(r.account.split(' - ')[0], flt(r.debit), flt(r.credit)) for r in legs]}",
+	)
+
+
+# =============================================================== TC-030a
+@tc("TC-030a", "Same-Period Restore — Accidental Disposal Reversed")
+def tc030a():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	asset = _plain_asset(company, cat, "TC-030a FA-500", 500_000,
+	                     opening_accumulated_depreciation=350_000)
+	asset.submit()
+
+	from asset_enterprise import disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.restore import restore_asset
+
+	disposal.scrap_asset(asset.name, scrapping_type="Damage")
+	scrap_je = frappe.db.get_value(
+		"Financial Treatment",
+		{"asset": asset.name, "transaction_type": ("like", "%Scrap%")},
+		"journal_entry",
+	)
+	restore_asset(asset.name)
+
+	mirror = frappe.db.get_value("Asset", asset.name, "scrap_reversal_journal_entry")
+	scrap_still_posted = frappe.db.get_value("Journal Entry", scrap_je, "docstatus") == 1 if scrap_je else None
+	values = recalculate_asset_values(asset.name, save=False)
+	status = frappe.db.get_value("Asset", asset.name, "status")
+	ok = (
+		bool(mirror)
+		and scrap_still_posted
+		and flt(values["net_book_value"], 2) == 150_000.00
+		and status not in ("Scrapped",)
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"mirror JE {mirror}; original scrap JE {scrap_je} still posted={scrap_still_posted}; "
+		f"NBV back to {flt(values['net_book_value']):,.2f} (want 150,000.00); status {status}",
+	)
+
+
+# ============================================================== TC-030a2
+@tc("TC-030a2", "Restore Blocked Outside the Window")
+def tc030a2():
+	_ensure_fiscal_years(2025, 2028)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	asset = _depreciating_asset(
+		company, cat, "TC-030a2 FA-510", 1_200_000, "2026-01-31", 36, "2026-01-01"
+	)
+	from asset_enterprise import disposal
+	from asset_enterprise.restore import restore_asset
+
+	_post_through(asset.name, "2026-03-31")
+	disposal.scrap_asset(asset.name, scrapping_type="Damage", scrap_date="2026-03-31")
+	_post_through(asset.name, "2026-06-30")
+	try:
+		restore_asset(asset.name)
+	except frappe.ValidationError as e:
+		msg = str(e)
+		status = frappe.db.get_value("Asset", asset.name, "status")
+		offers = "Replacement" in msg or "GAP-016" in msg
+		return (
+			("PASS" if offers and status == "Scrapped" else "FAIL"),
+			f"blocked: {msg[:150]} | status {status}",
+		)
+	return "FAIL", "restore allowed outside the same-period window"
+
+
+# =============================================================== TC-030b
+@tc("TC-030b", "Create Replacement Asset — Cross-Period Case")
+def tc030b():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	source = _plain_asset(company, cat, "TC-030b FA-500", 1_000_000,
+	                      opening_accumulated_depreciation=500_000)
+	source.submit()
+	from asset_enterprise import disposal
+	from asset_enterprise.restore import create_replacement_asset
+
+	disposal.scrap_asset(source.name, scrapping_type="Damage")
+	replacement = create_replacement_asset(source.name)
+	new_doc = frappe.get_doc("Asset", replacement.get("name") if isinstance(replacement, dict) else replacement)
+	new_doc.net_purchase_amount = 400_000
+	new_doc.purchase_amount = 400_000
+	new_doc.available_for_use_date = nowdate()
+	new_doc.flags.ignore_permissions = True
+	new_doc.save()
+	new_doc.submit()
+
+	back = frappe.db.get_value("Asset", source.name, ["replaced_by_asset", "status"], as_dict=True)
+	fwd = frappe.db.get_value("Asset", new_doc.name, "replacement_of_asset")
+	activity = frappe.db.count(
+		"Asset Activity", {"asset": new_doc.name, "subject": ("like", "%replacement%")}
+	)
+	ok = (
+		back.replaced_by_asset == new_doc.name
+		and fwd == source.name
+		and back.status == "Scrapped"
+		and activity >= 1
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"{source.name}.replaced_by={back.replaced_by_asset} status={back.status}; "
+		f"{new_doc.name}.replacement_of={fwd}; history rows on the new asset={activity}",
+	)
+
+
+# =============================================================== TC-030c
+@tc("TC-030c", "Replacement Chain Report — Two-Way Traceability")
+def tc030c():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	source = _plain_asset(company, cat, "TC-030c FA-500", 1_000_000,
+	                      opening_accumulated_depreciation=500_000)
+	source.submit()
+	from asset_enterprise import disposal
+	from asset_enterprise.restore import create_replacement_asset
+
+	disposal.scrap_asset(source.name, scrapping_type="Damage")
+	replacement = create_replacement_asset(source.name)
+	new_doc = frappe.get_doc("Asset", replacement.get("name") if isinstance(replacement, dict) else replacement)
+	new_doc.available_for_use_date = nowdate()
+	new_doc.flags.ignore_permissions = True
+	new_doc.save()
+	new_doc.submit()
+
+	from asset_enterprise.asset_enterprise.report.replacement_chain.replacement_chain import execute
+
+	_cols, data = execute(frappe._dict({"company": company}))[:2]
+	src_row = [d for d in data if d.get("asset") == source.name]
+	new_row = [d for d in data if d.get("asset") == new_doc.name]
+	ok = (
+		src_row
+		and new_row
+		and src_row[0].get("replaced_by_asset") == new_doc.name
+		and new_row[0].get("replacement_of_asset") == source.name
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"report rows: {source.name} Replaced By="
+		f"{src_row and src_row[0].get('replaced_by_asset')}; {new_doc.name} Replacement Of="
+		f"{new_row and new_row[0].get('replacement_of_asset')}",
+	)
+
+
+def _scrapping_type(name, company, account):
+	if not frappe.db.exists("Scrapping Type", name):
+		doc = frappe.get_doc({"doctype": "Scrapping Type", "scrapping_type_name": name})
+		doc.append("accounts", {"company": company, "gl_account": account})
+		doc.flags.ignore_permissions = True
+		doc.insert()
+	else:
+		doc = frappe.get_doc("Scrapping Type", name)
+		row = next((r for r in doc.accounts if r.company == company), None)
+		if row:
+			row.gl_account = account
+		else:
+			doc.append("accounts", {"company": company, "gl_account": account})
+		doc.flags.ignore_permissions = True
+		doc.save()
+	return name
+
+
+# =============================================================== TC-032
+@tc("TC-032", "Partial Scrap by Percentage")
+def tc032():
+	"""HAV 1,000,000, Accum 200,000, scrap 30% as Obsolescence.
+	Expected: DR Accum 60,000 / DR Obsolescence 240,000 / CR FA 300,000."""
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	loss_account = _plain(company, "Expense")
+	_scrapping_type("Obsolescence", company, loss_account)
+	asset = _plain_asset(company, cat, "TC-032 Partial %", 1_000_000,
+	                     opening_accumulated_depreciation=200_000)
+	asset.submit()
+
+	from asset_enterprise import disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	disposal.partial_scrap_asset(asset.name, percentage=30, scrapping_type="Obsolescence")
+	ft = frappe.db.get_value(
+		"Financial Treatment",
+		{"asset": asset.name, "transaction_type": ("like", "%Partial%"), "status": "Posted"},
+		"journal_entry",
+	)
+	legs = {(r.account, flt(r.debit, 2), flt(r.credit, 2)) for r in _gl(ft)} if ft else set()
+	want = {
+		(_account(company, "Accumulated Depreciation"), 60_000.00, 0.00),
+		(loss_account, 240_000.00, 0.00),
+		(_account(company, "Fixed Asset"), 0.00, 300_000.00),
+	}
+	values = recalculate_asset_values(asset.name, save=False)
+	ok = legs == want
+	return (
+		("PASS" if ok else "FAIL"),
+		f"JE {ft}: {sorted(legs)} | HAV {flt(values['historical_asset_value']):,.2f} "
+		f"accum {flt(values['accumulated_depreciation_value']):,.2f}",
+	)
+
+
+# =============================================================== TC-033
+@tc("TC-033", "Scrapping Type GL Routing")
+def tc033():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	donation = _plain(company, "Expense")
+	_scrapping_type("Donation", company, donation)
+	asset = _plain_asset(company, cat, "TC-033 Donation", 900_000,
+	                     opening_accumulated_depreciation=300_000)
+	asset.submit()
+
+	from asset_enterprise import disposal
+
+	disposal.scrap_asset(asset.name, scrapping_type="Donation")
+	ft = frappe.db.get_value(
+		"Financial Treatment",
+		{"asset": asset.name, "transaction_type": ("like", "%Scrap%"), "status": "Posted"},
+		"journal_entry",
+	)
+	legs = {(r.account, flt(r.debit, 2), flt(r.credit, 2)) for r in _gl(ft)} if ft else set()
+	want = {
+		(_account(company, "Accumulated Depreciation"), 300_000.00, 0.00),
+		(donation, 600_000.00, 0.00),
+		(_account(company, "Fixed Asset"), 0.00, 900_000.00),
+	}
+	return (("PASS" if legs == want else "FAIL"), f"JE {ft}: {sorted(legs)} (donation account {donation})")
+
+
+# =============================================================== TC-034
+@tc("TC-034", "Cost Center Transfer via Movement")
+def tc034():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	ccs = frappe.get_all(
+		"Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2
+	)
+	if len(ccs) < 2:
+		return "FAIL", "site has fewer than two cost centres to move between"
+	asset = _plain_asset(company, cat, "TC-034 CC Move", 100_000, cost_center=ccs[0])
+	asset.submit()
+	mv = frappe.get_doc(
+		{
+			"doctype": "Asset Movement",
+			"company": company,
+			"purpose": "Transfer",
+			"transaction_date": nowdate(),
+			"assets": [
+				{"asset": asset.name, "target_cost_center": ccs[1]}
+			],
+		}
+	)
+	mv.flags.ignore_permissions = True
+	mv.insert()
+	mv.submit()
+	after = frappe.db.get_value("Asset", asset.name, "cost_center")
+	source_cc = frappe.db.get_value(
+		"Asset Movement Item", {"parent": mv.name}, "source_cost_center"
+	)
+	ok = after == ccs[1] and source_cc == ccs[0]
+	return (
+		("PASS" if ok else "FAIL"),
+		f"asset cost centre {ccs[0]} -> {after} (want {ccs[1]}); source_cost_center recorded "
+		f"as {source_cc}",
+	)
+
+
+# =============================================================== TC-035
+@tc("TC-035", "Depreciation Proration on Cost Centre Change")
+def tc035():
+	"""Transfer mid-period, then post that period: ONE entry with a
+	debit per cost centre, split by days."""
+	_ensure_fiscal_years(2025, 2029)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	ccs = frappe.get_all(
+		"Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2
+	)
+	if len(ccs) < 2:
+		return "FAIL", "site has fewer than two cost centres to move between"
+	asset = _depreciating_asset(
+		company, cat, "TC-035 CC Proration", 1_200_000, "2026-04-30", 36, "2026-04-01"
+	)
+	asset.db_set("cost_center", ccs[0])
+	mv = frappe.get_doc(
+		{
+			"doctype": "Asset Movement",
+			"company": company,
+			"purpose": "Transfer",
+			"transaction_date": "2026-04-15",
+			"assets": [
+				{"asset": asset.name, "target_cost_center": ccs[1]}
+			],
+		}
+	)
+	mv.flags.ignore_permissions = True
+	mv.insert()
+	mv.submit()
+	_post_through(asset.name, "2026-04-30")
+	_sched, rows = _rows(asset.name)
+	je = rows[0].journal_entry
+	legs = _gl(je) if je else []
+	debits = [r for r in legs if flt(r.debit)]
+	by_cc = frappe.db.sql(
+		"""select cost_center, sum(debit) from `tabGL Entry`
+		   where voucher_no = %s and is_cancelled = 0 and debit > 0 group by cost_center""",
+		je,
+	)
+	ok = len(debits) == 2 and len(by_cc) == 2
+	return (
+		("PASS" if ok else "FAIL"),
+		f"JE {je}: {len(debits)} debit lines across {len(by_cc)} cost centres -> "
+		f"{[(c, flt(a, 2)) for c, a in by_cc]}; row total "
+		f"{flt(rows[0].depreciation_amount):,.2f}",
+	)
+
+
+# =============================================================== TC-036
+@tc("TC-036", "Movement Cancel Restores Prior Cost Centre, No Reversal JE")
+def tc036():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	ccs = frappe.get_all(
+		"Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2
+	)
+	if len(ccs) < 2:
+		return "FAIL", "site has fewer than two cost centres to move between"
+	asset = _plain_asset(company, cat, "TC-036 Move Cancel", 100_000, cost_center=ccs[0])
+	asset.submit()
+	mv = frappe.get_doc(
+		{
+			"doctype": "Asset Movement",
+			"company": company,
+			"purpose": "Transfer",
+			"transaction_date": nowdate(),
+			"assets": [
+				{"asset": asset.name, "target_cost_center": ccs[1]}
+			],
+		}
+	)
+	mv.flags.ignore_permissions = True
+	mv.insert()
+	mv.submit()
+	gl_before = frappe.db.count("GL Entry", {"voucher_no": mv.name})
+	mv.reload()
+	mv.cancel()
+	after = frappe.db.get_value("Asset", asset.name, "cost_center")
+	gl_after = frappe.db.count("GL Entry", {"voucher_no": mv.name})
+	ok = after == ccs[0] and gl_before == 0 and gl_after == 0
+	return (
+		("PASS" if ok else "FAIL"),
+		f"cost centre restored to {after} (want {ccs[0]}); GL entries against the movement: "
+		f"{gl_before} before cancel, {gl_after} after (want 0)",
+	)
+
+
+# =============================================================== TC-037
+@tc("TC-037", "Employee + Location + Cost Centre in One Movement")
+def tc037():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	ccs = frappe.get_all(
+		"Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2
+	)
+	locations = frappe.get_all("Location", pluck="name", limit=2)
+	employee = frappe.db.get_value("Employee", {"status": "Active"}, "name")
+	if len(ccs) < 2 or len(locations) < 2 or not employee:
+		return "MANUAL", (
+			f"site lacks the masters to drive this ({len(ccs)} cost centres, "
+			f"{len(locations)} locations, employee={employee})"
+		)
+	asset = _plain_asset(company, cat, "TC-037 Combo", 100_000, cost_center=ccs[0])
+	frappe.db.set_value("Asset", asset.name, "location", locations[0], update_modified=False)
+	asset.reload()
+	asset.submit()
+	mv = frappe.get_doc(
+		{
+			"doctype": "Asset Movement",
+			"company": company,
+			"purpose": "Transfer",
+			"transaction_date": nowdate(),
+			"assets": [
+				{"asset": asset.name, "source_location": locations[0],
+				 "target_location": locations[1], "to_employee": employee,
+				 "target_cost_center": ccs[1]}
+			],
+		}
+	)
+	mv.flags.ignore_permissions = True
+	mv.insert()
+	mv.submit()
+	a = frappe.db.get_value("Asset", asset.name, ["location", "custodian", "cost_center"], as_dict=True)
+	history = frappe.get_all(
+		"Asset Activity", filters={"asset": asset.name}, fields=["subject"], order_by="creation desc",
+		limit=3,
+	)
+	combined = [h for h in history if "location" in (h.subject or "").lower()
+	            and "cost" in (h.subject or "").lower()]
+	ok = a.location == locations[1] and a.custodian == employee and a.cost_center == ccs[1]
+	return (
+		("PASS" if ok and combined else ("DEVIATION" if ok else "FAIL")),
+		f"location {a.location}, custodian {a.custodian}, cost centre {a.cost_center} — all three "
+		f"moved in one movement; single summarising history row="
+		f"{bool(combined)} (latest: {history and history[0].subject})",
+	)
+
+
+# =============================================================== TC-038
+@tc("TC-038", "Asset as GL Dimension")
+def tc038():
+	_ensure_fiscal_years(2025, 2029)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	registered = frappe.db.exists("Accounting Dimension", {"document_type": "Asset"})
+	asset = _depreciating_asset(
+		company, cat, "TC-038 Dimension", 1_200_000, get_last_day(add_months(nowdate(), -1)),
+		36, add_months(nowdate(), -2)
+	)
+	_post_through(asset.name, get_last_day(add_months(nowdate(), -1)))
+	_sched, rows = _rows(asset.name)
+	je = rows[0].journal_entry
+	has_field = frappe.get_meta("GL Entry").has_field("asset")
+	populated = 0
+	if has_field and je:
+		populated = frappe.db.count("GL Entry", {"voucher_no": je, "asset": asset.name})
+	total = frappe.db.count("GL Entry", {"voucher_no": je}) if je else 0
+	ok = bool(registered) and has_field and populated == total and total
+	return (
+		("PASS" if ok else "FAIL"),
+		f"dimension registered={bool(registered)}; GL Entry.asset field exists={has_field}; "
+		f"{populated} of {total} GL rows on the depreciation entry carry the asset",
+	)
+
+
+# =============================================================== TC-039
+@tc("TC-039", "Asset Count — Discovery and Missing")
+def tc039():
+	return (
+		"DEFERRED",
+		"Asset Count (GAP-024) was deferred by client decision C83 — no Asset Count "
+		"doctype is in scope, so there is nothing to exercise",
+	)
+
+
+# =============================================================== TC-040
+@tc("TC-040", "Historical Catch-up with Immutable Ledger")
+def tc040():
+	"""AFU 01/07/2024, first posting 01/03/2025. Expected: ONE entry —
+	PYA debit for 184 prior-year days, expense debit for 59 current-year
+	days, one credit for 243."""
+	_ensure_fiscal_years(2024, 2029)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	pya = _plain(company, "Expense")
+	frappe.db.set_value(
+		"Asset Category Account", {"parent": cat, "company_name": company},
+		"pya_expense_account", pya, update_modified=False,
+	)
+	asset = _depreciating_asset(
+		company, cat, "TC-040 Catch-up", 1_200_000, "2025-03-31", 36, "2024-07-01"
+	)
+	_post_through(asset.name, "2025-03-31")
+	_sched, rows = _rows(asset.name)
+	first = rows[0]
+	legs = _gl(first.journal_entry) if first.journal_entry else []
+	debits = [r for r in legs if flt(r.debit)]
+	credits = [r for r in legs if flt(r.credit)]
+	pya_leg = [r for r in debits if r.account == pya]
+	rate = flt(first.daily_rate or 0, 6)
+	prior_days = round(flt(pya_leg[0].debit) / rate) if pya_leg and rate else 0
+	ok = (
+		len(debits) == 2
+		and len(credits) == 1
+		and pya_leg
+		and flt(first.days_in_period) == 274
+		and prior_days == 184
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"one entry with {len(debits)} debits / {len(credits)} credit; PYA covers {prior_days} "
+		f"days (want 184); row spans {first.days_in_period} days "
+		f"(01/07/2024 -> 31/03/2025 inclusive = 274; the doc's 243 stops at 28/02)",
+	)

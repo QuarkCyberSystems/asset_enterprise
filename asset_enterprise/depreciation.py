@@ -860,6 +860,105 @@ def _split_row_by_fiscal_year(row, posting_date, company):
 	return prior_amount, fa_module_round(amount - prior_amount, company)
 
 
+def cost_center_segments(asset, row):
+	"""GAP-021 / TC-035: a cost-centre change part-way through a period
+	splits that period's debit between the two centres by days. The
+	primitive existed but nothing called it, so the whole period landed
+	on whichever centre the asset happened to carry at posting time."""
+	end = getdate(row.schedule_date)
+	days = cint(row.days_in_period) or (date_diff(end, end) + 1)
+	start = add_days(end, -(days - 1))
+	moves = frappe.db.sql(
+		"""select am.transaction_date, ami.target_cost_center, ami.source_cost_center
+		   from `tabAsset Movement Item` ami
+		   join `tabAsset Movement` am on am.name = ami.parent
+		   where ami.asset = %s and am.docstatus = 1
+		     and ifnull(ami.target_cost_center, '') != ''
+		     and am.transaction_date > %s and am.transaction_date <= %s
+		   order by am.transaction_date""",
+		(row.asset, start, end),
+		as_dict=True,
+	)
+	fallback = row.cost_center or asset.cost_center
+	if not moves:
+		return [(fallback, flt(row.depreciation_amount))]
+
+	company = asset.company
+	boundaries = []
+	current_cc = moves[0].source_cost_center or fallback
+	cursor = start
+	for move in moves:
+		change = getdate(move.transaction_date)
+		segment_days = date_diff(change, cursor)
+		if segment_days > 0:
+			boundaries.append((current_cc, segment_days))
+		current_cc = move.target_cost_center
+		cursor = change
+	remaining = date_diff(end, cursor) + 1
+	if remaining > 0:
+		boundaries.append((current_cc, remaining))
+
+	total_days = sum(d for _cc, d in boundaries) or days
+	amount = flt(row.depreciation_amount)
+	out, allocated = [], 0.0
+	for idx, (cc, seg_days) in enumerate(boundaries):
+		if idx == len(boundaries) - 1:
+			part = fa_module_round(amount - allocated, company)
+		else:
+			part = fa_module_round(amount * seg_days / total_days, company)
+		allocated = flt(allocated + part)
+		out.append((cc, part))
+	return [(cc, part) for cc, part in out if flt(part)]
+
+
+def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount, segments, cost_center):
+	"""One debit per cost centre the asset sat in during the period
+	(GAP-021 / TC-035), plus the prior-year debit when the period spans
+	fiscal years (§4.7), against a single accumulated-depreciation credit."""
+	legs = []
+	if flt(pya_amount):
+		legs.append(
+			{
+				"account": pya_account,
+				"debit_in_account_currency": flt(pya_amount),
+				"cost_center": segments[0][0] if segments else cost_center,
+				"reference_type": "Asset",
+				"reference_name": asset.name,
+			}
+		)
+	if flt(current_amount):
+		# Spread the current-year portion across the period's cost centres
+		# in the same proportion the segmentation produced.
+		total = flt(row.depreciation_amount) or flt(current_amount)
+		allocated = 0.0
+		usable = segments or [(cost_center, flt(current_amount))]
+		for idx, (cc, part) in enumerate(usable):
+			if idx == len(usable) - 1:
+				amount = fa_module_round(flt(current_amount) - allocated, asset.company)
+			else:
+				amount = fa_module_round(flt(current_amount) * flt(part) / total, asset.company)
+			allocated = flt(allocated + amount)
+			if flt(amount):
+				legs.append(
+					{
+						"account": aca.depreciation_expense_account,
+						"debit_in_account_currency": amount,
+						"cost_center": cc,
+						"reference_type": "Asset",
+						"reference_name": asset.name,
+					}
+				)
+	legs.append(
+		{
+			"account": aca.accumulated_depreciation_account,
+			"credit_in_account_currency": row.depreciation_amount,
+			"reference_type": "Asset",
+			"reference_name": asset.name,
+		}
+	)
+	return legs
+
+
 def _post_one(row, posting_date):
 	from asset_enterprise import tcc
 	from asset_enterprise.accounts import get_enterprise_account
@@ -878,6 +977,7 @@ def _post_one(row, posting_date):
 		)
 
 	cost_center = row.cost_center or asset.cost_center
+	segments = cost_center_segments(asset, row)
 	pya_account = None
 	# §4.7: split a row that SPANS fiscal years into a prior-year and a
 	# current-year debit inside ONE entry (catch-up rows can span years).
@@ -895,36 +995,9 @@ def _post_one(row, posting_date):
 			"voucher_type": "Depreciation Entry",
 			"company": company,
 			"posting_date": posting_date,
-			"accounts": [
-				leg
-				for leg in (
-					{
-						"account": pya_account,
-						"debit_in_account_currency": flt(pya_amount),
-						"cost_center": cost_center,
-						"reference_type": "Asset",
-						"reference_name": asset.name,
-					}
-					if flt(pya_amount)
-					else None,
-					{
-						"account": aca.depreciation_expense_account,
-						"debit_in_account_currency": flt(current_amount),
-						"cost_center": cost_center,
-						"reference_type": "Asset",
-						"reference_name": asset.name,
-					}
-					if flt(current_amount)
-					else None,
-					{
-						"account": aca.accumulated_depreciation_account,
-						"credit_in_account_currency": row.depreciation_amount,
-						"reference_type": "Asset",
-						"reference_name": asset.name,
-					},
-				)
-				if leg
-			],
+			"accounts": _depreciation_legs(
+				asset, aca, row, pya_account, pya_amount, current_amount, segments, cost_center
+			),
 		}
 	)
 	je.flags.ignore_permissions = True

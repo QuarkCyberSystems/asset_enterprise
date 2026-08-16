@@ -1,5 +1,6 @@
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 from erpnext.assets.doctype.asset_capitalization.asset_capitalization import (
 	AssetCapitalization,
@@ -92,6 +93,13 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 					"(Capitalized Repair) for stock items, or Standard Capitalization."
 				)
 			)
+		# Core computes the service row's amount in client script only, so
+		# a row created any other way (API, import, test) reached submit
+		# with amount 0 and capitalized nothing at all.
+		for row in self.get("service_items") or []:
+			if not flt(row.get("amount")) and flt(row.get("qty")) and flt(row.get("rate")):
+				row.amount = flt(row.qty) * flt(row.rate)
+
 		# §12.3 / TC-027 / TC-046: service costs may be capitalized onto a
 		# submitted asset; asset rows merge components. At least one.
 		if not self.get("asset_items") and not self.get("service_items"):
