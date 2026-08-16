@@ -355,6 +355,43 @@ def _run():
 		)
 		ok = ok and bool(s5_ok)
 
+		# ====== S5b: TC-027/TC-046 service capitalized onto submitted asset
+		svc_item = "AE13 Service Item"
+		if not frappe.db.exists("Item", svc_item):
+			frappe.get_doc(
+				{"doctype": "Item", "item_code": svc_item, "item_name": svc_item,
+				 "item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+				 "is_stock_item": 0, "is_fixed_asset": 0}
+			).insert(ignore_permissions=True)
+		svc_expense = _mk_account(company, "AE13 Service Expense", "Expense")
+		t2 = make_test_asset(company, gross=1_000_000, submit=True)
+		b_fa3, b_svc = gl_asset_sum(fa, t2.name), gl_bal(svc_expense)
+		cap_s = frappe.get_doc(
+			{"doctype": "Asset Capitalization", "transaction_type": "Capitalized Maintenance",
+			 "transaction_sub_type": "Standard Maintenance", "target_asset": t2.name,
+			 "company": company, "posting_date": nowdate(),
+			 "posting_time": frappe.utils.nowtime(), "entry_type": "Capitalization",
+			 "service_items": [{"item_code": svc_item, "qty": 1, "rate": 50_000,
+				"amount": 50_000, "expense_account": svc_expense}]}
+		)
+		cap_s.flags.ignore_permissions = True
+		cap_s.flags.ignore_mandatory = True
+		cap_s.insert()
+		cap_s.submit()
+		d_fa3 = gl_asset_sum(fa, t2.name) - b_fa3
+		d_svc = gl_bal(svc_expense) - b_svc
+		hav_t2 = flt(recalculate_asset_values(t2.name, save=False)["historical_asset_value"])
+		reg_t2 = register_row(company, t2.name)
+		s5b_ok = (
+			d_fa3 == 50_000 and d_svc == -50_000 and hav_t2 == 1_050_000
+			and reg_t2 is not None
+		)
+		print(
+			f"s5b service cap | GL Δ FA={d_fa3} (want +50000) ServiceExp={d_svc} (want -50000) "
+			f"| HAV={hav_t2} (want 1050000) {'OK' if s5b_ok else 'FAIL'}"
+		)
+		ok = ok and bool(s5b_ok)
+
 		# ================= S6: reclassification (§12.13, TC-028) =========
 		fa_b = _mk_account(company, "AE13 FA Category B", "Asset", "Fixed Asset")
 		ac_b = _mk_account(company, "AE13 Accum Category B", "Asset", "Accumulated Depreciation")

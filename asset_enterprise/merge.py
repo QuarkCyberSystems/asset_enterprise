@@ -335,6 +335,84 @@ def _resupersede(target_name, posting_date, cap_doc):
 		pass  # composite without an Active schedule — value-only
 
 
+def capitalize_service_costs(cap_doc):
+	"""§12.3 / TC-027 / TC-046: capitalize SERVICE costs onto a SUBMITTED
+	target asset (Capitalized Maintenance, no asset merge involved).
+
+	    DR Fixed Asset Cost (target)   [capitalized amount]
+	       CR Service Expense Account  [per service row]
+
+	The target's HAV rises by the capitalized amount and its schedule is
+	recalculated prospectively via the centralized rule. Stock rows are
+	not handled here — they consume inventory and route through Asset
+	Repair (Capitalized Repair).
+	"""
+	from asset_enterprise import tcc
+
+	target = frappe.get_doc("Asset", cap_doc.target_asset)
+	posting_date = getdate(cap_doc.posting_date or nowdate())
+	rows = [r for r in (cap_doc.get("service_items") or []) if flt(r.amount)]
+	if not rows:
+		return None
+
+	total = 0.0
+	accounts = []
+	for row in rows:
+		if not row.get("expense_account"):
+			frappe.throw(
+				_("Service row {0} ({1}): set an Expense Account — it is the credit "
+				  "side of the capitalization (§12.3).").format(row.idx, row.item_code)
+			)
+		amount = fa_module_round(flt(row.amount), target.company)
+		accounts.append(
+			{
+				"account": row.expense_account,
+				"credit_in_account_currency": amount,
+				"cost_center": row.get("cost_center") or target.get("cost_center"),
+			}
+		)
+		total = fa_module_round(total + amount, target.company)
+
+	tgt_accounts = _category_accounts(target)
+	accounts.insert(
+		0,
+		{
+			"account": tgt_accounts.fixed_asset_account,
+			"debit_in_account_currency": total,
+			"cost_center": target.get("cost_center"),
+			"reference_type": "Asset",
+			"reference_name": target.name,
+		},
+	)
+
+	je = frappe.get_doc(
+		{
+			"doctype": "Journal Entry",
+			"voucher_type": "Journal Entry",
+			"company": target.company,
+			"posting_date": posting_date,
+			"user_remark": _("Capitalized Maintenance (service) via {0}").format(cap_doc.name),
+			"accounts": accounts,
+		}
+	)
+	je.flags.ignore_permissions = True
+	je.submit()
+
+	tcc.apply(
+		source_doc=cap_doc,
+		category="Addition",
+		transaction_type="Capitalized Maintenance — Service",
+		asset=target.name,
+		posting_date=posting_date,
+		amount=total,
+		hav_delta=total,
+		journal_entry=je.name,
+	)
+	# Prospective recalculation over the increased base (TC-027/TC-046).
+	_resupersede(target.name, posting_date, cap_doc)
+	return je.name
+
+
 def reclassify(cap_doc):
 	"""GAP-014 Reclassification sub-type (Phase 11 F5) — §3.6/§12.13
 	corrected model: standard Disposal (old category) + Addition (new
@@ -512,40 +590,47 @@ def reverse_merge(reversal_doc):
 	source_cap = frappe.get_doc("Asset Capitalization", reversal_doc.reversal_of_capitalization)
 	posting_date = getdate(reversal_doc.posting_date or nowdate())
 
-	# Mirror JE: swap the original merge JE's debits and credits.
-	orig_je_name = frappe.db.get_value(
+	# Mirror EVERY JE the capitalization posted — a Capitalized
+	# Maintenance may carry a merge JE and/or a service-capitalization
+	# JE (§12.3), and both must be reversed.
+	orig_jes = frappe.get_all(
 		"Journal Entry",
-		{"user_remark": ("like", f"%{source_cap.name}%"), "docstatus": 1},
-		"name",
+		filters={"user_remark": ("like", f"%{source_cap.name}%"), "docstatus": 1},
+		pluck="name",
+		order_by="creation",
 	)
-	if not orig_je_name:
-		frappe.throw(_("Merge Journal Entry for {0} not found.").format(source_cap.name))
-	orig_je = frappe.get_doc("Journal Entry", orig_je_name)
-	mirror = frappe.get_doc(
-		{
-			"doctype": "Journal Entry",
-			"voucher_type": "Journal Entry",
-			"company": orig_je.company,
-			"posting_date": posting_date,
-			"user_remark": _("Reversal of Capitalized Maintenance {0} via {1}").format(
-				source_cap.name, reversal_doc.name
-			),
-			"accounts": [
-				{
-					"account": a.account,
-					"debit_in_account_currency": a.credit_in_account_currency,
-					"credit_in_account_currency": a.debit_in_account_currency,
-					"cost_center": a.cost_center,
-					"reference_type": a.reference_type,
-					"reference_name": a.reference_name,
-				}
-				for a in orig_je.accounts
-			],
-		}
-	)
-	mirror.flags.ignore_permissions = True
-	mirror.flags.ignore_links = True
-	mirror.submit()
+	if not orig_jes:
+		frappe.throw(_("Journal Entry for capitalization {0} not found.").format(source_cap.name))
+
+	mirror = None
+	for je_name in orig_jes:
+		orig_je = frappe.get_doc("Journal Entry", je_name)
+		m = frappe.get_doc(
+			{
+				"doctype": "Journal Entry",
+				"voucher_type": orig_je.voucher_type,
+				"company": orig_je.company,
+				"posting_date": posting_date,
+				"user_remark": _("Reversal of Capitalized Maintenance {0} via {1} (mirrors {2})").format(
+					source_cap.name, reversal_doc.name, je_name
+				),
+				"accounts": [
+					{
+						"account": a.account,
+						"debit_in_account_currency": a.credit_in_account_currency,
+						"credit_in_account_currency": a.debit_in_account_currency,
+						"cost_center": a.cost_center,
+						"reference_type": a.reference_type,
+						"reference_name": a.reference_name,
+					}
+					for a in orig_je.accounts
+				],
+			}
+		)
+		m.flags.ignore_permissions = True
+		m.flags.ignore_links = True
+		m.submit()
+		mirror = mirror or m
 
 	# Pair every FT the merge created.
 	for ft_name in frappe.get_all(

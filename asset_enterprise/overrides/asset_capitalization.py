@@ -12,11 +12,12 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 
 	transaction_type routing:
 	- "Standard Capitalization" — untouched core behavior.
-	- "Capitalized Maintenance" — allows a SUBMITTED composite target;
-	  asset_items are merged via the two-leg Capitalization Clearing GL
-	  (merge.py). Scope note: CM handles asset merges only — stock /
-	  service additions to an existing asset flow through Asset Repair
-	  (Capitalized Repair, GAP-033) or Standard Capitalization.
+	- "Capitalized Maintenance" — allows a SUBMITTED target of any type:
+	  asset_items are merged via the two-leg Capitalization Clearing GL,
+	  and service_items are capitalized onto the target per §12.3
+	  (DR Fixed Asset / CR Service Expense — TC-027 / TC-046). Both may
+	  appear on one document. Stock rows consume inventory and stay on
+	  the Asset Repair (Capitalized Repair, GAP-033) route.
 	- "Reversal of Capitalized Maintenance" — dedicated counter-doc
 	  (per 2026-07-14 meeting): mirrors both legs, pairs FTs, marks
 	  Merge Log rows Reversed. Cannot itself be cancelled.
@@ -84,16 +85,22 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 					target.name, target.status
 				)
 			)
-		if self.get("stock_items") or self.get("service_items"):
+		if self.get("stock_items"):
 			frappe.throw(
 				_(
-					"Capitalized Maintenance merges existing Assets only. For stock or "
-					"service additions use Asset Repair (Capitalized Repair) or "
-					"Standard Capitalization."
+					"Capitalized Maintenance does not consume stock. Use Asset Repair "
+					"(Capitalized Repair) for stock items, or Standard Capitalization."
 				)
 			)
-		if not self.get("asset_items"):
-			frappe.throw(_("Capitalized Maintenance requires at least one source Asset row."))
+		# §12.3 / TC-027 / TC-046: service costs may be capitalized onto a
+		# submitted asset; asset rows merge components. At least one.
+		if not self.get("asset_items") and not self.get("service_items"):
+			frappe.throw(
+				_(
+					"Capitalized Maintenance requires at least one source Asset row "
+					"(component merge) or Service row (cost capitalization)."
+				)
+			)
 
 		if self.get("transaction_sub_type") == "Reclassification / Asset Category Transfer":
 			self._validate_reclassification(target)
@@ -150,8 +157,17 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 					"Comment", _("Reclassification posted via Journal Entry {0}.").format(je)
 				)
 				return
-			je = merge.merge_sources_into_composite(self)
-			self.add_comment("Comment", _("Merge posted via Journal Entry {0}.").format(je))
+			if self.get("asset_items"):
+				je = merge.merge_sources_into_composite(self)
+				self.add_comment("Comment", _("Merge posted via Journal Entry {0}.").format(je))
+			# §12.3 / TC-027 / TC-046: service costs capitalized onto the
+			# submitted target (may accompany a component merge).
+			svc_je = merge.capitalize_service_costs(self)
+			if svc_je:
+				self.add_comment(
+					"Comment",
+					_("Service capitalization posted via Journal Entry {0}.").format(svc_je),
+				)
 		else:  # Reversal of Capitalized Maintenance
 			je = merge.reverse_merge(self)
 			self.add_comment("Comment", _("Reversal posted via Journal Entry {0}.").format(je))
@@ -183,11 +199,27 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 				fields=["net_book_value_at_merge"],
 			)
 		)
-		if merged_nbv > 0:
+		# service capitalizations add value to the target too (§12.3)
+		service_value = sum(
+			frappe.utils.flt(r.amount)
+			for r in frappe.get_all(
+				"Financial Treatment",
+				filters={
+					"source_doctype": "Asset Capitalization",
+					"source_name": self.name,
+					"transaction_type": "Capitalized Maintenance — Service",
+					"status": "Posted",
+				},
+				fields=["amount"],
+			)
+		)
+		reversal_value = merged_nbv + service_value
+		if reversal_value > 0:
 			from asset_enterprise.asset_values import assert_nbv_covers_reversal
 
 			assert_nbv_covers_reversal(
-				self.target_asset, merged_nbv, context=_("Capitalized Maintenance {0}").format(self.name)
+				self.target_asset, reversal_value,
+				context=_("Capitalized Maintenance {0}").format(self.name),
 			)
 
 		# Cancel of a CM -> auto-create the dedicated reversal doc.
