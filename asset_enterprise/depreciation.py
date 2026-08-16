@@ -725,7 +725,12 @@ def post_depreciation_entries(date=None):
 		       ds.daily_rate, ds.days_in_period
 		from `tabDepreciation Schedule` ds
 		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		join `tabAsset` a on a.name = ads.asset
 		where ads.status = 'Active' and ads.docstatus = 1
+		  -- a reversed asset keeps its schedule for audit, but nothing
+		  -- may post against it: the journal entry would link a
+		  -- cancelled document and the whole run dies.
+		  and a.docstatus = 1
 		  and ifnull(ds.journal_entry, '') = ''
 		  and ds.schedule_date <= %s
 		order by ads.asset, ds.schedule_date
