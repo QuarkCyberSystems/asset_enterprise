@@ -93,6 +93,31 @@ class EnterpriseAssetMovement(AssetMovement):
 				)
 			)
 
+	def get_latest_location_and_custodian(self, asset):
+		"""Core orders the movement history by transaction_date alone and
+		takes the first row, so two movements on the SAME date resolve
+		arbitrarily — and the auto-created Receipt at asset submit always
+		shares the date of a same-day transfer. The transfer then appeared
+		to do nothing: history recorded the new location while the asset
+		kept the old one (TC-037). Break the tie on document order."""
+		if not self._enterprise():
+			return super().get_latest_location_and_custodian(asset)
+
+		row = frappe.db.sql(
+			"""
+			select asm_item.target_location, asm_item.to_employee
+			from `tabAsset Movement Item` asm_item
+			join `tabAsset Movement` asm on asm_item.parent = asm.name
+			where asm_item.asset = %(asset)s
+			  and asm.company = %(company)s
+			  and asm.docstatus = 1
+			order by asm.transaction_date desc, asm.creation desc
+			limit 1
+			""",
+			{"asset": asset, "company": self.company},
+		)
+		return (row[0][0], row[0][1]) if row else ("", "")
+
 	def on_submit(self):
 		super().on_submit()
 		if not self._enterprise():
