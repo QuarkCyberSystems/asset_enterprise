@@ -119,7 +119,13 @@ def _ensure_fiscal_years(first_year, last_year):
 	on whatever bench this runs against — created inside the savepoint."""
 	for year in range(int(first_year), int(last_year) + 1):
 		name = str(year)
-		if frappe.db.exists("Fiscal Year", name):
+		# a live site may already carry that span under another name
+		covered = frappe.db.sql(
+			"""select name from `tabFiscal Year`
+			   where year_start_date <= %s and year_end_date >= %s limit 1""",
+			(f"{year}-12-31", f"{year}-01-01"),
+		)
+		if covered or frappe.db.exists("Fiscal Year", name):
 			continue
 		frappe.get_doc(
 			{
