@@ -679,6 +679,40 @@ def enterprise_enabled():
 		return False
 
 
+def post_schedule_entries(schedule_name, date=None, sch_start_idx=None, sch_end_idx=None):
+	"""Replacement for core make_depreciation_entry — the button on the
+	Asset Depreciation Schedule form. Core's version posts a plain
+	depreciation JE, skipping the §4.7 prior-year split, the cost-centre
+	routing and the Financial Treatment record, so the same asset posted
+	differently depending on which button was used."""
+	posting_date = getdate(date or nowdate())
+	rows = frappe.db.sql(
+		"""
+		select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+		       ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+		       ds.daily_rate, ds.days_in_period, ds.idx
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ds.parent = %s and ifnull(ds.journal_entry, '') = ''
+		  and ds.schedule_date <= %s
+		order by ds.schedule_date
+		""",
+		(schedule_name, posting_date),
+		as_dict=True,
+	)
+	posted = []
+	for row in rows:
+		if sch_start_idx and row.idx < cint(sch_start_idx):
+			continue
+		if sch_end_idx and row.idx > cint(sch_end_idx):
+			continue
+		if final_row_requires_manual_post(row):
+			continue
+		_post_one(row, posting_date)
+		posted.append(row.row_name)
+	return posted
+
+
 def post_depreciation_entries(date=None):
 	"""Replacement for erpnext post_depreciation_entries when the master
 	switch is ON: posts due rows from Active schedules with PYA routing

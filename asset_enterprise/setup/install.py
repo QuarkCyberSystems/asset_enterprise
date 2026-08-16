@@ -43,6 +43,7 @@ def after_migrate():
 def sync_customizations():
 	create_custom_fields(CUSTOM_FIELDS, ignore_validate=True)
 	apply_property_setters()
+	_ava_property_setters()
 	seed_masters()
 	seed_setting_defaults()
 	register_asset_accounting_dimension()
@@ -252,6 +253,24 @@ def apply_property_setters():
 			prop_type,
 			validate_fields_for_doctype=False,
 		)
+
+
+def _ava_property_setters():
+	"""A Useful Life Adjustment moves no money, so core's mandatory
+	Difference Account has nothing to point at — TC-025/TC-026 say the
+	user only sets adjusted_life_months."""
+	make_property_setter(
+		"Asset Value Adjustment", "difference_account", "reqd", "0", "Check",
+		validate_fields_for_doctype=False,
+	)
+	make_property_setter(
+		"Asset Value Adjustment",
+		"difference_account",
+		"mandatory_depends_on",
+		"eval:doc.transaction_type != 'Useful Life Adjustment'",
+		"Data",
+		validate_fields_for_doctype=False,
+	)
 
 
 def seed_masters():

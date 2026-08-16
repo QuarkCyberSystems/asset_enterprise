@@ -1216,3 +1216,419 @@ def tc020():
 			"11c decision (EOM is the standing rule); behaviour itself is correct",
 		)
 	return "PASS", evidence
+
+
+# =============================================================== TC-021
+@tc("TC-021", "Prior Year Adjustment Account")
+def tc021():
+	"""AFU 15/12/2025, first posting 31/01/2026, FY starts 01/01/2026.
+	Expected: ONE JE, two debit lines (PYA for the prior-year days,
+	Depreciation Expense for the current-year days), one credit."""
+	_ensure_fiscal_years(2025, 2029)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	pya = _plain(company, "Expense")
+	frappe.db.set_value(
+		"Asset Category Account",
+		{"parent": cat, "company_name": company},
+		"pya_expense_account",
+		pya,
+		update_modified=False,
+	)
+	asset = _depreciating_asset(
+		company, cat, "TC-021 PYA", 1_200_000, "2026-01-31", 36, "2025-12-15"
+	)
+	_post_through(asset.name, "2026-01-31")
+	sched, rows = _rows(asset.name)
+	if not rows:
+		return "FAIL", f"no schedule rows for {asset.name} (schedule={sched})"
+	first = rows[0]
+	je = first.journal_entry
+	if not je:
+		return "FAIL", (
+			f"first row {first.schedule_date} did not post; rows="
+			+ str([(str(r.schedule_date), r.journal_entry) for r in rows[:3]])
+		)
+	legs = _gl(je)
+	debits = [r for r in legs if flt(r.debit)]
+	credits = [r for r in legs if flt(r.credit)]
+	pya_leg = [r for r in debits if r.account == pya]
+	rate = flt(first.daily_rate or (1_200_000 / 1095.0), 6)
+	ok = (
+		len(debits) == 2
+		and len(credits) == 1
+		and pya_leg
+		and flt(sum(flt(r.debit) for r in debits), 2) == flt(credits[0].credit, 2)
+	)
+	if not pya_leg:
+		return "FAIL", (
+			f"JE {je} has no Prior Year Adjustment debit line. legs="
+			+ str([(r.account, flt(r.debit), flt(r.credit)) for r in legs])
+			+ f" | PYA account configured = {pya} | row covers {first.days_in_period} days"
+		)
+	prior_days = round(flt(pya_leg[0].debit) / rate) if pya_leg else 0
+	return (
+		("PASS" if ok else "FAIL"),
+		f"JE {je}: {len(debits)} debit / {len(credits)} credit lines; PYA leg "
+		f"{flt(pya_leg[0].debit):,.2f} = {prior_days} days (doc says 16; 15/12→31/12 "
+		f"inclusive is 17 under §4.3); total row {flt(first.depreciation_amount):,.2f} "
+		f"over {first.days_in_period} days (doc says 47)",
+	)
+
+
+# =============================================================== TC-022
+@tc("TC-022", "Schedule Superseded on Adjustment (not cancelled)")
+def tc022():
+	_ensure_fiscal_years(2025, 2029)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-022 Supersede", 3_600_000, "2025-01-31", 36, "2025-01-01"
+	)
+	_post_through(asset.name, "2025-12-31")
+	sched_a, rows_a = _rows(asset.name)
+	posted_a = [(str(r.schedule_date), flt(r.depreciation_amount), r.journal_entry)
+	            for r in rows_a if r.journal_entry]
+
+	ava = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": "2025-12-31",
+			"transaction_type": "Upward Revaluation",
+			"current_asset_value": flt(
+				frappe.db.get_value("Asset", asset.name, "net_book_value")
+			),
+			"new_asset_value": flt(frappe.db.get_value("Asset", asset.name, "net_book_value")) + 50_000,
+			"difference_account": _plain(company, "Income") or _plain(company, "Liability"),
+		}
+	)
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+
+	a = frappe.db.get_value("Asset Depreciation Schedule", sched_a, ["status", "docstatus"], as_dict=True)
+	sched_b, rows_b = _rows(asset.name)
+	b_supersedes = frappe.db.get_value("Asset Depreciation Schedule", sched_b, "supersedes")
+	posted_b = [(str(r.schedule_date), flt(r.depreciation_amount), r.journal_entry)
+	            for r in rows_b if r.journal_entry]
+	rows_a_now = frappe.get_all(
+		"Depreciation Schedule", filters={"parent": sched_a}, fields=["name"]
+	)
+	ok = (
+		a.status == "Superseded"
+		and a.docstatus == 1
+		and len(rows_a_now) == len(rows_a)
+		and b_supersedes == sched_a
+		and posted_a == posted_b
+		and len(rows_b) == len(rows_a)
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"A {sched_a}: {a.status}/docstatus {a.docstatus}, {len(rows_a_now)} rows intact, "
+		f"{len(posted_a)} posted JE links; B {sched_b}: supersedes={b_supersedes}, "
+		f"{len(rows_b)} rows of which {len(posted_b)} carried over unchanged={posted_a == posted_b}",
+	)
+
+
+# =============================================================== TC-023
+@tc("TC-023", "PI vs PR Amount Difference — Active Asset")
+def tc023():
+	from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_invoice
+
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	item = _item(cat, "TC-DELTA-ITEM")
+	diff_account = _plain(company, "Liability")
+	frappe.db.set_value(
+		"Company", company, "default_asset_invoice_difference_account", diff_account,
+		update_modified=False,
+	)
+	frappe.db.set_single_value("Buying Settings", "maintain_same_rate", 0)
+	frappe.db.set_single_value("Accounts Settings", "over_billing_allowance", 100)
+
+	pr = frappe.get_doc(
+		{
+			"doctype": "Purchase Receipt",
+			"company": company,
+			"supplier": _supplier(),
+			"posting_date": nowdate(),
+			"set_posting_time": 1,
+			"items": [{"item_code": item, "qty": 1, "rate": 1_500_000, "asset_location": _location()}],
+		}
+	)
+	pr.flags.ignore_permissions = True
+	pr.insert()
+	pr.submit()
+	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
+	asset = frappe.get_doc("Asset", asset_name)
+	asset.available_for_use_date = asset.purchase_date
+	asset.flags.ignore_permissions = True
+	asset.save()
+	asset.submit()
+
+	pi = make_purchase_invoice(pr.name)
+	pi.posting_date = nowdate()
+	pi.set_posting_time = 1
+	for row in pi.items:
+		row.rate = 2_000_000
+		row.price_list_rate = 2_000_000
+	pi.pi_asset_allocation = []
+	pi.flags.ignore_permissions = True
+	pi.insert()
+	pi.submit()
+
+	transfer = frappe.db.get_value(
+		"Journal Entry",
+		{"user_remark": ("like", f"Invoice delta transfer for {pi.name}%"), "docstatus": 1},
+		"name",
+	)
+	ava_je = frappe.db.get_value(
+		"Asset Value Adjustment",
+		{"asset": asset_name, "transaction_type": "Invoice Adjustment", "docstatus": 1},
+		"journal_entry",
+	)
+	arbnb = frappe.db.get_value("Company", company, "asset_received_but_not_billed")
+	fa_account = _account(company, "Fixed Asset")
+
+	def _net(account, vouchers):
+		total = 0.0
+		for r in frappe.db.sql(
+			"""select debit, credit from `tabGL Entry` where account = %s
+			   and is_cancelled = 0 and voucher_no in %s""",
+			(account, tuple(v for v in vouchers if v)),
+			as_dict=True,
+		):
+			total += flt(r.debit) - flt(r.credit)
+		return flt(total, 2)
+
+	vouchers = (pr.name, pi.name, transfer, ava_je)
+	arbnb_net = _net(arbnb, vouchers)
+	diff_net = _net(diff_account, vouchers)
+	fa_net = _net(fa_account, vouchers)
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	hav = flt(recalculate_asset_values(asset_name, save=False)["historical_asset_value"], 2)
+	single_je = not transfer
+	ok = arbnb_net == 0 and diff_net == 0 and fa_net == 2_000_000.00 and hav == 2_000_000.00
+	verdict = "PASS" if (ok and single_je) else ("DEVIATION" if ok else "FAIL")
+	return (
+		verdict,
+		f"net effect matches the test case (ARBNB {arbnb_net:,.2f}, invoice-difference "
+		f"{diff_net:,.2f}, fixed asset {fa_net:,.2f}, HAV {hav:,.2f}) but the 500,000 delta "
+		f"leaves ARBNB through a separate transfer entry ({transfer}) instead of splitting the "
+		f"invoice's own posting — Phase 11c decision D1 Option A, accepted by finance"
+		if verdict == "DEVIATION"
+		else f"ARBNB {arbnb_net:,.2f} / difference {diff_net:,.2f} / FA {fa_net:,.2f} / HAV {hav:,.2f}",
+	)
+
+
+# =============================================================== TC-024
+@tc("TC-024", "PI vs PR Amount Difference — Disposed Asset")
+def tc024():
+	from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_invoice
+
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	item = _item(cat, "TC-DISPOSED-ITEM")
+	expense = _plain(company, "Expense")
+	frappe.db.set_value(
+		"Company", company,
+		{
+			"default_post_disposal_invoice_diff_account": expense,
+			"disposal_account": frappe.db.get_value("Company", company, "disposal_account") or expense,
+			"default_asset_invoice_difference_account": _plain(company, "Liability"),
+		},
+		update_modified=False,
+	)
+	frappe.db.set_single_value("Buying Settings", "maintain_same_rate", 0)
+	frappe.db.set_single_value("Accounts Settings", "over_billing_allowance", 100)
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+
+	pr = frappe.get_doc(
+		{
+			"doctype": "Purchase Receipt",
+			"company": company,
+			"supplier": _supplier(),
+			"posting_date": nowdate(),
+			"set_posting_time": 1,
+			"items": [{"item_code": item, "qty": 1, "rate": 800_000, "asset_location": _location()}],
+		}
+	)
+	pr.flags.ignore_permissions = True
+	pr.insert()
+	pr.submit()
+	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
+	asset = frappe.get_doc("Asset", asset_name)
+	asset.available_for_use_date = asset.purchase_date
+	asset.flags.ignore_permissions = True
+	asset.save()
+	asset.submit()
+
+	from asset_enterprise import disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	disposal.scrap_asset(asset_name, scrapping_type="Damage")
+	hav_before = flt(recalculate_asset_values(asset_name, save=False)["historical_asset_value"], 2)
+
+	pi = make_purchase_invoice(pr.name)
+	pi.posting_date = nowdate()
+	pi.set_posting_time = 1
+	for row in pi.items:
+		row.rate = 1_000_000
+		row.price_list_rate = 1_000_000
+	pi.pi_asset_allocation = []
+	pi.flags.ignore_permissions = True
+	pi.insert()
+	pi.submit()
+
+	ft = frappe.db.exists(
+		"Financial Treatment",
+		{"source_name": pi.name, "transaction_type": "Post-Disposal Invoice Adjustment",
+		 "status": "Posted"},
+	)
+	new_ava = frappe.db.count(
+		"Asset Value Adjustment",
+		{"asset": asset_name, "transaction_type": "Invoice Adjustment", "docstatus": 1},
+	)
+	transfer = frappe.db.get_value(
+		"Journal Entry",
+		{"user_remark": ("like", f"Invoice delta transfer for {pi.name}%"), "docstatus": 1},
+		"name",
+	)
+	expensed = 0.0
+	if transfer:
+		for r in _gl(transfer):
+			if r.account == expense:
+				expensed = flt(r.debit) - flt(r.credit)
+	hav_after = flt(recalculate_asset_values(asset_name, save=False)["historical_asset_value"], 2)
+	ok = bool(ft) and new_ava == 0 and flt(expensed, 2) == 200_000.00 and hav_after == hav_before
+	return (
+		("PASS" if ok else "FAIL"),
+		f"delta {expensed:,.2f} to the post-disposal expense account (want 200,000.00); "
+		f"treatment recorded={bool(ft)}; new AVAs={new_ava} (want 0); HAV {hav_before:,.2f} "
+		f"-> {hav_after:,.2f} (unchanged)",
+	)
+
+
+# =============================================================== TC-025
+@tc("TC-025", "Useful Life Adjustment +12 Months")
+def tc025():
+	_ensure_fiscal_years(2024, 2031)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-025 UL Plus", 1_200_000, "2024-01-31", 36, "2024-01-01"
+	)
+	_post_through(asset.name, "2025-12-31")
+	horizon_before = frappe.db.sql(
+		"""select max(ds.schedule_date) from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s and ads.status = 'Active'""",
+		asset.name,
+	)[0][0]
+
+	ava = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": "2025-12-31",
+			"transaction_type": "Useful Life Adjustment",
+			"current_asset_value": flt(frappe.db.get_value("Asset", asset.name, "net_book_value")),
+			"new_asset_value": flt(frappe.db.get_value("Asset", asset.name, "net_book_value")),
+			"adjusted_life_months": 12,
+		}
+	)
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+
+	fb = frappe.db.get_value(
+		"Asset Finance Book", {"parent": asset.name}, "total_number_of_depreciations"
+	)
+	horizon_after = frappe.db.sql(
+		"""select max(ds.schedule_date) from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s and ads.status = 'Active'""",
+		asset.name,
+	)[0][0]
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	values = recalculate_asset_values(asset.name, save=False)
+	future = [
+		r
+		for r in _rows(asset.name)[1]
+		if getdate(r.schedule_date) > getdate("2025-12-31")
+	]
+	future_total = flt(sum(flt(r.depreciation_amount) for r in future), 2)
+	from frappe.utils import month_diff
+
+	start = frappe.db.get_value("Asset Finance Book", {"parent": asset.name}, "depreciation_start_date")
+	elapsed = max(0, month_diff(nowdate(), start) - 1)
+	ok = (
+		cint_(fb) == 48
+		and getdate(horizon_after) == getdate(add_months(horizon_before, 12))
+		and future_total == flt(values["net_book_value"], 2)
+		and flt(values["remaining_useful_life_months"]) == flt(48 - elapsed)
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"finance book periods {fb} (want 48); horizon {horizon_before} -> {horizon_after}; "
+		f"{len(future)} future rows totalling {future_total:,.2f} vs NBV "
+		f"{flt(values['net_book_value']):,.2f}; RUL {values['remaining_useful_life_months']} months "
+		f"(want 48 - {elapsed} elapsed = {48 - elapsed}; the doc's 24 is the value at the "
+		f"adjustment date, this is the live one)",
+	)
+
+
+# =============================================================== TC-026
+@tc("TC-026", "Useful Life Adjustment Drives RUL to Zero")
+def tc026():
+	_ensure_fiscal_years(2024, 2031)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-026 UL Zero", 1_200_000, "2024-01-31", 36, "2024-01-01"
+	)
+	_post_through(asset.name, "2026-06-30")
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	nbv_before = flt(recalculate_asset_values(asset.name, save=False)["net_book_value"], 2)
+	ava = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": "2026-06-30",
+			"transaction_type": "Useful Life Adjustment",
+			"current_asset_value": nbv_before,
+			"new_asset_value": nbv_before,
+			"adjusted_life_months": -6,
+		}
+	)
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+
+	values = recalculate_asset_values(asset.name, save=False)
+	status = frappe.db.get_value("Asset", asset.name, "status")
+	one_shot = frappe.db.get_value(
+		"Financial Treatment",
+		{"asset": asset.name, "transaction_type": ("like", "%RUL Exhausted%"), "status": "Posted"},
+		["name", "amount", "journal_entry"],
+		as_dict=True,
+	)
+	ok = (
+		one_shot
+		and flt(one_shot.amount, 2) == nbv_before
+		and flt(values["net_book_value"], 2) == 0.00
+		and status == "Fully Depreciated"
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"NBV before {nbv_before:,.2f}; one-shot posting {one_shot and flt(one_shot.amount):,.2f} "
+		f"via {one_shot and one_shot.journal_entry}; NBV after "
+		f"{flt(values['net_book_value']):,.2f}; status {status}",
+	)

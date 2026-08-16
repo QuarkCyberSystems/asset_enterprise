@@ -164,12 +164,14 @@ def _remaining_life_months(asset, life_delta_months):
 	if not fb or not fb.total_number_of_depreciations:
 		return 0.0
 
+	# The finance book's period count is ALREADY re-written by a Useful
+	# Life Adjustment (TC-025 expects total UL = 48 there), so folding
+	# the treatment's life delta on top counted every adjustment twice.
 	total_months = flt(fb.total_number_of_depreciations) * flt(fb.frequency_of_depreciation or 1)
 	start = fb.depreciation_start_date or asset.available_for_use_date
 	elapsed = month_diff(nowdate(), start) - 1 if start else 0
 	elapsed = max(0, elapsed)
-	rul = total_months - elapsed + flt(life_delta_months)
-	return max(0.0, flt(rul, 2))
+	return max(0.0, flt(total_months - elapsed, 2))
 
 
 def recalculate_asset_values(asset_name, save=True):
