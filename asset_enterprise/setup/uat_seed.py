@@ -293,7 +293,9 @@ def _run():
 					{"item_code": f"{PREFIX}-ITEM-A", "qty": 1, "rate": 55_000,
 					 "purchase_receipt": pr.name, "pr_detail": pr.items[0].name}
 				],
-				"pi_asset_allocation": [{"asset": pr_asset.name}],
+				# NO pi_asset_allocation — TC-023's steps are "submit a PI
+				# for a different amount against the same asset", nothing
+				# more. Pre-filling the table here is what hid GAP-012.
 			}
 		)
 		pi.flags.ignore_permissions = True

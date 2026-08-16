@@ -41,16 +41,41 @@ class EnterpriseAsset(Asset):
 		super().validate()
 
 	def _validate_pr_row_allocation(self):
-		"""VR-004 (Phase 11b): amount-side over-allocation check at the
-		Asset level — covers assets linked or revalued after PR submit
-		(core validates only the qty sum)."""
+		"""VR-004 (Phase 11b): over-allocation check at the Asset level —
+		covers assets linked or revalued after PR submit. TC-006 states
+		the rule in UNITS ("total asset quantity (6) exceeds purchased
+		quantity (5)"); the amount side catches revaluation cases the
+		unit count cannot see. Both are enforced."""
 		row_name = self.get("purchase_receipt_item")
 		if not row_name or self.docstatus == 2:
 			return
 		row = frappe.db.get_value(
-			"Purchase Receipt Item", row_name, ["base_net_amount", "idx"], as_dict=True
+			"Purchase Receipt Item", row_name, ["base_net_amount", "idx", "qty"], as_dict=True
 		)
-		if not row or not flt(row.base_net_amount):
+		if not row:
+			return
+
+		# --- unit side (TC-006 / VR-004 as worded)
+		if flt(row.qty):
+			other_units = flt(
+				frappe.db.sql(
+					"""select coalesce(sum(case when ifnull(asset_quantity, 0) = 0 then 1
+					                            else asset_quantity end), 0)
+					   from `tabAsset`
+					   where purchase_receipt_item = %s and docstatus < 2 and name != %s""",
+					(row_name, self.name or ""),
+				)[0][0]
+			)
+			total_units = other_units + (flt(self.get("asset_quantity")) or 1)
+			if total_units > flt(row.qty):
+				frappe.throw(
+					_(
+						"Total asset quantity ({0}) linked to Purchase Receipt Item "
+						"exceeds purchased quantity ({1}) (VR-004)."
+					).format(flt(total_units), flt(row.qty))
+				)
+
+		if not flt(row.base_net_amount):
 			return
 		others = flt(
 			frappe.db.sql(
@@ -204,6 +229,18 @@ class EnterpriseAsset(Asset):
 
 	def on_submit(self):
 		super().on_submit()
+		# VR-005 / TC-006: the receipt row is flagged as soon as a live
+		# asset references it. The PR-submit hook only sees assets that
+		# already existed, so an asset created against the row later
+		# (the manual path) left the flag off.
+		if self._enterprise() and self.get("purchase_receipt_item"):
+			frappe.db.set_value(
+				"Purchase Receipt Item",
+				self.purchase_receipt_item,
+				"asset_linked",
+				1,
+				update_modified=False,
+			)
 		if self._enterprise() and self.calculate_depreciation:
 			# §4.3 (v2.16 CH-12): core spreads the initial schedule over the
 			# real calendar span, so rows inside a leap year get a different

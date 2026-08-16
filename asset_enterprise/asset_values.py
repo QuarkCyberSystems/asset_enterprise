@@ -77,6 +77,81 @@ def _posted_depreciation_total(asset_name):
 	)
 
 
+def _category_accounts(asset):
+	row = frappe.db.get_value(
+		"Asset Category Account",
+		{"parent": asset.asset_category, "company_name": asset.company},
+		["fixed_asset_account", "accumulated_depreciation_account"],
+		as_dict=True,
+	)
+	return row or frappe._dict({})
+
+
+def _counted_vouchers(asset_name):
+	"""Journal Entries already represented in the fold — schedule rows
+	and Financial Treatments. Anything else on the asset's accounts is
+	a manual posting."""
+	names = set()
+	for je, rev in frappe.db.sql(
+		"""select ds.journal_entry, ds.reversal_journal_entry
+		   from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s""",
+		asset_name,
+	):
+		names.update(x for x in (je, rev) if x)
+	names.update(
+		frappe.get_all(
+			"Financial Treatment",
+			filters={"asset": asset_name, "journal_entry": ("is", "set")},
+			pluck="journal_entry",
+		)
+	)
+	return names
+
+
+def _manual_gl_adjustments(asset):
+	"""§5.1 / TC-010: the values are LEDGER-derived. A journal entry
+	posted straight to the asset's fixed-asset or accumulated-
+	depreciation account — outside the schedule and outside any
+	Financial Treatment — still moves the asset's value, and the
+	Recalculate button must pick it up."""
+	accounts = _category_accounts(asset)
+	if not (accounts.get("fixed_asset_account") or accounts.get("accumulated_depreciation_account")):
+		return 0.0, 0.0
+
+	rows = frappe.db.sql(
+		"""select gle.account, gle.voucher_no, gle.debit, gle.credit
+		   from `tabGL Entry` gle
+		   where gle.is_cancelled = 0
+		     and gle.against_voucher_type = 'Asset'
+		     and gle.against_voucher = %s
+		     and gle.account in %s""",
+		(
+			asset.name,
+			tuple(
+				a
+				for a in (
+					accounts.get("fixed_asset_account"),
+					accounts.get("accumulated_depreciation_account"),
+				)
+				if a
+			),
+		),
+		as_dict=True,
+	)
+	counted = _counted_vouchers(asset.name)
+	hav_delta = accum_delta = 0.0
+	for row in rows:
+		if row.voucher_no in counted:
+			continue
+		if row.account == accounts.get("fixed_asset_account"):
+			hav_delta += flt(row.debit) - flt(row.credit)
+		else:
+			accum_delta += flt(row.credit) - flt(row.debit)
+	return hav_delta, accum_delta
+
+
 def _remaining_life_months(asset, life_delta_months):
 	"""C33: original UL − elapsed months since posting-basis date + net
 	UL adjustments from AVA transactions (signed)."""
@@ -103,11 +178,16 @@ def recalculate_asset_values(asset_name, save=True):
 	company = asset.company
 	ft = _posted_ft_sums(asset_name)
 
-	hav = fa_module_round(flt(asset.net_purchase_amount) + flt(ft.hav_delta), company)
+	manual_hav, manual_accum = _manual_gl_adjustments(asset)
+
+	hav = fa_module_round(
+		flt(asset.net_purchase_amount) + flt(ft.hav_delta) + flt(manual_hav), company
+	)
 	accum = fa_module_round(
 		flt(asset.opening_accumulated_depreciation)
 		+ _posted_depreciation_total(asset_name)
-		+ flt(ft.accum_delta),
+		+ flt(ft.accum_delta)
+		+ flt(manual_accum),
 		company,
 	)
 	nbv = fa_module_round(hav - accum, company)
