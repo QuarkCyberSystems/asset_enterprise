@@ -69,6 +69,16 @@ def run():
 	print(f"psetter Asset Depreciation Schedule.status -> {options!r} {'OK' if has_superseded else 'MISSING'}")
 	ok = ok and has_superseded
 
+	# 5b. …and the status has to be VISIBLE — core hides it, which left
+	# nothing on screen saying which schedule is the live one.
+	status_field = frappe.get_meta("Asset Depreciation Schedule").get_field("status")
+	visible = not status_field.hidden and status_field.in_list_view
+	print(
+		f"psetter status visible={not status_field.hidden} in_list_view={bool(status_field.in_list_view)} "
+		f"{'OK' if visible else 'FAIL'}"
+	)
+	ok = ok and bool(visible)
+
 	# 6. Account resolution chain smoke (expect controlled throw, not crash)
 	from asset_enterprise.accounts import get_disposal_account, get_last_period_tolerance
 

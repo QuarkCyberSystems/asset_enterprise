@@ -40,6 +40,12 @@ doctype_js = {
 	"Purchase Invoice": "public/js/purchase_invoice.js",
 }
 
+# §4.8: an asset carries the live schedule plus one frozen copy per
+# value change — the list must say which is which.
+doctype_list_js = {
+	"Asset Depreciation Schedule": "public/js/asset_depreciation_schedule_list.js",
+}
+
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
 doc_events = {
 	"Purchase Receipt": {

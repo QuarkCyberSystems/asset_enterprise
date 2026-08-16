@@ -235,6 +235,23 @@ def apply_property_setters():
 		"Text",
 		validate_fields_for_doctype=False,
 	)
+	# Core hides the status field, which leaves nothing on screen saying
+	# which schedule is the live one — unreadable once an asset carries a
+	# superseded schedule. Show it, list it, and let users filter on it.
+	for prop, value, prop_type in (
+		("hidden", "0", "Check"),
+		("in_list_view", "1", "Check"),
+		("in_standard_filter", "1", "Check"),
+		("bold", "1", "Check"),
+	):
+		make_property_setter(
+			"Asset Depreciation Schedule",
+			"status",
+			prop,
+			value,
+			prop_type,
+			validate_fields_for_doctype=False,
+		)
 
 
 def seed_masters():
