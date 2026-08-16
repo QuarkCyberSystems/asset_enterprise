@@ -43,6 +43,21 @@ def _enterprise():
 # ---------------------------------------------------------------- PR side
 
 
+def stamp_asset_dimension(doc, method=None):
+	"""GAP-023 / TC-038: with "Asset" registered as an Accounting
+	Dimension, GL rows can be filtered and grouped by asset — but only
+	if the dimension field is actually filled. Every asset journal entry
+	already names its asset in reference_type/reference_name, so copy it
+	across rather than touching each builder."""
+	if not frappe.get_meta("Journal Entry Account").has_field("asset"):
+		return
+	for row in doc.get("accounts") or []:
+		if row.get("asset"):
+			continue
+		if row.get("reference_type") == "Asset" and row.get("reference_name"):
+			row.asset = row.reference_name
+
+
 def pr_on_submit(doc, method=None):
 	if not _enterprise():
 		return

@@ -52,6 +52,11 @@ doc_events = {
 		"on_submit": "asset_enterprise.invoice_diff.pr_on_submit",
 		"before_cancel": "asset_enterprise.invoice_diff.pr_before_cancel",
 	},
+	"Journal Entry": {
+		# GAP-023 / TC-038: fill the Asset accounting dimension from the
+		# row's own Asset reference so GL reports can group by asset.
+		"validate": "asset_enterprise.invoice_diff.stamp_asset_dimension",
+	},
 	"Purchase Invoice": {
 		"validate": "asset_enterprise.invoice_diff.pi_validate",
 		"on_submit": "asset_enterprise.invoice_diff.pi_on_submit",

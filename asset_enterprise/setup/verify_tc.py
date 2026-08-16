@@ -2278,3 +2278,508 @@ def tc040():
 		f"days (want 184); row spans {first.days_in_period} days "
 		f"(01/07/2024 -> 31/03/2025 inclusive = 274; the doc's 243 stops at 28/02)",
 	)
+
+
+def _composite(company, cat, name, gross, accum=0):
+	doc = _plain_asset(company, cat, name, gross, opening_accumulated_depreciation=accum)
+	doc.submit()
+	return doc
+
+
+def _cm_merge(company, target, source, posting_date=None):
+	cap = frappe.get_doc(
+		{
+			"doctype": "Asset Capitalization",
+			"company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": target,
+			"posting_date": posting_date or nowdate(),
+			"set_posting_time": 1,
+			"asset_items": [{"asset": source}],
+		}
+	)
+	cap.flags.ignore_permissions = True
+	cap.insert()
+	cap.submit()
+	return cap
+
+
+# =============================================================== TC-029
+@tc("TC-029", "Source Asset Merged into Composite — Two-Leg via Clearing")
+def tc029():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	frappe.db.set_value(
+		"Asset Category Account", {"parent": cat, "company_name": company},
+		"capitalization_clearing_account", clearing, update_modified=False,
+	)
+	source = _composite(company, cat, "TC-029 Source", 800_000, accum=300_000)
+	target = _composite(company, cat, "TC-029 ASSEMBLY-A", 1_000_000)
+	cap = _cm_merge(company, target.name, source.name)
+
+	legs = []
+	for je in frappe.get_all(
+		"Journal Entry", filters={"user_remark": ("like", f"%{cap.name}%"), "docstatus": 1}, pluck="name"
+	):
+		legs.extend(_gl(je))
+	clearing_net = flt(sum(flt(r.debit) - flt(r.credit) for r in legs if r.account == clearing), 2)
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	tgt = recalculate_asset_values(target.name, save=False)
+	src_state = frappe.db.get_value("Asset", source.name, ["docstatus", "status"], as_dict=True)
+	merge_log = frappe.db.count("Composite Merge Log Entry", {"parent": target.name})
+	ok = (
+		clearing_net == 0.00
+		and flt(tgt["historical_asset_value"], 2) == 1_500_000.00
+		and src_state.docstatus == 2
+		and merge_log >= 1
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"clearing nets {clearing_net:,.2f} (want 0); composite HAV "
+		f"{flt(tgt['historical_asset_value']):,.2f} (want 1,500,000 = 1,000,000 + NBV 500,000); "
+		f"source docstatus {src_state.docstatus} status {src_state.status}; merge log rows {merge_log}",
+	)
+
+
+# =============================================================== TC-031
+@tc("TC-031", "Partial Scrap by Value with Proportional Accum")
+def tc031():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	loss = _plain(company, "Expense")
+	_scrapping_type("Damage", company, loss)
+	asset = _plain_asset(company, cat, "TC-031 Partial Value", 2_000_000,
+	                     opening_accumulated_depreciation=1_517_808.22)
+	asset.submit()
+	from asset_enterprise import disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	disposal.partial_scrap_asset(asset.name, scrap_value=100_000, scrapping_type="Damage")
+	ft = frappe.db.get_value(
+		"Financial Treatment",
+		{"asset": asset.name, "transaction_type": ("like", "%Partial%"), "status": "Posted"},
+		"journal_entry",
+	)
+	legs = {(r.account, flt(r.debit, 2), flt(r.credit, 2)) for r in _gl(ft)} if ft else set()
+	want = {
+		(_account(company, "Accumulated Depreciation"), 75_890.41, 0.00),
+		(loss, 24_109.59, 0.00),
+		(_account(company, "Fixed Asset"), 0.00, 100_000.00),
+	}
+	values = recalculate_asset_values(asset.name, save=False)
+	ok = (
+		legs == want
+		and flt(values["historical_asset_value"], 2) == 1_900_000.00
+		and flt(values["accumulated_depreciation_value"], 2) == 1_441_917.81
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"JE {ft}: {sorted(legs)}; HAV {flt(values['historical_asset_value']):,.2f} "
+		f"(want 1,900,000) accum {flt(values['accumulated_depreciation_value']):,.2f} "
+		f"(want 1,441,917.81)",
+	)
+
+
+# =============================================================== TC-041
+@tc("TC-041", "Reversal of Capitalized Maintenance")
+def tc041():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	frappe.db.set_value(
+		"Asset Category Account", {"parent": cat, "company_name": company},
+		"capitalization_clearing_account", clearing, update_modified=False,
+	)
+	source = _composite(company, cat, "TC-041 Source", 800_000, accum=300_000)
+	target = _composite(company, cat, "TC-041 ASSEMBLY-A", 1_000_000)
+	cap = _cm_merge(company, target.name, source.name)
+	original_jes = frappe.get_all(
+		"Journal Entry", filters={"user_remark": ("like", f"%{cap.name}%"), "docstatus": 1}, pluck="name"
+	)
+	cap.reload()
+	cap.cancel()
+
+	reversal = frappe.db.get_value(
+		"Asset Capitalization",
+		{"reversal_of_capitalization": cap.name, "docstatus": 1},
+		["name", "transaction_type"], as_dict=True,
+	)
+	still_posted = all(
+		frappe.db.get_value("Journal Entry", je, "docstatus") == 1 for je in original_jes
+	)
+	log_rows = frappe.get_all(
+		"Composite Merge Log Entry", filters={"parent": target.name}, fields=["status"]
+	)
+	reversed_rows = [r for r in log_rows if r.status == "Reversed"]
+	ok = (
+		reversal
+		and reversal.transaction_type == "Reversal of Capitalized Maintenance"
+		and still_posted
+		and reversed_rows
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"reversal doc {reversal and reversal.name} type {reversal and reversal.transaction_type}; "
+		f"original entries still posted={still_posted}; merge log rows "
+		f"{[r.status for r in log_rows]}",
+	)
+
+
+# ============================================================== TC-042a
+@tc("TC-042a", "Asset Reversal Blocked — Has Posted Depreciation")
+def tc042a():
+	_ensure_fiscal_years(2025, 2029)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-042a Blocked", 1_200_000, get_last_day(add_months(nowdate(), -2)),
+		36, add_months(nowdate(), -3)
+	)
+	_post_through(asset.name, get_last_day(add_months(nowdate(), -1)))
+	try:
+		asset.reload()
+		asset.cancel()
+	except frappe.ValidationError as e:
+		msg = str(e)
+		names_count = "posted depreciation" in msg.lower()
+		return (("PASS" if names_count else "FAIL"), f"blocked: {msg[:150]}")
+	return "FAIL", "asset reversed while posted depreciation entries exist"
+
+
+# ============================================================== TC-042b
+@tc("TC-042b", "Asset Reversal Allowed — No Posted Depreciation")
+def tc042b():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _plain_asset(company, cat, "TC-042b Clean", 500_000)
+	asset.submit()
+	opening_je = _je_of_asset(asset.name, "Existing-Asset Opening")
+	asset.reload()
+	asset.cancel()
+	state = frappe.db.get_value("Asset", asset.name, ["docstatus", "status", "booked_fixed_asset"], as_dict=True)
+	original_posted = frappe.db.get_value("Journal Entry", opening_je, "docstatus") == 1 if opening_je else None
+	mirror = frappe.db.count(
+		"Financial Treatment", {"asset": asset.name, "status": "Reversed"}
+	)
+	ok = state.docstatus == 2 and not flt(state.booked_fixed_asset) and original_posted
+	return (
+		("PASS" if ok else "FAIL"),
+		f"docstatus {state.docstatus} status {state.status} booked_fixed_asset "
+		f"{state.booked_fixed_asset}; opening entry {opening_je} still posted={original_posted}; "
+		f"reversed treatments={mirror}",
+	)
+
+
+# ============================================================== TC-044a
+@tc("TC-044a", "AVA Reversal — No Subsequent Depreciation")
+def tc044a():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	oci = _plain(company, "Liability")
+	asset = _plain_asset(company, cat, "TC-044a AVA", 1_000_000)
+	asset.submit()
+	ava = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": nowdate(),
+			"transaction_type": "Upward Revaluation",
+			"current_asset_value": 1_000_000,
+			"new_asset_value": 1_200_000,
+			"difference_account": oci,
+		}
+	)
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+	original_je = ava.get("journal_entry") or frappe.db.get_value(
+		"Asset Value Adjustment", ava.name, "journal_entry"
+	)
+	ava.reload()
+	ava.cancel()
+
+	reversal = frappe.db.get_value(
+		"Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1},
+		["name", "journal_entry"], as_dict=True,
+	)
+	original_still = frappe.db.get_value("Journal Entry", original_je, "docstatus") == 1 if original_je else None
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	hav = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"], 2)
+	mirror_legs = {(r.account, flt(r.debit, 2), flt(r.credit, 2)) for r in _gl(reversal.journal_entry)} if reversal and reversal.journal_entry else set()
+	ok = (
+		reversal
+		and original_still
+		and hav == 1_000_000.00
+		and (oci, 200_000.00, 0.00) in mirror_legs
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"reversal AVA {reversal and reversal.name}; original entry {original_je} still "
+		f"posted={original_still}; mirror legs {sorted(mirror_legs)}; HAV back to {hav:,.2f}",
+	)
+
+
+# ============================================================== TC-045
+@tc("TC-045", "Posted Schedule Rows Preserved on Modification")
+def tc045():
+	_ensure_fiscal_years(2025, 2029)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-045 Preserve", 3_600_000, "2025-01-31", 36, "2025-01-01"
+	)
+	_post_through(asset.name, "2025-12-31")
+	_sched, before = _rows(asset.name)
+	posted_before = [(str(r.schedule_date), flt(r.depreciation_amount), r.journal_entry)
+	                 for r in before if r.journal_entry]
+
+	from asset_enterprise.depreciation import supersede_and_regenerate
+
+	supersede_and_regenerate(asset.name, as_of_date="2025-12-31", reason="TC-045 modification")
+	_sched2, after = _rows(asset.name)
+	posted_after = [(str(r.schedule_date), flt(r.depreciation_amount), r.journal_entry)
+	                for r in after if r.journal_entry]
+	links_live = all(
+		frappe.db.get_value("Journal Entry", je, "docstatus") == 1
+		for _d, _a, je in posted_after
+	)
+	ok = posted_before == posted_after and len(posted_after) == 12 and links_live
+	return (
+		("PASS" if ok else "FAIL"),
+		f"{len(posted_before)} posted rows before / {len(posted_after)} after, identical="
+		f"{posted_before == posted_after}; their journal entries all still submitted={links_live}; "
+		f"total rows {len(before)} -> {len(after)}",
+	)
+
+
+# ============================================================== TC-046
+@tc("TC-046", "Capitalized Maintenance — Add to Submitted Composite")
+def tc046():
+	_ensure_fiscal_years(2025, 2032)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	expense = _plain(company, "Expense")
+	composite = _depreciating_asset(
+		company, cat, "TC-046 Composite", 1_000_000, get_last_day(add_months(nowdate(), -1)),
+		60, add_months(nowdate(), -2)
+	)
+	sched_before = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": composite.name, "status": "Active", "docstatus": 1}, "name"
+	)
+	cap = frappe.get_doc(
+		{
+			"doctype": "Asset Capitalization",
+			"company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"target_asset": composite.name,
+			"posting_date": nowdate(),
+			"set_posting_time": 1,
+			"service_items": [
+				{"item_code": _service_item(), "qty": 1, "rate": 50_000, "expense_account": expense}
+			],
+		}
+	)
+	cap.flags.ignore_permissions = True
+	cap.insert()
+	cap.submit()
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	hav = flt(recalculate_asset_values(composite.name, save=False)["historical_asset_value"], 2)
+	old_status = frappe.db.get_value("Asset Depreciation Schedule", sched_before, "status")
+	_sched_after, rows_after = _rows(composite.name)
+	total_after = flt(sum(flt(r.depreciation_amount) for r in rows_after), 2)
+	replaced = _sched_after != sched_before
+	ok = hav == 1_050_000.00 and replaced and total_after == 1_050_000.00
+	note = (
+		"previous schedule removed rather than superseded — it had booked nothing, and an "
+		"unposted schedule is a working copy (see GAP-031 note)"
+		if old_status is None
+		else f"previous schedule {sched_before} is {old_status}"
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"submitted composite accepted; HAV {hav:,.2f} (want 1,050,000); new schedule "
+		f"{_sched_after} totals {total_after:,.2f}; {note}",
+	)
+
+
+# ============================================================= TC-047a
+@tc("TC-047a", "Asset Repair Reversal — No Subsequent Depreciation")
+def tc047a():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	asset = _plain_asset(company, cat, "TC-047a Repair", 500_000)
+	asset.submit()
+	repair = frappe.get_doc(
+		{
+			"doctype": "Asset Repair",
+			"asset": asset.name,
+			"company": company,
+			"failure_date": nowdate(),
+			"repair_status": "Completed",
+			"completion_date": nowdate(),
+			"capitalize_repair_cost": 1,
+			"repair_cost": 25_000,
+			"cost_center": frappe.db.get_value("Asset", asset.name, "cost_center"),
+			"purchase_invoice": None,
+			"capital_work_in_progress_account": clearing,
+		}
+	)
+	repair.flags.ignore_permissions = True
+	repair.insert()
+	repair.submit()
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	hav_after_repair = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"], 2)
+	repair.reload()
+	repair.cancel()
+	reversal = frappe.db.get_value(
+		"Asset Repair", {"reversal_of_repair": repair.name, "docstatus": 1}, "name"
+	)
+	back = frappe.db.get_value("Asset Repair", repair.name, "reversed_by_repair")
+	hav_after_reversal = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"], 2)
+	ok = bool(reversal) and back == reversal and hav_after_reversal == 500_000.00
+	return (
+		("PASS" if ok else "FAIL"),
+		f"HAV {hav_after_repair:,.2f} after repair -> {hav_after_reversal:,.2f} after reversal "
+		f"(want 500,000); reversal repair {reversal}; back-link {back}",
+	)
+
+
+# ============================================================= TC-047d
+@tc("TC-047d", "Repair Reversal Blocked on Fully-Depreciated Asset")
+def tc047d():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	asset = _plain_asset(company, cat, "TC-047d Full", 500_000)
+	asset.submit()
+	repair = frappe.get_doc(
+		{
+			"doctype": "Asset Repair",
+			"asset": asset.name,
+			"company": company,
+			"failure_date": nowdate(),
+			"repair_status": "Completed",
+			"completion_date": nowdate(),
+			"capitalize_repair_cost": 1,
+			"repair_cost": 25_000,
+			"cost_center": frappe.db.get_value("Asset", asset.name, "cost_center"),
+			"capital_work_in_progress_account": clearing,
+		}
+	)
+	repair.flags.ignore_permissions = True
+	repair.insert()
+	repair.submit()
+	frappe.db.set_value("Asset", asset.name, "status", "Fully Depreciated", update_modified=False)
+	frappe.db.set_value("Asset", asset.name, "is_fully_depreciated", 1, update_modified=False)
+	try:
+		repair.reload()
+		repair.cancel()
+	except frappe.ValidationError as e:
+		msg = str(e)
+		reversal = frappe.db.count("Asset Repair", {"reversal_of_repair": repair.name})
+		blocked = "fully depreciated" in msg.lower()
+		vr038_wording = "Asset Value Adjustment" in msg
+		verdict = "PASS" if (blocked and reversal == 0) else "FAIL"
+		if verdict == "PASS" and not vr038_wording:
+			verdict = "DEVIATION"
+			return verdict, (
+				f"blocked and no Reversal Repair created (0), but the message is core's "
+				f"status guard — TC-047d asks for VR-038's wording pointing the user at an "
+				f"Asset Value Adjustment: {msg[:110]}"
+			)
+		return verdict, f"blocked: {msg[:130]} | reversal repairs created: {reversal}"
+	return "FAIL", "repair reversal allowed on a fully depreciated asset"
+
+
+# ============================================================== TC-048
+@tc("TC-048", "Composite Partial Scrap by Amount")
+def tc048():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	loss = _plain(company, "Expense")
+	_scrapping_type("Obsolescence", company, loss)
+	composite = _plain_asset(company, cat, "TC-048 COMPOSITE-KILN", 50_000_000,
+	                         opening_accumulated_depreciation=17_250_000)
+	composite.submit()
+	from asset_enterprise import disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	disposal.partial_scrap_asset(composite.name, scrap_value=7_500_000,
+	                             scrapping_type="Obsolescence")
+	ft = frappe.db.get_value(
+		"Financial Treatment",
+		{"asset": composite.name, "transaction_type": ("like", "%Partial%"), "status": "Posted"},
+		"journal_entry",
+	)
+	legs = {(r.account, flt(r.debit, 2), flt(r.credit, 2)) for r in _gl(ft)} if ft else set()
+	want = {
+		(_account(company, "Accumulated Depreciation"), 2_587_500.00, 0.00),
+		(loss, 4_912_500.00, 0.00),
+		(_account(company, "Fixed Asset"), 0.00, 7_500_000.00),
+	}
+	values = recalculate_asset_values(composite.name, save=False)
+	ok = legs == want and flt(values["historical_asset_value"], 2) == 42_500_000.00
+	return (
+		("PASS" if ok else "FAIL"),
+		f"JE {ft}: {sorted(legs)}; composite HAV {flt(values['historical_asset_value']):,.2f} "
+		f"(want 42,500,000)",
+	)
+
+
+# ============================================================== TC-042c
+@tc("TC-042c", "Asset Reversal after Manual Depreciation Reversal")
+def tc042c():
+	if not frappe.get_meta("Journal Entry").has_field("reversal_of"):
+		return (
+			"MANUAL",
+			"needs the GA-0001-01 Journal Entry `reversal_of` field, which this bench does "
+			"not carry — exercise on the UAT server where GA-0001-01 is installed",
+		)
+	return "MANUAL", "GA-0001-01 reversal chain — drive from the UAT server"
+
+
+# ============================================================== TC-043
+@tc("TC-043", "Partial Scrap Reversal — Same-Period Window")
+def tc043():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
+	loss = _plain(company, "Expense")
+	_scrapping_type("Damage", company, loss)
+	asset = _plain_asset(company, cat, "TC-043 Partial Restore", 2_000_000,
+	                     opening_accumulated_depreciation=1_517_808.22)
+	asset.submit()
+	from asset_enterprise import disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.restore import restore_partial_scrap
+
+	disposal.partial_scrap_asset(asset.name, scrap_value=100_000, scrapping_type="Damage")
+	ft = frappe.db.get_value(
+		"Financial Treatment",
+		{"asset": asset.name, "transaction_type": ("like", "%Partial%"), "status": "Posted"},
+		["name", "journal_entry"], as_dict=True,
+	)
+	restore_partial_scrap(asset.name, ft.name)
+	values = recalculate_asset_values(asset.name, save=False)
+	original_posted = frappe.db.get_value("Journal Entry", ft.journal_entry, "docstatus") == 1
+	ok = (
+		flt(values["historical_asset_value"], 2) == 2_000_000.00
+		and flt(values["accumulated_depreciation_value"], 2) == 1_517_808.22
+		and original_posted
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"HAV restored to {flt(values['historical_asset_value']):,.2f} (want 2,000,000); accum "
+		f"{flt(values['accumulated_depreciation_value']):,.2f} (want 1,517,808.22); original "
+		f"partial-scrap entry still posted={original_posted}",
+	)
