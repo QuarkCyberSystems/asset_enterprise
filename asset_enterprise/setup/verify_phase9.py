@@ -150,12 +150,51 @@ def _run():
 		pr_asset.available_for_use_date = None
 		pr_asset.flags.ignore_permissions = True
 		pr_asset.save()
-		g3_ok = str(pr_asset.available_for_use_date) == str(receiving_date)
+		g3_field_ok = str(pr_asset.available_for_use_date) == str(receiving_date)
 		print(
 			f"gap003 AFU derived from PR posting date: {pr_asset.available_for_use_date} "
-			f"(want {receiving_date}) {'OK' if g3_ok else 'FAIL'}"
+			f"(want {receiving_date}) {'OK' if g3_field_ok else 'FAIL'}"
 		)
-		ok = ok and g3_ok
+		ok = ok and g3_field_ok
+
+		# TC-005 BEHAVIOUR (not just the field): the schedule must actually
+		# depreciate FROM the receiving date — first row = days from the PR
+		# date to its EOM x daily rate. (days_in_period/daily_rate are OUR
+		# columns and stay empty on core-built schedules — assert the money.)
+		pr_asset.reload()
+		pr_asset.calculate_depreciation = 1
+		pr_asset.set("finance_books", [])
+		pr_asset.append("finance_books", {
+			"depreciation_method": "Straight Line",
+			"total_number_of_depreciations": 24,
+			"frequency_of_depreciation": 1,
+			"daily_prorata_based": 1,
+		})
+		pr_asset.flags.ignore_permissions = True
+		pr_asset.save()
+		pr_asset.submit()
+		first = frappe.db.sql(
+			"""select ds.schedule_date, ds.depreciation_amount
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			   order by ds.schedule_date limit 1""",
+			pr_asset.name, as_dict=True,
+		)
+		gross = flt(pr_asset.net_purchase_amount)
+		daily = gross / (24 / 12 * 365)  # §4.3 day-count rule
+		expected_days = (
+			frappe.utils.date_diff(first[0].schedule_date, receiving_date) + 1
+		) if first else 0
+		expected_amt = round(daily * expected_days, 2)
+		g3_sched_ok = bool(first) and abs(flt(first[0].depreciation_amount) - expected_amt) <= 0.02
+		print(
+			f"tc005  first row {first and first[0].schedule_date}: "
+			f"{first and first[0].depreciation_amount} vs {expected_amt} "
+			f"({expected_days} days from receiving date x {daily:.6f}) "
+			f"{'OK' if g3_sched_ok else 'FAIL'}"
+		)
+		ok = ok and g3_sched_ok
 
 		# ------------------------------------ GAP-010 (TC-014 / VR-011)
 		pr_asset.submit()
