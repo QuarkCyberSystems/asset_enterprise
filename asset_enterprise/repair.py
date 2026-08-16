@@ -84,3 +84,59 @@ def repair_missing_opening_entries(company=None, asset=None, dry_run=1):
 			frappe.db.rollback()
 			print(f"  FAILED {row.name}: {str(e)[:140]}")
 	return posted
+
+
+def rebuild_schedules_under_daycount_rule(company=None, asset=None, dry_run=1):
+	"""Re-apply the §4.3 day-count rule to schedules that core built
+	(non-uniform daily rate across a leap year). Posted rows are kept.
+
+	    bench --site <site> execute \
+	        asset_enterprise.repair.rebuild_schedules_under_daycount_rule \
+	        --kwargs "{'dry_run': 0}"
+	"""
+	from asset_enterprise.depreciation import (
+		apply_daycount_rule,
+		enterprise_enabled,
+		is_rule_built_schedule,
+	)
+
+	if not enterprise_enabled():
+		frappe.throw(_("Enterprise Assets is not enabled."))
+
+	filters = {"docstatus": 1, "calculate_depreciation": 1}
+	if company:
+		filters["company"] = company
+	if asset:
+		filters["name"] = asset
+
+	targets = [
+		row.name
+		for row in frappe.get_all("Asset", filters=filters, fields=["name"])
+		if frappe.db.exists(
+			"Asset Depreciation Schedule",
+			{"asset": row.name, "status": "Active", "docstatus": 1},
+		)
+		and not is_rule_built_schedule(row.name)
+	]
+	if not targets:
+		print("all Active schedules already follow the §4.3 rule")
+		return []
+
+	print(f"{len(targets)} schedule(s) built under core's day-count:")
+	for name in targets:
+		print(f"  {name}")
+	if cint(dry_run):
+		print("dry run — nothing changed. Re-run with dry_run=0 to rebuild.")
+		return targets
+
+	done = []
+	for name in targets:
+		try:
+			ads = apply_daycount_rule(name, reason=_("§4.3 day-count rule — schedule rebuild"))
+			frappe.db.commit()
+			print(f"  rebuilt {name} -> {ads and ads.name}")
+			done.append(name)
+		except Exception as e:
+			frappe.db.rollback()
+			print(f"  FAILED {name}: {str(e)[:140]}")
+	return done

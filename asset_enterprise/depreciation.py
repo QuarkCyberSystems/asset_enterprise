@@ -307,6 +307,74 @@ def supersede_and_regenerate(
 	return new
 
 
+def schedule_horizon_from_life(asset_name, finance_book=None):
+	"""§4.3/§4.4 horizon: start basis + total life − 1 day."""
+	asset = frappe.get_doc("Asset", asset_name)
+	filters = {"parent": asset_name}
+	if finance_book:
+		filters["finance_book"] = finance_book
+	fb = frappe.db.get_value(
+		"Asset Finance Book", filters,
+		["total_number_of_depreciations", "frequency_of_depreciation", "depreciation_start_date"],
+		as_dict=True,
+	)
+	if not fb or not fb.total_number_of_depreciations:
+		return None
+	months = cint(fb.total_number_of_depreciations) * (cint(fb.frequency_of_depreciation) or 1)
+	start = getdate(asset.available_for_use_date or fb.depreciation_start_date)
+	return add_days(add_months(start, months), -1)
+
+
+def is_rule_built_schedule(asset_name):
+	"""Our engine stamps daily_rate/days_in_period on every row; core
+	leaves them empty. Used to avoid rebuilding what we already built."""
+	row = frappe.db.sql(
+		"""select ds.daily_rate from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		   order by ds.schedule_date limit 1""",
+		asset_name,
+	)
+	return bool(row and flt(row[0][0]))
+
+
+def apply_daycount_rule(asset_name, reason=None, finance_book=None):
+	"""Rebuild the Active schedule under the §4.3 day-count rule so the
+	daily rate is UNIFORM across the whole life (core spreads the initial
+	schedule over the real calendar span, giving a different rate inside
+	a leap year). Posted rows are preserved verbatim; only future rows
+	are regenerated, so this is safe on assets already depreciating."""
+	if is_rule_built_schedule(asset_name):
+		return None
+	end_of_life = schedule_horizon_from_life(asset_name, finance_book)
+	if not end_of_life:
+		return None
+	last_posted = frappe.db.sql(
+		"""select max(ds.schedule_date) from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		     and ifnull(ds.journal_entry, '') != ''""",
+		asset_name,
+	)[0][0]
+	asset = frappe.get_doc("Asset", asset_name)
+	# nothing posted -> regenerate from the start basis itself
+	as_of = getdate(last_posted) if last_posted else add_days(
+		getdate(asset.available_for_use_date), -1
+	)
+	if getdate(end_of_life) <= as_of:
+		return None
+	try:
+		return supersede_and_regenerate(
+			asset_name,
+			finance_book=finance_book,
+			as_of_date=as_of,
+			end_of_life_override=end_of_life,
+			reason=reason or _("§4.3 day-count rule applied"),
+		)
+	except frappe.ValidationError:
+		return None
+
+
 def regenerate_after_value_change(asset_name, adjustment_date, reason, end_of_life_override=None):
 	"""Supersede + regenerate once the value change is recorded.
 

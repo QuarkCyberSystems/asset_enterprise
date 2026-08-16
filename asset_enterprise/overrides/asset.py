@@ -204,6 +204,16 @@ class EnterpriseAsset(Asset):
 
 	def on_submit(self):
 		super().on_submit()
+		if self._enterprise() and self.calculate_depreciation:
+			# §4.3 (v2.16 CH-12): core spreads the initial schedule over the
+			# real calendar span, so rows inside a leap year get a different
+			# daily rate. Rebuild under the normative rule (uniform rate,
+			# matching the client xlsx). Posted rows are preserved.
+			from asset_enterprise.depreciation import apply_daycount_rule
+
+			apply_daycount_rule(
+				self.name, reason=_("§4.3 day-count rule applied at submit")
+			)
 		if self.get("replacement_of_asset"):
 			# GAP-016 Path 2: two-way link once the replacement goes live.
 			frappe.db.set_value(

@@ -227,6 +227,34 @@ def _run():
 		)
 		ok = ok and bool(s2_ok)
 
+		# ===== S2b: uniform daily rate across a leap year (§4.3 CH-12)
+		lp = make_test_asset(company, gross=240_000, submit=False, with_depreciation=True)
+		lp.purchase_date = "2026-06-16"
+		lp.available_for_use_date = "2026-06-16"
+		lp.finance_books[0].depreciation_start_date = "2026-06-30"
+		lp.finance_books[0].total_number_of_depreciations = 24
+		lp.flags.ignore_permissions = True
+		lp.save()
+		lp.submit()
+		lp_rows = frappe.db.sql(
+			"""select ds.schedule_date, ds.depreciation_amount, ds.daily_rate
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status='Active' and ads.docstatus=1
+			   order by ds.schedule_date""", lp.name, as_dict=True)
+		rates = {round(flt(r.daily_rate), 4) for r in lp_rows if flt(r.daily_rate)}
+		lp_total = sum(flt(r.depreciation_amount) for r in lp_rows)
+		s2b_ok = (
+			len(rates) == 1
+			and abs(list(rates)[0] - 240_000 / 730) < 0.01   # months/12*365
+            and abs(lp_total - 240_000) <= 0.05
+		)
+		print(
+			f"s2b leap-year rate | distinct daily rates={rates} (want ONE = "
+			f"{240_000/730:.4f}) schedule total={lp_total:,.2f} {'OK' if s2b_ok else 'FAIL'}"
+		)
+		ok = ok and bool(s2b_ok)
+
 		# ================= S3: PR -> PI delta (§12.1/12.4, TC-023) =======
 		item = frappe.get_doc("Item", "AE-SMOKE-ITEM")
 		item.auto_create_assets = 1
