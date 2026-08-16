@@ -168,7 +168,6 @@ class EnterpriseAsset(Asset):
 		category flag is on and the user left the AFU date empty."""
 		if (
 			self.available_for_use_date
-			or self.get("is_existing_asset")
 			or not self.get("purchase_receipt")
 			or not self._receiving_date_basis()
 		):
@@ -233,18 +232,34 @@ class EnterpriseAsset(Asset):
 		if self._enterprise():
 			self._post_existing_asset_opening()
 
+	def _is_opening_balance_asset(self):
+		"""GAP-001 scope in ERPNext v16.
+
+		v15's `is_existing_asset` checkbox NO LONGER EXISTS in v16, so an
+		"existing asset" is identified by what it is: an asset brought
+		onto the books with NO purchase document — precisely the case
+		where core books no GL at all (`validate_make_gl_entry` returns
+		False without a purchase document). Excluded:
+		- purchased assets (PR / PI book the value),
+		- composite assets (core posts their capitalization GL),
+		- reclassification targets (our §12.13 JE is the booking),
+		- anything core already booked (`booked_fixed_asset`).
+		"""
+		return not (
+			self.get("purchase_receipt")
+			or self.get("purchase_invoice")
+			or self.get("reclassified_from")
+			or self.get("booked_fixed_asset")
+			or self.get("asset_type") == "Composite Asset"
+		)
+
 	def _post_existing_asset_opening(self):
 		"""GAP-001: auto-JE via TCC Addition (Existing-Asset Opening).
 
 		Only for existing assets brought in without purchase documents —
 		purchased assets get their booking GL from the PR/PI flow.
 		"""
-		if (
-			not self.get("is_existing_asset")
-			or self.get("purchase_receipt")
-			or self.get("purchase_invoice")
-			or self.get("reclassified_from")  # booking came via the reclassification JE
-		):
+		if not self._is_opening_balance_asset():
 			return
 
 		from asset_enterprise import tcc
@@ -357,8 +372,6 @@ class EnterpriseAsset(Asset):
 		"""§12.2 reversal (Phase 11 F4): the GAP-001 opening JE is a
 		standalone Journal Entry that core's asset-cancel reversal never
 		touches — mirror it and pair the Addition FT."""
-		if not self.get("is_existing_asset"):
-			return
 		ft = frappe.db.get_value(
 			"Financial Treatment",
 			{

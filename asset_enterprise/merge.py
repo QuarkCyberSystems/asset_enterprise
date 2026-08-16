@@ -448,7 +448,6 @@ def reclassify(cap_doc):
 		target.purchase_amount = gross
 		target.net_purchase_amount = gross
 		target.opening_accumulated_depreciation = accum
-		target.is_existing_asset = 1
 		target.reclassified_from = source.name
 		target.flags.ignore_permissions = True
 		target.flags.ignore_links = True

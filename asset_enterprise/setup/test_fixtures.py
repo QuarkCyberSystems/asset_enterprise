@@ -98,7 +98,6 @@ def make_test_asset(company, gross=100000, submit=False, with_depreciation=False
 			"asset_name": "AE Smoke Asset",
 			"asset_category": "AE Smoke Category",
 			"location": _ensure_location(),
-			"is_existing_asset": 1,
 			"purchase_amount": gross,
 			"net_purchase_amount": gross,
 			"opening_accumulated_depreciation": 0,

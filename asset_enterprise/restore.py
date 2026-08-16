@@ -238,7 +238,6 @@ def create_replacement_asset(source_asset):
 			"asset_category": source.asset_category,
 			"location": source.location,
 			"cost_center": source.get("cost_center"),
-			"is_existing_asset": 1,
 			"purchase_date": nowdate(),
 			"available_for_use_date": nowdate(),
 			# Seeded from the source (core validate rejects zero net

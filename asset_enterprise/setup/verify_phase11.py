@@ -218,7 +218,7 @@ def _run():
 		r_tgt = frappe.get_doc({
 			"doctype": "Asset", "company": company, "item_code": item2,
 			"asset_name": "AE Smoke Reclass Target", "asset_category": cat2,
-			"location": r_src.location, "is_existing_asset": 1,
+			"location": r_src.location,
 			"purchase_amount": 1, "net_purchase_amount": 1,
 			"purchase_date": nowdate(), "available_for_use_date": nowdate(),
 			"calculate_depreciation": 0,
