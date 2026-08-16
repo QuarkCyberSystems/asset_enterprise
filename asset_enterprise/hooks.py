@@ -31,6 +31,10 @@ override_whitelisted_methods = {
 # GA-0005-01 v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
 doctype_js = {
 	"Asset": "public/js/asset.js",
+	# GAP-014 / VR-037: re-scope the Target Asset picker per
+	# transaction_type — core allows only draft composite assets, which
+	# no valid Capitalized Maintenance target ever is.
+	"Asset Capitalization": "public/js/asset_capitalization.js",
 }
 
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).

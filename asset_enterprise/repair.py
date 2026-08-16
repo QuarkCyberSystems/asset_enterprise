@@ -1,0 +1,86 @@
+"""Data repair utilities (explicit, opt-in — never run automatically).
+
+`repair_missing_opening_entries` posts the GAP-001 opening JE for
+submitted opening-balance assets that have none. Needed when assets
+were submitted while the enterprise switch was off, before the app
+was deployed, or against stale application workers.
+
+    bench --site <site> execute \\
+        asset_enterprise.repair.repair_missing_opening_entries \\
+        --kwargs "{'dry_run': 1}"
+    bench --site <site> execute \\
+        asset_enterprise.repair.repair_missing_opening_entries \\
+        --kwargs "{'asset': 'ACC-ASS-2026-00033', 'dry_run': 0}"
+"""
+
+import frappe
+from frappe import _
+from frappe.utils import cint, flt
+
+
+def find_missing_opening_entries(company=None, asset=None):
+	"""Submitted assets that SHOULD carry an opening JE but have no GL
+	and no Existing-Asset Opening treatment."""
+	filters = {"docstatus": 1}
+	if company:
+		filters["company"] = company
+	if asset:
+		filters["name"] = asset
+
+	missing = []
+	for row in frappe.get_all(
+		"Asset", filters=filters, fields=["name", "asset_name", "company", "net_purchase_amount"]
+	):
+		doc = frappe.get_doc("Asset", row.name)
+		if not doc._is_opening_balance_asset() or flt(doc.net_purchase_amount) <= 0:
+			continue
+		has_ft = frappe.db.exists(
+			"Financial Treatment",
+			{"asset": row.name, "transaction_type": "Existing-Asset Opening", "status": "Posted"},
+		)
+		has_gl = frappe.db.sql(
+			"select count(*) from `tabGL Entry` where against_voucher = %s and is_cancelled = 0",
+			row.name,
+		)[0][0]
+		if not has_ft and not has_gl:
+			missing.append(row)
+	return missing
+
+
+def repair_missing_opening_entries(company=None, asset=None, dry_run=1):
+	"""Report (dry_run=1) or post (dry_run=0) the missing opening JEs."""
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled():
+		frappe.throw(_("Enterprise Assets is not enabled."))
+
+	missing = find_missing_opening_entries(company=company, asset=asset)
+	if not missing:
+		print("no assets are missing their opening entry")
+		return []
+
+	print(f"{len(missing)} asset(s) missing the GAP-001 opening entry:")
+	for row in missing:
+		print(f"  {row.name} | {row.asset_name} | gross {row.net_purchase_amount}")
+
+	if cint(dry_run):
+		print("dry run — nothing posted. Re-run with dry_run=0 to post.")
+		return [r.name for r in missing]
+
+	posted = []
+	for row in missing:
+		doc = frappe.get_doc("Asset", row.name)
+		try:
+			doc._post_existing_asset_opening()
+			frappe.db.commit()
+			ft = frappe.db.get_value(
+				"Financial Treatment",
+				{"asset": row.name, "transaction_type": "Existing-Asset Opening"},
+				["name", "journal_entry"], as_dict=True,
+			)
+			print(f"  posted {row.name}: JE {ft and ft.journal_entry} (FT {ft and ft.name})")
+			posted.append(row.name)
+		except Exception as e:
+			frappe.db.rollback()
+			print(f"  FAILED {row.name}: {str(e)[:140]}")
+	return posted
