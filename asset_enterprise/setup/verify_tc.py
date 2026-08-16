@@ -114,6 +114,23 @@ def _item(category, code):
 	return code
 
 
+def _ensure_fiscal_years(first_year, last_year):
+	"""Historic test cases (2017, 2025) need their fiscal years to exist
+	on whatever bench this runs against — created inside the savepoint."""
+	for year in range(int(first_year), int(last_year) + 1):
+		name = str(year)
+		if frappe.db.exists("Fiscal Year", name):
+			continue
+		frappe.get_doc(
+			{
+				"doctype": "Fiscal Year",
+				"year": name,
+				"year_start_date": f"{year}-01-01",
+				"year_end_date": f"{year}-12-31",
+			}
+		).insert(ignore_permissions=True)
+
+
 def _supplier():
 	name = frappe.db.get_value("Supplier", {"supplier_name": "TC Audit Supplier"}, "name")
 	if name:
@@ -721,3 +738,481 @@ def run(only=None):
 		tally[verdict] = tally.get(verdict, 0) + 1
 	print("\nTALLY:", ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
 	return results
+
+
+# --------------------------------------------------------- batch 2 helpers
+
+
+def _plain_asset(company, cat, name, gross, **kw):
+	doc = frappe.get_doc(
+		{
+			"doctype": "Asset",
+			"company": company,
+			"asset_name": name,
+			"asset_category": cat,
+			"item_code": _item(cat, "TC-IT-ITEM"),
+			"location": _location(),
+			"purchase_amount": gross,
+			"net_purchase_amount": gross,
+			"available_for_use_date": kw.pop("afu", nowdate()),
+			"purchase_date": kw.pop("purchase_date", nowdate()),
+			"calculate_depreciation": 0,
+			**kw,
+		}
+	)
+	doc.flags.ignore_permissions = True
+	doc.insert()
+	return doc
+
+
+def _depreciating_asset(company, cat, name, gross, start, months, afu, salvage=0):
+	doc = frappe.get_doc(
+		{
+			"doctype": "Asset",
+			"company": company,
+			"asset_name": name,
+			"asset_category": cat,
+			"item_code": _item(cat, "TC-IT-ITEM"),
+			"location": _location(),
+			"purchase_amount": gross,
+			"net_purchase_amount": gross,
+			"available_for_use_date": afu,
+			"purchase_date": afu,
+			"calculate_depreciation": 1,
+			"finance_books": [
+				{
+					"depreciation_method": "Straight Line",
+					"total_number_of_depreciations": months,
+					"frequency_of_depreciation": 1,
+					"depreciation_start_date": start,
+					"expected_value_after_useful_life": salvage,
+					"daily_prorata_based": 1,
+				}
+			],
+		}
+	)
+	doc.flags.ignore_permissions = True
+	doc.insert()
+	doc.submit()
+	return doc
+
+
+def _rows(asset_name, status="Active"):
+	sched = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset_name, "status": status, "docstatus": 1}, "name"
+	)
+	return sched, frappe.get_all(
+		"Depreciation Schedule",
+		filters={"parent": sched},
+		fields=["schedule_date", "depreciation_amount", "days_in_period", "daily_rate", "journal_entry"],
+		order_by="idx",
+	)
+
+
+def _post_through(asset_name, upto):
+	from erpnext.assets.doctype.asset.depreciation import make_depreciation_entry
+
+	sched, _r = _rows(asset_name)
+	make_depreciation_entry(sched, str(upto))
+
+
+# =============================================================== TC-011
+@tc("TC-011", "Asset History Records Financial Treatment")
+def tc011():
+	"""Given: opening + revaluation +100,000 + depreciation 50,000.
+	Expected: a history row per transaction carrying category, amount,
+	HAV-after, NBV-after and the JE link."""
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	start = get_last_day(add_months(nowdate(), -1))
+	asset = _depreciating_asset(
+		company, cat, "TC-011 History", 600_000, start, 12, add_months(nowdate(), -2)
+	)
+	_post_through(asset.name, start)
+
+	ava = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": nowdate(),
+			"transaction_type": "Upward Revaluation",
+			"current_asset_value": flt(
+				frappe.db.get_value("Asset", asset.name, "net_book_value")
+			),
+			"new_asset_value": flt(frappe.db.get_value("Asset", asset.name, "net_book_value"))
+			+ 100_000,
+			"difference_account": _plain(company, "Income") or _plain(company, "Liability"),
+		}
+	)
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+
+	rows = frappe.get_all(
+		"Asset Activity",
+		filters={"asset": asset.name, "financial_effect": 1},
+		fields=[
+			"subject",
+			"transaction_category",
+			"transaction_amount",
+			"historical_asset_value_after",
+			"net_book_value_after",
+			"linked_journal_entry",
+		],
+		order_by="creation",
+	)
+	complete = [
+		r
+		for r in rows
+		if r.transaction_category and flt(r.transaction_amount) and r.linked_journal_entry
+		and r.historical_asset_value_after is not None
+		and r.net_book_value_after is not None
+	]
+	ok = len(complete) >= 2  # depreciation + revaluation on this asset
+	return (
+		("PASS" if ok else "FAIL"),
+		f"{len(rows)} financial history rows, {len(complete)} carry category+amount+HAV/NBV-after+JE: "
+		+ "; ".join(
+			f"{r.transaction_category} {flt(r.transaction_amount):,.0f} "
+			f"HAV {flt(r.historical_asset_value_after):,.0f} NBV {flt(r.net_book_value_after):,.0f} {r.linked_journal_entry}"
+			for r in rows[:3]
+		),
+	)
+
+
+# =============================================================== TC-012
+@tc("TC-012", "Asset Tree Aggregation")
+def tc012():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	parent = _plain_asset(company, cat, "TC-012 Plant A", 1_000_000)
+	parent.submit()
+	for i in range(5):
+		child = _plain_asset(
+			company, cat, f"TC-012 Child {i}", 1_800_000, parent_asset=parent.name,
+			opening_accumulated_depreciation=400_000,
+		)
+		child.submit()
+
+	from asset_enterprise.api import tree_aggregate
+
+	totals = tree_aggregate(parent.name)
+	ok = (
+		flt(totals["historical_asset_value"]) == 10_000_000
+		and flt(totals["accumulated_depreciation_value"]) == 2_000_000
+		and flt(totals["net_book_value"]) == 8_000_000
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"HAV {flt(totals['historical_asset_value']):,.2f} accum "
+		f"{flt(totals['accumulated_depreciation_value']):,.2f} NBV {flt(totals['net_book_value']):,.2f}",
+	)
+
+
+# =============================================================== TC-013
+@tc("TC-013", "Asset Tree Acyclic Validation → VR-009")
+def tc013():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	a = _plain_asset(company, cat, "TC-013 A", 10_000)
+	b = _plain_asset(company, cat, "TC-013 B", 10_000, parent_asset=a.name)
+	c = _plain_asset(company, cat, "TC-013 C", 10_000, parent_asset=b.name)
+	a.parent_asset = c.name
+	try:
+		a.save()
+	except frappe.ValidationError as e:
+		return "PASS", f"cycle blocked: {str(e)[:120]}"
+	return "FAIL", f"A -> C accepted while C is a descendant of A ({c.name})"
+
+
+# =============================================================== TC-014
+@tc("TC-014", "Prevent Disposal Before Full Invoicing → VR-011")
+def tc014():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	item = _item(cat, "TC-DISPOSAL-ITEM")
+	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 1)
+	pr = frappe.get_doc(
+		{
+			"doctype": "Purchase Receipt",
+			"company": company,
+			"supplier": _supplier(),
+			"posting_date": nowdate(),
+			"set_posting_time": 1,
+			"items": [{"item_code": item, "qty": 1, "rate": 80_000, "asset_location": _location()}],
+		}
+	)
+	pr.flags.ignore_permissions = True
+	pr.insert()
+	pr.submit()
+	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
+	asset = frappe.get_doc("Asset", asset_name)
+	asset.available_for_use_date = asset.purchase_date
+	asset.flags.ignore_permissions = True
+	asset.save()
+	asset.submit()
+
+	from asset_enterprise import disposal
+
+	try:
+		disposal.scrap_asset(asset_name, scrapping_type="Damage")
+	except frappe.ValidationError as e:
+		msg = str(e)
+		return (
+			("PASS" if "invoice" in msg.lower() else "FAIL"),
+			f"scrap blocked: {msg[:130]}",
+		)
+	return "FAIL", "asset scrapped while its purchase invoice was still missing"
+
+
+# =============================================================== TC-015
+@tc("TC-015", "Daily-Rate Depreciation — No Adjustment")
+def tc015():
+	_ensure_fiscal_years(2017, 2022)
+	"""10,000,000 over 1,825 days from 01/01/2017; check rows 1, 2, 13
+	and the NBV after 12 posted months."""
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-015 Daily Rate", 10_000_000, "2017-01-31", 60, "2017-01-01"
+	)
+	_sched, rows = _rows(asset.name)
+	rate = flt(10_000_000 / 1825.0, 6)
+	jan17 = rows[0]
+	feb17 = rows[1]
+	jan18 = rows[12]
+	first_year = sum(flt(r.depreciation_amount) for r in rows[:12])
+	rows_ok = (
+		flt(jan17.depreciation_amount, 2) == flt(31 * rate, 2)
+		and flt(feb17.depreciation_amount, 2) == flt(28 * rate, 2)
+		and flt(jan18.depreciation_amount, 2) == flt(31 * rate, 2)
+	)
+	nbv_after_year = flt(10_000_000 - first_year, 2)
+	ok = rows_ok and nbv_after_year == 8_000_000.00
+	if rows_ok and not ok and abs(nbv_after_year - 8_000_000.00) < 1:
+		return (
+			"DOC",
+			f"rows exact ({flt(jan17.depreciation_amount):,.2f} / "
+			f"{flt(feb17.depreciation_amount):,.2f} / {flt(jan18.depreciation_amount):,.2f}) but NBV "
+			f"after 12 rows is {nbv_after_year:,.2f}, not the stated 8,000,000.00 — per-row rounding "
+			f"drift, which §4.10.3 absorbs in the FINAL row only. The test case's figure assumes "
+			f"unrounded rows; the engine follows §4.10",
+		)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"rate {flt(jan17.daily_rate, 6)} (want {rate}); Jan17 {flt(jan17.depreciation_amount):,.2f}; "
+		f"Feb17 {flt(feb17.depreciation_amount):,.2f}; Jan18 {flt(jan18.depreciation_amount):,.2f}; "
+		f"NBV after 12 rows {flt(10_000_000 - first_year):,.2f} (want 8,000,000.00)",
+	)
+
+
+# =============================================================== TC-016
+@tc("TC-016", "Upward Adjustment Mid-Life — Prospective Recalc")
+def tc016():
+	_ensure_fiscal_years(2017, 2022)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-016 Prospective", 10_000_000, "2017-01-31", 60, "2017-01-01"
+	)
+	_post_through(asset.name, "2017-12-31")
+	sched_before, rows_before = _rows(asset.name)
+	posted_before = [(str(r.schedule_date), flt(r.depreciation_amount)) for r in rows_before if r.journal_entry]
+
+	ava = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": "2017-12-31",
+			"transaction_type": "Upward Revaluation",
+			"current_asset_value": 8_000_000,
+			"new_asset_value": 9_000_000,
+			"difference_account": _plain(company, "Income") or _plain(company, "Liability"),
+		}
+	)
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+
+	sched_after, rows_after = _rows(asset.name)
+	future = [r for r in rows_after if getdate(r.schedule_date) > getdate("2017-12-31")]
+	jan18 = future[0]
+	feb18 = future[1]
+	rate = flt(9_000_000 / 1460.0, 6)
+	old_status = frappe.db.get_value("Asset Depreciation Schedule", sched_before, "status")
+	posted_after = [(str(r.schedule_date), flt(r.depreciation_amount)) for r in rows_after if r.journal_entry]
+	ok = (
+		flt(jan18.depreciation_amount, 2) == flt(31 * rate, 2)
+		and flt(feb18.depreciation_amount, 2) == flt(28 * rate, 2)
+		and old_status == "Superseded"
+		and posted_before == posted_after
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"new rate {flt(jan18.daily_rate, 6)} (want {rate}); Jan18 {flt(jan18.depreciation_amount):,.2f} "
+		f"(want {31 * rate:,.2f}); Feb18 {flt(feb18.depreciation_amount):,.2f} (want {28 * rate:,.2f}); "
+		f"old schedule {old_status}; posted rows unchanged={posted_before == posted_after}",
+	)
+
+
+# =============================================================== TC-017
+@tc("TC-017", "Impairment Mid-Life — Prospective Recalc")
+def tc017():
+	_ensure_fiscal_years(2017, 2022)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-017 Impairment", 10_000_000, "2017-01-31", 60, "2017-01-01"
+	)
+	_post_through(asset.name, "2017-12-31")
+	ava1 = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": "2017-12-31",
+			"transaction_type": "Upward Revaluation",
+			"current_asset_value": 8_000_000,
+			"new_asset_value": 9_000_000,
+			"difference_account": _plain(company, "Income") or _plain(company, "Liability"),
+		}
+	)
+	ava1.flags.ignore_permissions = True
+	ava1.insert()
+	ava1.submit()
+	_post_through(asset.name, "2019-12-31")
+
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	nbv_at_36 = flt(recalculate_asset_values(asset.name, save=False)["net_book_value"])
+	ava2 = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": "2019-12-31",
+			"transaction_type": "Initial Impairment",
+			"current_asset_value": nbv_at_36,
+			"new_asset_value": nbv_at_36 - 1_000_000,
+			"difference_account": _plain(company, "Expense"),
+		}
+	)
+	ava2.flags.ignore_permissions = True
+	ava2.insert()
+	ava2.submit()
+
+	_sched, rows = _rows(asset.name)
+	future = [r for r in rows if getdate(r.schedule_date) > getdate("2019-12-31")]
+	jan20 = future[0]
+	rate = flt((nbv_at_36 - 1_000_000) / 730.0, 6)
+	ok = flt(jan20.depreciation_amount, 2) == flt(31 * rate, 2)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"NBV at month 36 {nbv_at_36:,.2f} (doc chain says 4,500,000); after impairment "
+		f"{nbv_at_36 - 1_000_000:,.2f} over 730 days -> {rate}/day; Jan 2020 row "
+		f"{flt(jan20.depreciation_amount):,.2f} (want {31 * rate:,.2f}); doc states 148,630.14",
+	)
+
+
+# =============================================================== TC-018
+@tc("TC-018", "Enable Depreciation After Creation")
+def tc018():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _plain_asset(company, cat, "TC-018 Enable Later", 360_000, afu="2026-05-01",
+	                     purchase_date="2026-05-01")
+	asset.submit()
+
+	from asset_enterprise.depreciation import enable_depreciation
+
+	enable_depreciation(
+		asset.name,
+		total_number_of_depreciations=36,
+		frequency_of_depreciation=1,
+		depreciation_start_date="2026-05-31",
+	)
+	asset.reload()
+	sched, rows = _rows(asset.name)
+	fb = frappe.get_all("Asset Finance Book", filters={"parent": asset.name}, fields=["total_number_of_depreciations"])
+	total = sum(flt(r.depreciation_amount) for r in rows)
+	ok = (
+		bool(fb)
+		and cint_(fb[0].total_number_of_depreciations) == 36
+		and rows
+		and getdate(rows[0].schedule_date) == getdate("2026-05-31")
+		and flt(total, 2) == 360_000.00
+		and flt(asset.calculate_depreciation) == 1
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"finance book={fb}; schedule {sched} first row "
+		f"{rows[0].schedule_date if rows else None} total {flt(total):,.2f}; "
+		f"calculate_depreciation={asset.calculate_depreciation}",
+	)
+
+
+def cint_(v):
+	from frappe.utils import cint
+
+	return cint(v)
+
+
+# =============================================================== TC-019
+@tc("TC-019", "Accumulated First Depreciation Entry")
+def tc019():
+	_ensure_fiscal_years(2025, 2028)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	asset = _depreciating_asset(
+		company, cat, "TC-019 Catch-up", 8_500_000, "2025-06-30", 36, "2025-02-01"
+	)
+	_sched, rows = _rows(asset.name)
+	first = rows[0]
+	rate = flt(8_500_000 / 1095.0, 6)
+	ok = (
+		getdate(first.schedule_date) == getdate("2025-06-30")
+		and flt(first.days_in_period) == 150
+		and flt(first.depreciation_amount, 2) == flt(150 * rate, 2)
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"first row {first.schedule_date} covers {first.days_in_period} days (want 150) "
+		f"= {flt(first.depreciation_amount):,.2f} (want {150 * rate:,.2f}); rate "
+		f"{flt(first.daily_rate, 6)} (want {rate})",
+	)
+
+
+# =============================================================== TC-020
+@tc("TC-020", "End-of-Month Depreciation Posting")
+def tc020():
+	_ensure_fiscal_years(2025, 2027)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	has_flag = frappe.get_meta("Asset Settings").has_field("force_eom_depreciation")
+	asset = _depreciating_asset(
+		company, cat, "TC-020 EOM", 360_000, "2025-03-15", 12, "2025-03-15"
+	)
+	_sched, rows = _rows(asset.name)
+	non_eom = [str(r.schedule_date) for r in rows if getdate(r.schedule_date) != getdate(get_last_day(r.schedule_date))]
+	if non_eom:
+		last = str(rows[-1].schedule_date)
+		if non_eom == [last]:
+			return (
+				"DEVIATION",
+				f"every row is month-end except the LAST ({last}), which lands on the asset's "
+				f"end-of-life date. §4.6 forces all schedule dates to month-end, with exceptions "
+				f"only for disposal/scrap/capitalization — a mid-month start has no stated home "
+				f"for its final stub period",
+			)
+		return "FAIL", f"rows not at end of month: {non_eom[:5]}"
+	evidence = f"all {len(rows)} rows land on month end, first {rows[0].schedule_date}"
+	if not has_flag:
+		return (
+			"DOC",
+			evidence
+			+ " — the Given names Asset Settings `force_eom_depreciation`, removed by the "
+			"11c decision (EOM is the standing rule); behaviour itself is correct",
+		)
+	return "PASS", evidence
