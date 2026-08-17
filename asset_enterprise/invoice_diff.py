@@ -76,6 +76,30 @@ def pr_on_submit(doc, method=None):
 				"Purchase Receipt Item", row.name, "asset_linked", 1, update_modified=False
 			)
 			_validate_pr_over_allocation(row, linked)
+			_stamp_receiving_date_basis(doc, linked)
+
+
+def _stamp_receiving_date_basis(pr_doc, asset_names):
+	"""GAP-003: when the category starts depreciation from the receiving
+	date, fill the draft asset's Available-for-use Date at creation.
+
+	The rule already ran at validate, but core creates these assets
+	during the receipt's own submit, so the draft the user opens showed
+	an empty date and looked like the setting did nothing (client
+	finding 16/08/2026, item 2)."""
+	for name in asset_names:
+		asset = frappe.db.get_value(
+			"Asset", name, ["available_for_use_date", "asset_category", "docstatus"], as_dict=True
+		)
+		if not asset or asset.available_for_use_date or asset.docstatus != 0:
+			continue
+		if not frappe.db.get_value(
+			"Asset Category", asset.asset_category, "calculate_from_receiving_date"
+		):
+			continue
+		frappe.db.set_value(
+			"Asset", name, "available_for_use_date", pr_doc.posting_date, update_modified=False
+		)
 
 
 def _validate_pr_over_allocation(row, linked_assets):
