@@ -154,12 +154,20 @@ def partial_scrap_asset(
 	assert_fully_invoiced(asset)  # GAP-010 / VR-011
 
 	if composite_component:
-		component_row = frappe.db.get_value(
-			"Composite Merge Log Entry",
-			{"parent": asset_name, "merged_source_asset": composite_component, "status": "Active"},
-			["name", "net_book_value_at_merge"],
+		# Child tables must be queried with their parent doctype named —
+		# without it the row is simply not found, and scrapping a merged
+		# component failed with "not an Active merged component" even
+		# though the Merge Log listed it (client sheet item 8).
+		component_row = frappe.db.sql(
+			"""select name, net_book_value_at_merge
+			   from `tabComposite Merge Log Entry`
+			   where parent = %s and parenttype = 'Asset'
+			     and merged_source_asset = %s and status = 'Active'
+			   limit 1""",
+			(asset_name, composite_component),
 			as_dict=True,
 		)
+		component_row = component_row[0] if component_row else None
 		if not component_row:
 			frappe.throw(
 				_(
