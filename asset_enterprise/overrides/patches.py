@@ -157,6 +157,33 @@ def apply_patches():
 	core_depr.post_depreciation_entries = post_depreciation_entries
 	core_ads.reschedule_depreciation = reschedule_depreciation
 
+	# GAP-036: a grouping asset is a structural container with no value —
+	# it must not appear as a zero-value line in the Fixed Asset Register.
+	import erpnext.assets.report.fixed_asset_register.fixed_asset_register as core_far
+
+	core_far_execute = core_far.execute
+
+	def fixed_asset_register(filters=None):
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		result = core_far_execute(filters)
+		if not enterprise_enabled() or not result:
+			return result
+		columns, data = result[0], result[1]
+		group_nodes = set(
+			frappe.get_all("Asset", filters={"is_group_node": 1}, pluck="name")
+		)
+		if group_nodes:
+			data = [
+				row
+				for row in data
+				if (row.get("asset_id") if isinstance(row, dict) else None) not in group_nodes
+			]
+		return (columns, data, *result[2:])
+
+	fixed_asset_register._asset_enterprise_wrapper = True
+	core_far.execute = fixed_asset_register
+
 	# Phase 6 — patch #3: Scrape Type / ACA-override routing for the
 	# loss account in core disposal GL (e.g. sale via Sales Invoice).
 	from asset_enterprise.disposal import get_gl_entries_on_asset_disposal_wrapper
