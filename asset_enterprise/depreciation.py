@@ -587,6 +587,17 @@ def enable_depreciation(
 	if months <= 0:
 		frappe.throw(_("Total useful life must be positive."))
 
+	# Leaving the finance book blank creates a SECOND row alongside the
+	# site's default book, and core reads value_after_depreciation off
+	# whichever row it finds — a negative there flips the asset to "Fully
+	# Depreciated" on day one. Use the book the site actually posts in.
+	if not finance_book:
+		finance_book = (
+			frappe.db.get_value("Asset Finance Book", {"parent": asset_name}, "finance_book")
+			or frappe.db.get_value("Company", asset.company, "default_finance_book")
+			or frappe.db.get_value("Finance Book", {}, "name")
+		)
+
 	# §4.4: the depreciation BASIS is when the asset went into service,
 	# not when someone got round to switching depreciation on. Enabling
 	# it later must still charge from the in-service date, with the first
@@ -629,11 +640,16 @@ def enable_depreciation(
 			"frequency_of_depreciation": cint(frequency_of_depreciation) or 1,
 			"depreciation_start_date": rows[0]["schedule_date"],
 			"expected_value_after_useful_life": flt(expected_value_after_useful_life),
-			"value_after_depreciation": base,
+			"value_after_depreciation": flt(nbv),
 			"daily_prorata_based": 1,
 		}
 	)
 	fb_row.flags.ignore_permissions = True
+	# never leave two rows for the same book behind
+	frappe.db.delete(
+		"Asset Finance Book",
+		{"parent": asset_name, "finance_book": ("in", [finance_book, "", None])},
+	)
 	fb_row.db_insert()
 
 	asset.db_set("calculate_depreciation", 1, update_modified=False)
