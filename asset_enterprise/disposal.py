@@ -168,6 +168,10 @@ def partial_scrap_asset(
 			as_dict=True,
 		)
 		component_row = component_row[0] if component_row else None
+		print(f"[DIAG disposal] asset={asset_name!r} component={composite_component!r} "
+		      f"row={component_row} all_rows="
+		      + str(frappe.db.sql("select parent, merged_source_asset, status from "
+		        "`tabComposite Merge Log Entry` where parent=%s", asset_name)))
 		if not component_row:
 			frappe.throw(
 				_(
