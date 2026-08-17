@@ -65,15 +65,11 @@ def stamp_asset_dimension(doc, method=None):
 
 
 def pr_on_submit(doc, method=None):
-	"""NOTE on sheet item 2 (auto-submitting the assets a receipt
-	creates): tried and withdrawn 16/08/2026. ERPNext forbids changing
-	Available for Use Date OR Calculate Depreciation after submit, so a
-	submitted asset can only start depreciating through Enable
-	Depreciation — and that route builds the schedule from the enable
-	date, losing the receiving-date catch-up entirely (a 108-day first
-	row collapsed to 1 day in TC-005). Auto-submit becomes safe once
-	enable_depreciation uses the asset's available-for-use date as the
-	basis; until then the draft step is what protects the schedule."""
+	"""Sheet item 2 (client, 16/08/2026): the assets a receipt creates are
+	submitted for the user. ERPNext locks Available for Use Date and
+	Calculate Depreciation after submit, so depreciation is switched on
+	afterwards through Enable Depreciation — which now takes its basis
+	from the asset's in-service date, keeping the catch-up intact."""
 	if not _enterprise():
 		return
 	for row in doc.items:
@@ -86,6 +82,7 @@ def pr_on_submit(doc, method=None):
 			)
 			_validate_pr_over_allocation(row, linked)
 			_stamp_receiving_date_basis(doc, linked)
+			_submit_receipt_assets(doc, linked)
 
 
 def _stamp_receiving_date_basis(pr_doc, asset_names):
@@ -112,10 +109,7 @@ def _stamp_receiving_date_basis(pr_doc, asset_names):
 
 
 def _submit_receipt_assets(pr_doc, asset_names):
-	"""NOT WIRED — see the note in pr_on_submit. Kept because the client
-	asked for it (sheet item 2) and it is one line from being live once
-	Enable Depreciation honours the receiving-date basis.
-	"""
+
 	"""Submit the assets the receipt just created (client decision
 	16/08/2026, sheet item 2). Depreciation can still be switched on
 	afterwards via Enable Depreciation, so the draft step only cost the

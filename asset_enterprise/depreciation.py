@@ -580,7 +580,17 @@ def enable_depreciation(
 	if months <= 0:
 		frappe.throw(_("Total useful life must be positive."))
 
-	start = getdate(depreciation_start_date or nowdate())
+	# §4.4: the depreciation BASIS is when the asset went into service,
+	# not when someone got round to switching depreciation on. Enabling
+	# it later must still charge from the in-service date, with the first
+	# posting catching up (§4.5) — otherwise a back-dated asset silently
+	# loses everything before the enable date, and a receiving-date asset
+	# loses its whole catch-up (client sheet item 2, 16/08/2026).
+	first_posting = getdate(depreciation_start_date) if depreciation_start_date else None
+	basis = getdate(asset.available_for_use_date or depreciation_start_date or nowdate())
+	if first_posting and first_posting < basis:
+		basis = first_posting
+	start = basis
 	from asset_enterprise.asset_values import recalculate_asset_values
 
 	nbv = flt(recalculate_asset_values(asset_name, save=False)["net_book_value"])
@@ -594,6 +604,7 @@ def enable_depreciation(
 	total_days = date_diff(end_of_life, start) + 1
 	rows = build_daily_rate_rows(
 		base, start, total_days, asset.company,
+		first_posting_date=first_posting,
 		rate_days=day_count_365(start, end_of_life),  # §4.3 v2.16 rule
 	)
 

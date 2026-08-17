@@ -147,9 +147,13 @@ def _run():
 		pr_asset = frappe.get_doc(
 			"Asset", frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
 		)
-		pr_asset.available_for_use_date = None
-		pr_asset.flags.ignore_permissions = True
-		pr_asset.save()
+		# The receipt now stamps the basis and submits the asset, so the
+		# date is already there — clearing it to prove the rule fires is
+		# no longer possible, nor meaningful.
+		if pr_asset.docstatus == 0:
+			pr_asset.available_for_use_date = None
+			pr_asset.flags.ignore_permissions = True
+			pr_asset.save()
 		g3_field_ok = str(pr_asset.available_for_use_date) == str(receiving_date)
 		print(
 			f"gap003 AFU derived from PR posting date: {pr_asset.available_for_use_date} "
@@ -162,17 +166,29 @@ def _run():
 		# date to its EOM x daily rate. (days_in_period/daily_rate are OUR
 		# columns and stay empty on core-built schedules — assert the money.)
 		pr_asset.reload()
-		pr_asset.calculate_depreciation = 1
-		pr_asset.set("finance_books", [])
-		pr_asset.append("finance_books", {
-			"depreciation_method": "Straight Line",
-			"total_number_of_depreciations": 24,
-			"frequency_of_depreciation": 1,
-			"daily_prorata_based": 1,
-		})
-		pr_asset.flags.ignore_permissions = True
-		pr_asset.save()
-		pr_asset.submit()
+		if pr_asset.docstatus == 0:
+			pr_asset.calculate_depreciation = 1
+			pr_asset.set("finance_books", [])
+			pr_asset.append("finance_books", {
+				"depreciation_method": "Straight Line",
+				"total_number_of_depreciations": 24,
+				"frequency_of_depreciation": 1,
+				"daily_prorata_based": 1,
+			})
+			pr_asset.flags.ignore_permissions = True
+			pr_asset.save()
+			pr_asset.submit()
+		else:
+			# receipt-submitted asset: depreciation goes on through the
+			# Enable Depreciation route, which dates from the in-service
+			# basis — so the catch-up from the receiving date survives.
+			from asset_enterprise.depreciation import enable_depreciation
+
+			enable_depreciation(
+				pr_asset.name,
+				total_number_of_depreciations=24,
+				frequency_of_depreciation=1,
+			)
 		first = frappe.db.sql(
 			"""select ds.schedule_date, ds.depreciation_amount
 			   from `tabDepreciation Schedule` ds
@@ -197,7 +213,9 @@ def _run():
 		ok = ok and g3_sched_ok
 
 		# ------------------------------------ GAP-010 (TC-014 / VR-011)
-		pr_asset.submit()
+		pr_asset.reload()
+		if pr_asset.docstatus == 0:
+			pr_asset.submit()
 		frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 1)
 		from asset_enterprise.disposal import partial_scrap_asset
 
