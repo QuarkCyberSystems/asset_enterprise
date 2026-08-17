@@ -145,6 +145,53 @@ def build_prospective_rows(nbv_base, as_of_date, end_of_life_date, company, firs
 	)
 
 
+def truncate_rows_at_disposal(rows, period_basis, disposal_date, company):
+	"""§4.8: a disposal ENDS the schedule at the disposal date.
+
+	Rows past the date are dropped and the last one is prorated to it at
+	the UNCHANGED daily rate, so the row charges exactly the days since
+	`period_basis` (the last posted period) and the residual NBV stays on
+	the books for the disposal leg to carry. Re-basing the rate onto the
+	stub period instead — regenerating with end of life = disposal date —
+	would expense the whole asset on its way out and leave the composite
+	nothing to absorb.
+	"""
+	if not rows:
+		return rows
+	end = getdate(disposal_date)
+	if end >= getdate(rows[-1]["schedule_date"]):
+		return rows  # disposal at or after end of life: nothing to truncate
+	kept = [r for r in rows if getdate(r["schedule_date"]) < end]
+	prev = getdate(kept[-1]["schedule_date"]) if kept else getdate(period_basis)
+	days = date_diff(end, prev)
+	rate = flt(rows[0]["daily_rate"])
+	amount = fa_module_round(rate * days, company)
+	if days > 0 and amount > 0:
+		kept.append(
+			{"schedule_date": end, "days_in_period": days, "daily_rate": rate, "amount": amount}
+		)
+	return kept
+
+
+def last_posted_schedule_date(asset_name, finance_book=None):
+	"""Latest schedule date on the Active generation that actually booked
+	a JE — the period boundary every regeneration resumes from."""
+	conditions = ""
+	params = [asset_name]
+	if finance_book:
+		conditions = " and ads.finance_book = %s"
+		params.append(finance_book)
+	return frappe.db.sql(
+		f"""
+		select max(ds.schedule_date) from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		  and ifnull(ds.journal_entry, '') != ''{conditions}
+		""",
+		params,
+	)[0][0]
+
+
 def is_prior_fiscal_year(schedule_date, posting_date):
 	"""§4.7 PYA: a row belongs to Prior Year Adjustment when its schedule
 	date falls in an earlier fiscal year than the posting date."""
@@ -180,6 +227,7 @@ def supersede_and_regenerate(
 	reason=None,
 	end_of_life_override=None,
 	first_posting_date=None,
+	disposal_date=None,
 ):
 	"""Replace reschedule-by-cancel with supersession.
 
@@ -189,9 +237,24 @@ def supersede_and_regenerate(
 	   regenerated prospectively from current NBV over remaining days.
 	3. New schedule becomes the one core lookups find (they filter
 	   status='Active').
+	4. `disposal_date` (scrap / sale / merge): the regenerated schedule
+	   TERMINATES there — see truncate_rows_at_disposal. The stub row it
+	   leaves IS the mid-period proration, which is why this function owns
+	   disposal too: core's reschedule_depreciation produced that row only
+	   by cancelling the schedule first, which GAP-031 forbids.
 
 	Returns the new Asset Depreciation Schedule doc.
 	"""
+	# A disposal resumes from the last POSTED period, not from the
+	# disposal date — the days in between are exactly what the final
+	# prorated row has to charge.
+	if disposal_date and not as_of_date:
+		last_posted = last_posted_schedule_date(asset_name, finance_book)
+		if last_posted:
+			as_of_date = getdate(last_posted)
+		else:
+			afu = frappe.db.get_value("Asset", asset_name, "available_for_use_date")
+			as_of_date = add_days(getdate(afu), -1) if afu else None
 	as_of_date = getdate(as_of_date or nowdate())
 
 	filters = {"asset": asset_name, "status": "Active", "docstatus": 1}
@@ -251,6 +314,10 @@ def supersede_and_regenerate(
 		if getdate(end_of_life) > as_of_date and nbv_base > 0
 		else []
 	)
+	if disposal_date:
+		future_rows = truncate_rows_at_disposal(
+			future_rows, as_of_date, disposal_date, company
+		)
 
 	# A schedule that never posted anything is not history — it is a
 	# working copy (core builds one at Asset submit that our §4.3
@@ -382,13 +449,7 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 	end_of_life = schedule_horizon_from_life(asset_name, finance_book)
 	if not end_of_life:
 		return None
-	last_posted = frappe.db.sql(
-		"""select max(ds.schedule_date) from `tabDepreciation Schedule` ds
-		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-		   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
-		     and ifnull(ds.journal_entry, '') != ''""",
-		asset_name,
-	)[0][0]
+	last_posted = last_posted_schedule_date(asset_name, finance_book)
 	asset = frappe.get_doc("Asset", asset_name)
 	# nothing posted -> regenerate from the start basis itself
 	as_of = getdate(last_posted) if last_posted else add_days(
@@ -431,15 +492,7 @@ def regenerate_after_value_change(asset_name, adjustment_date, reason, end_of_li
 	`as_of` is never earlier than the last POSTED schedule date, so an
 	already-posted period is not regenerated (which would duplicate it).
 	"""
-	last_posted = frappe.db.sql(
-		"""
-		select max(ds.schedule_date) from `tabDepreciation Schedule` ds
-		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
-		  and ifnull(ds.journal_entry, '') != ''
-		""",
-		asset_name,
-	)[0][0]
+	last_posted = last_posted_schedule_date(asset_name)
 	# Rows resume from where POSTING stopped, not from the adjustment
 	# date. Regenerating from a mid-month adjustment left the days
 	# between the last posted period and that date carrying no charge at

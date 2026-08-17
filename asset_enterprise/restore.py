@@ -178,12 +178,15 @@ def cross_period_restore(asset_name, restore_date=None):
 	# depreciation run at/after the restore date). A full scrap left an
 	# EMPTY Active schedule, so the pre-disposal horizon is re-derived
 	# from the superseded generations.
-	from asset_enterprise.depreciation import supersede_and_regenerate
+	from asset_enterprise.depreciation import schedule_horizon_from_life, supersede_and_regenerate
 
-	# All generations count — core's mid-flow proration can leave the
-	# original full-horizon schedule Cancelled while the surviving
-	# docstatus-1 generations only carry the prorated row.
-	horizon = frappe.db.sql(
+	# End of life comes from the FINANCE BOOK, not from leftover rows.
+	# Reading it back off the schedules only ever worked because core's
+	# cancel-and-recreate left the full-horizon generation behind as a
+	# cancelled document; under supersession a scrap that had booked
+	# nothing legitimately drops that generation, and the max() went
+	# NULL — the restore then regenerated no rows at all.
+	horizon = schedule_horizon_from_life(asset.name) or frappe.db.sql(
 		"""
 		select max(ds.schedule_date)
 		from `tabDepreciation Schedule` ds
