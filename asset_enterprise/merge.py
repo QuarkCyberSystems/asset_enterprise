@@ -354,8 +354,14 @@ def _resupersede(target_name, posting_date, cap_doc):
 	from asset_enterprise.depreciation import regenerate_after_value_change
 
 	end_override = None
-	if cap_doc.get("fully_depreciated_treatment") == "Add Value and Extend Life":
-		end_override = add_months(posting_date, flt(cap_doc.get("extended_life_months") or 0))
+	# Extend the horizon ONLY when months were actually granted. With
+	# "Add Value and Extend Life" and zero months, this collapsed the
+	# asset's life to the capitalization date: the whole remaining value
+	# was crammed into the last two periods and every future row vanished
+	# (client, ACC-ASS-2026-00102 — Extended Life 0).
+	extra = flt(cap_doc.get("extended_life_months") or 0)
+	if cap_doc.get("fully_depreciated_treatment") == "Add Value and Extend Life" and extra > 0:
+		end_override = add_months(posting_date, extra)
 	try:
 		regenerate_after_value_change(
 			target_name,
