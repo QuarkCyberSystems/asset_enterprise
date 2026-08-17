@@ -30,6 +30,23 @@ def execute(filters=None):
 			"remaining_useful_life_months",
 		],
 	)
+	# The stored HAV/Accum/NBV are snapshots written when a treatment
+	# posts; an asset that has had none carries zeros, so the tree showed
+	# blank values for most of the register (client sheet, row 44).
+	# Derive them from the same single source every other screen uses —
+	# the tree is a bounded set, so this stays cheap.
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	for a in assets:
+		try:
+			v = recalculate_asset_values(a.name, save=False)
+			a.historical_asset_value = v["historical_asset_value"]
+			a.accumulated_depreciation_value = v["accumulated_depreciation_value"]
+			a.net_book_value = v["net_book_value"]
+			a.remaining_useful_life_months = v["remaining_useful_life_months"]
+		except Exception:
+			pass  # a broken asset must not blank the whole tree
+
 	by_name = {a.name: a for a in assets}
 	children = {}
 	for a in assets:

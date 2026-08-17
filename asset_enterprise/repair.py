@@ -313,3 +313,49 @@ def rebuild_schedules_under_daycount_rule(company=None, asset=None, dry_run=1):
 			frappe.db.rollback()
 			print(f"  FAILED {name}: {str(e)[:140]}")
 	return done
+
+
+def refresh_stored_asset_values(company=None, dry_run=1):
+	"""Write the derived HAV / Accumulated / NBV onto assets that never
+	had them stored. The values are snapshots taken when a treatment
+	posts, so an asset created before that step — or one whose only
+	events predate the app — shows zeros on the form and in the tree.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.refresh_stored_asset_values \\
+	        --kwargs "{'dry_run': 0}"
+	"""
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled():
+		frappe.throw(_("Enterprise Assets is not enabled."))
+
+	filters = {"docstatus": ("<", 2)}
+	if company:
+		filters["company"] = company
+
+	stale = []
+	for row in frappe.get_all("Asset", filters=filters, fields=["name", "historical_asset_value"]):
+		derived = recalculate_asset_values(row.name, save=False)
+		if flt(row.historical_asset_value) != flt(derived["historical_asset_value"]):
+			stale.append((row.name, flt(row.historical_asset_value), derived))
+
+	if not stale:
+		print("every asset already carries its derived values")
+		return []
+
+	print(f"{len(stale)} asset(s) with stale or missing stored values:")
+	for name, stored, derived in stale[:20]:
+		print(f"  {name}: stored {stored:,.2f} -> {derived['historical_asset_value']:,.2f}")
+	if len(stale) > 20:
+		print(f"  ... and {len(stale) - 20} more")
+	if cint(dry_run):
+		print("dry run — nothing written. Re-run with dry_run=0 to refresh.")
+		return [s[0] for s in stale]
+
+	for name, _stored, _derived in stale:
+		recalculate_asset_values(name, save=True)
+	frappe.db.commit()
+	print(f"refreshed {len(stale)} asset(s)")
+	return [s[0] for s in stale]
