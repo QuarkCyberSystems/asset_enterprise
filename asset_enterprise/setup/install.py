@@ -273,12 +273,19 @@ def _group_node_property_setter():
 	must stand down for it (core requires it on every non-composite)."""
 	field = frappe.get_meta("Asset").get_field("net_purchase_amount")
 	base = field.mandatory_depends_on or ""
-	if "is_group_node" in base:
+	if "is_group_node != 1" in base:
 		return
+	if "is_group_node" in base:
+		# an earlier build wrote the "!" form — rebuild from core's default
+		base = 'eval:(doc.asset_type != "Composite Asset" || doc.docstatus==1)' 
+	# Written without "!" on purpose: frappe evaluates these conditions
+	# server-side by translating the JS operators, and a bare "!" mangles
+	# the "!=" already in core's condition. "doc.is_group_node != 1" is
+	# valid in both worlds.
 	condition = (
-		f"eval:({base[5:]}) && !doc.is_group_node"
+		f"eval:({base[5:]}) && doc.is_group_node != 1"
 		if base.startswith("eval:")
-		else "eval:!doc.is_group_node"
+		else "eval:doc.is_group_node != 1"
 	)
 	make_property_setter(
 		"Asset", "net_purchase_amount", "mandatory_depends_on", condition, "Data",
