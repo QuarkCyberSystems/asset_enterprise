@@ -69,6 +69,14 @@ def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
 	"""Whitelisted replacement for core scrap_asset (build plan §2.2)."""
 	from asset_enterprise.depreciation import enterprise_enabled
 
+	if frappe.db.get_value("Asset", asset_name, "is_group_node"):
+		frappe.throw(
+			_(
+				"{0} is a Grouping Asset and holds no value — dispose of the physical "
+				"assets grouped under it instead (GAP-036)."
+			).format(asset_name)
+		)
+
 	if not enterprise_enabled():
 		from erpnext.assets.doctype.asset.depreciation import scrap_asset as core_scrap
 
