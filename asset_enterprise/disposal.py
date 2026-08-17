@@ -168,10 +168,6 @@ def partial_scrap_asset(
 			as_dict=True,
 		)
 		component_row = component_row[0] if component_row else None
-		print(f"[DIAG disposal] asset={asset_name!r} component={composite_component!r} "
-		      f"row={component_row} all_rows="
-		      + str(frappe.db.sql("select parent, merged_source_asset, status from "
-		        "`tabComposite Merge Log Entry` where parent=%s", asset_name)))
 		if not component_row:
 			frappe.throw(
 				_(
@@ -220,17 +216,21 @@ def partial_scrap_asset(
 		)
 	except frappe.ValidationError:
 		pass
+	# Order matters: the Scrap Transaction is the RECORD of this scrap and
+	# validates that the component is still an Active Merge Log row. Flip
+	# the row to Scrapped only once that record exists, or the document
+	# refuses the very scrap it is documenting.
+	_record_scrap_transaction(
+		asset.name, "Partial Scrap", scrapping_type, scrap_date, je,
+		scrap_value=scrap_value, percentage=percentage,
+		composite_component=composite_component,
+	)
 	if composite_component:
 		# The component row records that this scrap consumed it.
 		frappe.db.set_value(
 			"Composite Merge Log Entry", component_row.name, "status", "Scrapped",
 			update_modified=False,
 		)
-	_record_scrap_transaction(
-		asset.name, "Partial Scrap", scrapping_type, scrap_date, je,
-		scrap_value=scrap_value, percentage=percentage,
-		composite_component=composite_component,
-	)
 	return je
 
 

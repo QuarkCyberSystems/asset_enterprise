@@ -54,10 +54,6 @@ class ScrapTransaction(Document):
 			as_dict=True,
 		)
 		row = rows[0] if rows else None
-		print(f"[DIAG scraptxn] self.asset={self.asset!r} component={self.composite_component!r} "
-		      f"row={row} all_rows="
-		      + str(frappe.db.sql("select parent, merged_source_asset, status from "
-		        "`tabComposite Merge Log Entry` where parent=%s", self.asset)))
 		if not row:
 			frappe.throw(
 				_(
