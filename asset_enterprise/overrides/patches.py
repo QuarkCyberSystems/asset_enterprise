@@ -115,13 +115,19 @@ def apply_patches():
 			"Asset Depreciation Schedule",
 			{"asset": asset_doc.name, "status": "Active", "docstatus": 1},
 		)
-		if enterprise_enabled() and has_active_schedule:
-			# GAP-031: supersede-not-cancel. as_of = disposal/reschedule date.
-			return supersede_and_regenerate(
-				asset_doc.name, as_of_date=disposal_date, reason=notes
-			)
-		# Non-depreciating assets (no Active schedule) fall through to
-		# core, which no-ops gracefully.
+		if enterprise_enabled():
+			if has_active_schedule:
+				# GAP-031: supersede-not-cancel. as_of = disposal date.
+				return supersede_and_regenerate(
+					asset_doc.name, as_of_date=disposal_date, reason=notes
+				)
+			# No Active schedule left to reshape — do NOTHING. Falling
+			# through to core here was cancelling the asset's superseded
+			# schedule (core's reschedule_depreciation ends in
+			# current_schedule.cancel()), which is how a merged source
+			# ended up with a Cancelled schedule despite the
+			# supersede-never-cancel rule (client, ACC-ASS-2026-00106).
+			return None
 		return core_resched(asset_doc, notes, disposal_date=disposal_date)
 
 	core_make_entry = core_depr.make_depreciation_entry
