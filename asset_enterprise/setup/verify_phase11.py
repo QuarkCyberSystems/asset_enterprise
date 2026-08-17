@@ -440,6 +440,56 @@ def _run():
 		print(f"t8     AVA impairment account defaulted = {ava_d.difference_account} {'OK' if t8_ok else 'FAIL'}")
 		ok = ok and t8_ok
 
+		# T9: the client's own Capitalized Maintenance worked example
+		# ("FA Test After WP - with calculatioin.xlsx", sheet Dep Calcu):
+		# 32,500 in service 25/03/2026 over 36 months = 29.680365/day,
+		# posted through 30/06, merged 17/08 with Extended Life 0.
+		# Depreciation must run to the MERGE date at the schedule's own
+		# daily rate, both catch-up rows must POST, and only what is left
+		# may transfer. Core's reschedule used to rebuild these rows on
+		# its monthly model (32,500/36 = 902.78) and left the last one
+		# unposted, overstating the transferred NBV.
+		from asset_enterprise.setup.verify_tc import (
+			_category, _cm_merge, _company, _depreciating_asset, _plain, _plain_asset,
+			_post_through, _rows,
+		)
+
+		cm_company = _company()
+		cm_cat = _category(cm_company, "TC IT Equipment", suspense=_plain(cm_company, "Liability"))
+		cm_clearing = _plain(cm_company, "Liability")
+		frappe.db.set_value(
+			"Asset Category Account", {"parent": cm_cat, "company_name": cm_company},
+			"capitalization_clearing_account", cm_clearing, update_modified=False)
+		cm_target = _plain_asset(cm_company, cm_cat, "T9 COMPOSITE", 112_000)
+		cm_target.submit()
+		cm_src = _depreciating_asset(
+			cm_company, cm_cat, "T9 SOURCE 32500/36m", 32_500, "2026-03-31", 36, "2026-03-25")
+		_post_through(cm_src.name, "2026-06-30")
+		_cm_merge(cm_company, cm_target.name, cm_src.name, posting_date="2026-08-17")
+
+		_s, t9_rows = _rows(cm_src.name)
+		by_date = {str(r.schedule_date): r for r in t9_rows}
+		jul, aug = by_date.get("2026-07-31"), by_date.get("2026-08-17")
+		accum = flt(sum(flt(r.depreciation_amount) for r in t9_rows), 2)
+		t9_ok = (
+			jul and aug
+			and flt(jul.depreciation_amount, 2) == 920.09
+			and flt(aug.depreciation_amount, 2) == 504.57
+			and flt(aug.days_in_period) == 17
+			and jul.journal_entry and aug.journal_entry
+			and accum == 4_333.33
+			and not [r for r in t9_rows if getdate(r.schedule_date) > getdate("2026-08-17")]
+		)
+		print(
+			f"t9     client CM example: Jul={jul and flt(jul.depreciation_amount, 2)} (want 920.09) "
+			f"Aug17={aug and flt(aug.depreciation_amount, 2)} over "
+			f"{aug and aug.days_in_period}d (want 504.57/17), both posted="
+			f"{bool(jul and jul.journal_entry and aug and aug.journal_entry)}, accum={accum:,.2f} "
+			f"(want 4,333.33), transferred NBV={flt(32_500 - accum, 2):,.2f} (want 28,166.67) "
+			f"{'OK' if t9_ok else 'FAIL'}"
+		)
+		ok = ok and bool(t9_ok)
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})
