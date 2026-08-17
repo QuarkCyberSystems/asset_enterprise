@@ -44,6 +44,9 @@ doctype_js = {
 # value change — the list must say which is which.
 doctype_list_js = {
 	"Asset Depreciation Schedule": "public/js/asset_depreciation_schedule_list.js",
+	# the badge on both list and form reads from this map — without an
+	# entry, a new status silently displays as the document state
+	"Asset": "public/js/asset_list.js",
 }
 
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
