@@ -44,6 +44,13 @@ class EnterpriseAsset(Asset):
 			frappe.throw(
 				_("A Grouping Asset is not purchased — clear the receipt and invoice.")
 			)
+		# Zero, never None: core arithmetic adds these fields straight into
+		# totals and a None blows up with "unsupported operand type(s)".
+		self.net_purchase_amount = 0
+		self.purchase_amount = 0
+		self.gross_purchase_amount = 0
+		self.opening_accumulated_depreciation = 0
+		self.asset_quantity = self.get("asset_quantity") or 1
 		self.set("finance_books", [])
 
 	def validate_asset_values(self):
