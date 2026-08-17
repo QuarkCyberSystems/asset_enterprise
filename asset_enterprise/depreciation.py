@@ -440,8 +440,15 @@ def regenerate_after_value_change(asset_name, adjustment_date, reason, end_of_li
 		""",
 		asset_name,
 	)[0][0]
+	# Rows resume from where POSTING stopped, not from the adjustment
+	# date. Regenerating from a mid-month adjustment left the days
+	# between the last posted period and that date carrying no charge at
+	# all — an August row of 15 days instead of 31, which finance reads
+	# as a miscalculation (client sheet item 4, 16/08/2026). The value
+	# change still applies from the adjustment; it is the PERIOD boundary
+	# that follows the ledger.
 	as_of = getdate(adjustment_date or nowdate())
-	if last_posted and getdate(last_posted) > as_of:
+	if last_posted:
 		as_of = getdate(last_posted)
 	try:
 		return supersede_and_regenerate(
