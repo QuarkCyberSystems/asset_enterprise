@@ -11,6 +11,58 @@ import frappe
 from frappe.utils import flt, getdate
 
 
+def _verify_desk_endpoints():
+	"""Resolve every method the app's JS calls, plus both sides of each
+	override_whitelisted_methods pair, and assert frappe would allow the
+	call. Endpoints are read from the shipped JS so a new button is
+	covered the day it is added."""
+	import os
+	import re
+
+	from frappe import is_whitelisted
+
+	paths = set()
+	js_dir = frappe.get_app_path("asset_enterprise", "public", "js")
+	for name in os.listdir(js_dir):
+		if not name.endswith(".js"):
+			continue
+		with open(os.path.join(js_dir, name)) as handle:
+			paths.update(
+				re.findall(r'(?:method|query):\s*"([a-zA-Z_0-9.]+)"', handle.read())
+			)
+
+	# both sides of the redirect: the desk calls the core path, frappe
+	# hands off to ours — either being unregistered breaks the button.
+	own_overrides = frappe.get_hooks(
+		"override_whitelisted_methods", app_name="asset_enterprise"
+	) or {}
+	for core_path, ours in own_overrides.items():
+		paths.add(core_path)
+		paths.update(ours if isinstance(ours, list) else [ours])
+
+	# monkeypatched core functions the desk still calls by their own path
+	paths.add("erpnext.assets.doctype.asset.depreciation.make_depreciation_entry")
+
+	failures = []
+	for path in sorted(paths):
+		try:
+			fn = frappe.get_attr(path)
+		except Exception as e:
+			failures.append(f"{path} — unresolvable ({type(e).__name__})")
+			continue
+		try:
+			is_whitelisted(fn)
+		except Exception as e:
+			failures.append(
+				f"{path} -> {fn.__module__}.{fn.__name__} — {type(e).__name__}: {str(e)[:60]}"
+			)
+	print(f"desk   {len(paths)} button endpoints resolve and are callable: "
+	      f"{'OK' if not failures else 'FAIL'}")
+	for line in failures:
+		print(f"       {line}")
+	return not failures
+
+
 def run():
 	try:
 		_run()
@@ -128,6 +180,15 @@ def _run():
 	w2 = getattr(core_ads.reschedule_depreciation, "_asset_enterprise_wrapper", False)
 	print(f"patch  post_depreciation_entries wrapped: {'OK' if w1 else 'FAIL'}; reschedule wrapped: {'OK' if w2 else 'FAIL'}")
 	ok = ok and w1 and w2
+
+	# ---- every endpoint a BUTTON calls must survive the desk's own gate.
+	# Wrapping a core function with an undecorated replacement makes the
+	# button fail with "Method Not Allowed" while every server-side test
+	# keeps passing — exactly how the Make Depreciation Entry button broke
+	# (client report 16/08/2026). Assert reachability the way the desk
+	# resolves it, not the way our suites call it.
+	callable_ok = _verify_desk_endpoints()
+	ok = ok and callable_ok
 
 	# -------------------------- supersession round-trip (savepoint rollback)
 	from asset_enterprise.depreciation import supersede_and_regenerate
