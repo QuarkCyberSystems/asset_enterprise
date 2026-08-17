@@ -578,6 +578,19 @@ def restore_collapsed_horizons(company=None, asset=None, dry_run=1):
 	return repaired
 
 
+def _reference_daily_rate(rows, candidates):
+	"""What a day costs on this schedule, from rows long enough to say:
+	any row that already carries a rate, plus reconstructions spanning a
+	full period. Returns the median, or None when nothing qualifies."""
+	rates = [flt(r.daily_rate) for r in rows if flt(r.daily_rate) > 0]
+	rates += [rate for _n, _d, days, rate in candidates if days >= 25]
+	if not rates:
+		return None
+	rates.sort()
+	mid = len(rates) // 2
+	return rates[mid] if len(rates) % 2 else (rates[mid - 1] + rates[mid]) / 2
+
+
 def backfill_row_daycount_metadata(company=None, asset=None, dry_run=1):
 	"""Fill days_in_period / daily_rate on rows that core created.
 
@@ -617,7 +630,7 @@ def backfill_row_daycount_metadata(company=None, asset=None, dry_run=1):
 		print("no rows missing day-count metadata")
 		return []
 
-	updates = []
+	updates, incoherent = [], []
 	for sched in schedules:
 		basis = frappe.db.get_value("Asset", sched.asset, "available_for_use_date")
 		rows = frappe.get_all(
@@ -626,6 +639,9 @@ def backfill_row_daycount_metadata(company=None, asset=None, dry_run=1):
 			fields=["name", "schedule_date", "depreciation_amount", "days_in_period", "daily_rate"],
 			order_by="schedule_date, idx",
 		)
+		# Candidates first, then judge each against what the schedule's
+		# own full periods say a day costs.
+		candidates = []
 		prev = add_days(getdate(basis), -1) if basis else None
 		for row in rows:
 			this_date = getdate(row.schedule_date)
@@ -633,15 +649,33 @@ def backfill_row_daycount_metadata(company=None, asset=None, dry_run=1):
 				prev = this_date
 				continue
 			days = date_diff(this_date, prev) if prev else 0
-			if days <= 0:
-				prev = this_date
-				continue
-			amount = flt(row.depreciation_amount)
-			updates.append((sched.asset, sched.name, row.name, this_date, days, amount / days))
+			if days > 0:
+				candidates.append((row.name, this_date, days, flt(row.depreciation_amount) / days))
 			prev = this_date
 
+		reference = _reference_daily_rate(rows, candidates)
+		for row_name, this_date, days, rate in candidates:
+			# A stub period whose amount is really a whole period's charge
+			# would be recorded as "1 day @ a month's money". Core wrote
+			# these rows monthly; where the arithmetic does not agree with
+			# the rest of the schedule, say so instead of inventing a rate.
+			if reference:
+				coherent = reference / 3 <= rate <= reference * 3
+			else:
+				coherent = days >= 5
+			if coherent:
+				updates.append((sched.asset, sched.name, row_name, this_date, days, rate))
+			else:
+				incoherent.append((sched.asset, sched.name, this_date, days, rate, reference))
+
+	if incoherent:
+		print(f"{len(incoherent)} row(s) NOT reconstructable — reported, not written:")
+		for asset_name, sched_name, date, days, rate, ref in incoherent:
+			ref_txt = f"schedule averages {ref:.6f}/day" if ref else "no full period to compare against"
+			print(f"  {asset_name} {sched_name} {date}: would be {days} day(s) @ {rate:.6f} — {ref_txt}")
+
 	if not updates:
-		print("no rows could be reconstructed (no usable in-service date)")
+		print("no rows could be reconstructed")
 		return []
 
 	print(f"{len(updates)} row(s) across {len(schedules)} schedule(s) to backfill:")
