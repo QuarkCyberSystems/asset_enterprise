@@ -343,16 +343,20 @@ def _apply_fully_depreciated_treatment(cap_doc, target, total_nbv, posting_date)
 
 
 def _resupersede(target_name, posting_date, cap_doc):
-	from asset_enterprise.depreciation import supersede_and_regenerate
+	# Rows resume from where POSTING stopped, not from the capitalization
+	# date — a mid-month merge otherwise left the days before it with no
+	# depreciation at all (same defect the client reported on the invoice
+	# adjustment, sheet items 4 and 5).
+	from asset_enterprise.depreciation import regenerate_after_value_change
 
 	end_override = None
 	if cap_doc.get("fully_depreciated_treatment") == "Add Value and Extend Life":
 		end_override = add_months(posting_date, flt(cap_doc.get("extended_life_months") or 0))
 	try:
-		supersede_and_regenerate(
+		regenerate_after_value_change(
 			target_name,
-			as_of_date=posting_date,
-			reason=_("Capitalized Maintenance {0}").format(cap_doc.name),
+			posting_date,
+			_("Capitalized Maintenance {0}").format(cap_doc.name),
 			end_of_life_override=end_override,
 		)
 	except frappe.ValidationError:
