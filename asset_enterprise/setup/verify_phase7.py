@@ -271,6 +271,10 @@ def _run():
 		)
 		from asset_enterprise import disposal as _disposal
 
+		# The PI covering this asset was cancelled two steps ago, so
+		# VR-011 would block the scrap on any site where the control is
+		# enabled — that gate is TC-014's subject, not this one.
+		frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
 		_disposal.scrap_asset(assets[0], scrapping_type="Damage")
 		avas_before = frappe.db.count(
 			"Asset Value Adjustment", {"asset": assets[0], "docstatus": 1})
