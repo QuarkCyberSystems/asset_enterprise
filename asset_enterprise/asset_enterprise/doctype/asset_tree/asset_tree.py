@@ -12,6 +12,7 @@ enforced on Asset Movement).
 """
 
 import frappe
+from frappe.utils import flt
 from frappe import _
 from frappe.utils.nestedset import NestedSet
 
@@ -114,9 +115,10 @@ def get_children(doctype=None, parent=None, **kwargs):
 	label maps to the parent-less nodes."""
 	if parent in (None, "", "All Asset Trees", "Asset Tree"):
 		parent = ""
-	return frappe.db.sql(
+	nodes = frappe.db.sql(
 		"""
-		select name as value, asset_name as title, is_group as expandable
+		select name as value, asset_name as title, is_group as expandable,
+		       child_asset
 		from `tabAsset Tree`
 		where ifnull(parent_asset_tree, '') = %s
 		order by name
@@ -124,3 +126,38 @@ def get_children(doctype=None, parent=None, **kwargs):
 		parent,
 		as_dict=True,
 	)
+	# A tree view renders a label per node — it has no columns — so the
+	# figures have to travel with the node itself (client sheet, row 44).
+	for node in nodes:
+		node.update(_node_values(node.get("child_asset")))
+	return nodes
+
+
+def _node_values(asset_name):
+	"""Own and subtree values for one node, derived — never read from the
+	stored snapshot, which is only written when a treatment posts."""
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	if not asset_name:
+		return {"nbv": 0.0, "subtree_nbv": 0.0, "currency": None}
+
+	def own(name):
+		try:
+			v = recalculate_asset_values(name, save=False)
+			return flt(v["net_book_value"])
+		except Exception:
+			return 0.0
+
+	total = own(asset_name)
+	for child in frappe.get_all(
+		"Asset", filters={"parent_asset": asset_name, "docstatus": ("<", 2)}, pluck="name"
+	):
+		total += _node_values(child)["subtree_nbv"]
+
+	return {
+		"nbv": own(asset_name),
+		"subtree_nbv": flt(total),
+		"currency": frappe.db.get_value(
+			"Company", frappe.db.get_value("Asset", asset_name, "company"), "default_currency"
+		),
+	}
