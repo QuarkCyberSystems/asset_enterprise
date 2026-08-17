@@ -46,6 +46,20 @@ class EnterpriseAsset(Asset):
 			)
 		self.set("finance_books", [])
 
+	def validate_asset_values(self):
+		"""GAP-036: core throws "Net Purchase Amount is mandatory" for every
+		non-composite asset — a hard-coded Python check, not a form rule, so
+		no property setter reaches it. A grouping asset holds no value by
+		definition; the rest of core's checks concern purchase documents and
+		depreciation, neither of which a container has."""
+		if self.get("is_group_node"):
+			if not self.asset_category and self.item_code:
+				self.asset_category = frappe.get_cached_value(
+					"Item", self.item_code, "asset_category"
+				)
+			return
+		return super().validate_asset_values()
+
 	def validate(self):
 		self._validate_group_node()
 		if self._enterprise():
