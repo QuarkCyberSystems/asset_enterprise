@@ -22,7 +22,32 @@ class EnterpriseAsset(Asset):
 	  first. No auto-cascade, per the 2026-07-14 meeting.
 	"""
 
+	def _validate_group_node(self):
+		"""GAP-036: a grouping asset is a container, not a machine."""
+		if not self.get("is_group_node"):
+			return
+		if self.get("calculate_depreciation"):
+			frappe.throw(
+				_(
+					"{0} is a Grouping Asset — it holds no value, so it cannot "
+					"depreciate. Untick Calculate Depreciation."
+				).format(self.name or self.asset_name)
+			)
+		if flt(self.get("net_purchase_amount")) or flt(self.get("purchase_amount")):
+			frappe.throw(
+				_(
+					"{0} is a Grouping Asset — leave the purchase amount empty. The "
+					"value belongs to the physical assets grouped underneath it."
+				).format(self.name or self.asset_name)
+			)
+		if self.get("purchase_receipt") or self.get("purchase_invoice"):
+			frappe.throw(
+				_("A Grouping Asset is not purchased — clear the receipt and invoice.")
+			)
+		self.set("finance_books", [])
+
 	def validate(self):
+		self._validate_group_node()
 		if self._enterprise():
 			self._apply_receiving_date_basis()
 			# Depreciation without a start basis: core's draft-schedule
@@ -280,6 +305,8 @@ class EnterpriseAsset(Asset):
 			self._post_existing_asset_opening()
 
 	def _is_opening_balance_asset(self):
+		if self.get("is_group_node"):
+			return False  # GAP-036: a container has nothing to open
 		"""GAP-001 scope in ERPNext v16.
 
 		v15's `is_existing_asset` checkbox was REPLACED in v16 by

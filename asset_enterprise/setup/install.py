@@ -45,6 +45,7 @@ def sync_customizations():
 	apply_property_setters()
 	_ava_property_setters()
 	_asset_status_property_setter()
+	_group_node_property_setter()
 	seed_masters()
 	seed_setting_defaults()
 	register_asset_accounting_dimension()
@@ -265,6 +266,24 @@ def _asset_status_property_setter():
 			"Asset", "status", "options", options.rstrip() + "\nDisposed", "Text",
 			validate_fields_for_doctype=False,
 		)
+
+
+def _group_node_property_setter():
+	"""GAP-036: a grouping asset holds no value, so the mandatory amount
+	must stand down for it (core requires it on every non-composite)."""
+	field = frappe.get_meta("Asset").get_field("net_purchase_amount")
+	base = field.mandatory_depends_on or ""
+	if "is_group_node" in base:
+		return
+	condition = (
+		f"eval:({base[5:]}) && !doc.is_group_node"
+		if base.startswith("eval:")
+		else "eval:!doc.is_group_node"
+	)
+	make_property_setter(
+		"Asset", "net_purchase_amount", "mandatory_depends_on", condition, "Data",
+		validate_fields_for_doctype=False,
+	)
 
 
 def _ava_property_setters():

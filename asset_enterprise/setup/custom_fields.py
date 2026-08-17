@@ -17,6 +17,17 @@ def _acc(fieldname, label, insert_after, description=None):
 CUSTOM_FIELDS = {
 	# ------------------------------------------------------------------ Asset
 	"Asset": [
+		# GAP-036 (client request 17/08/2026): a container that groups
+		# physical assets without being one itself. Carries no value, never
+		# depreciates, cannot be disposed — it exists to give the tree a
+		# parent that is not a machine.
+		{
+			"fieldname": "is_group_node",
+			"fieldtype": "Check",
+			"label": "Grouping Asset (Non-Physical)",
+			"insert_after": "asset_type",
+			"description": "Groups physical assets in the Asset Tree. Holds no value, is never depreciated and cannot be disposed.",
+		},
 		{
 			"fieldname": "enterprise_tab",
 			"fieldtype": "Tab Break",

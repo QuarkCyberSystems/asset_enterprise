@@ -143,6 +143,13 @@ def partial_scrap_asset(
 		frappe.throw(_("Partial scrap requires Enterprise Assets to be enabled."))
 
 	asset = frappe.get_doc("Asset", asset_name)
+	if asset.get("is_group_node"):
+		frappe.throw(
+			_(
+				"{0} is a Grouping Asset and holds no value — dispose of the physical "
+				"assets grouped under it instead (GAP-036)."
+			).format(asset_name)
+		)
 	if asset.docstatus != 1:
 		frappe.throw(_("Asset {0} must be submitted.").format(asset_name))
 	if asset.status in DISPOSED_STATUSES:
