@@ -237,6 +237,13 @@ def merge_sources_into_composite(cap_doc):
 
 	_apply_fully_depreciated_treatment(cap_doc, target, total_nbv, posting_date)
 	_resupersede(target.name, posting_date, cap_doc)
+	# The composite's stored Historical / Accumulated / Net Book values are
+	# what the form shows. Without this the merge left them at their
+	# pre-merge figures until someone pressed Recalculate — reported by
+	# the client 16/08/2026.
+	recalculate_asset_values(target.name)
+	for row in cap_doc.asset_items:
+		recalculate_asset_values(row.asset)
 	return je.name
 
 
@@ -434,6 +441,9 @@ def capitalize_service_costs(cap_doc):
 	)
 	# Prospective recalculation over the increased base (TC-027/TC-046).
 	_resupersede(target.name, posting_date, cap_doc)
+	from asset_enterprise.asset_values import recalculate_asset_values as _recalc
+
+	_recalc(target.name)
 	return je.name
 
 
