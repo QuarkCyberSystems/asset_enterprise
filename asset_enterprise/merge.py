@@ -84,8 +84,25 @@ def merge_sources_into_composite(cap_doc):
 			try:
 				depreciate_asset(source, posting_date, _("Merge into {0}").format(target.name))
 				source.reload()
+				# core only RESHAPES the schedule to the merge date; the
+				# prorated row still has to be posted, or the composite
+				# absorbs the source at its un-depreciated value and the
+				# last days of use are never expensed (TC-029 / TC-049).
+				from asset_enterprise.depreciation import post_schedule_entries
+
+				active = frappe.db.get_value(
+					"Asset Depreciation Schedule",
+					{"asset": source.name, "status": "Active", "docstatus": 1},
+					"name",
+				)
+				if active:
+					post_schedule_entries(active, posting_date)
+					source.reload()
 			except Exception:
-				pass  # no elapsed period to prorate
+				frappe.log_error(
+					title=f"asset_enterprise: merge proration failed for {source.name}",
+					message=frappe.get_traceback(),
+				)
 
 		values = recalculate_asset_values(source.name, save=False)
 		hav = flt(values["historical_asset_value"])

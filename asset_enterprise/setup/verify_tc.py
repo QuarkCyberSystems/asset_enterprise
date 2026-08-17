@@ -2783,3 +2783,308 @@ def tc043():
 		f"{flt(values['accumulated_depreciation_value']):,.2f} (want 1,517,808.22); original "
 		f"partial-scrap entry still posted={original_posted}",
 	)
+
+
+def _stock_item(code="TC-REFRAC-BRICK"):
+	if not frappe.db.exists("Item", code):
+		frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": code,
+				"item_name": "TC Refractory Brick",
+				"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+				"is_stock_item": 1,
+				"is_fixed_asset": 0,
+				"valuation_rate": 200,
+			}
+		).insert(ignore_permissions=True)
+	return code
+
+
+def _warehouse(company):
+	name = frappe.db.get_value(
+		"Warehouse", {"company": company, "is_group": 0}, "name"
+	)
+	if name:
+		return name
+	return frappe.get_doc(
+		{"doctype": "Warehouse", "warehouse_name": "TC Plant WH", "company": company}
+	).insert(ignore_permissions=True).name
+
+
+def _stock_in(company, item, warehouse, qty, rate):
+	se = frappe.get_doc(
+		{
+			"doctype": "Stock Entry",
+			"stock_entry_type": "Material Receipt",
+			"company": company,
+			"posting_date": add_months(nowdate(), -2),
+			"set_posting_time": 1,
+			"items": [
+				{"item_code": item, "qty": qty, "t_warehouse": warehouse, "basic_rate": rate}
+			],
+		}
+	)
+	se.flags.ignore_permissions = True
+	se.insert()
+	se.submit()
+	return se.name
+
+
+def _make_repair(company, asset_name, cost, clearing, stock_rows=None, posting_date=None):
+	repair = frappe.get_doc(
+		{
+			"doctype": "Asset Repair",
+			"asset": asset_name,
+			"company": company,
+			"failure_date": posting_date or nowdate(),
+			"repair_status": "Completed",
+			"completion_date": posting_date or nowdate(),
+			"capitalize_repair_cost": 1,
+			"repair_cost": cost,
+			"cost_center": frappe.db.get_value("Asset", asset_name, "cost_center"),
+			"capital_work_in_progress_account": clearing,
+		}
+	)
+	for row in stock_rows or []:
+		repair.append("stock_items", row)
+
+	repair.flags.ignore_permissions = True
+	repair.insert()
+	repair.submit()
+	return repair
+
+
+# ============================================================== TC-044b
+@tc("TC-044b", "AVA Reversal — Subsequent Depreciation Exists")
+def tc044b():
+	"""Revaluation posted, then a depreciation period posted against the
+	new value, then the AVA is cancelled. Both originals stay posted; the
+	Reversal AVA mirrors the revaluation on the later date."""
+	_ensure_fiscal_years(2025, 2032)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	oci = _plain(company, "Liability")
+	asset = _depreciating_asset(
+		company, cat, "TC-044b AVA + Depr", 1_200_000, "2026-05-31", 36, "2026-05-01"
+	)
+	ava = frappe.get_doc(
+		{
+			"doctype": "Asset Value Adjustment",
+			"asset": asset.name,
+			"company": company,
+			"date": "2026-06-01",
+			"transaction_type": "Upward Revaluation",
+			"current_asset_value": flt(frappe.db.get_value("Asset", asset.name, "net_book_value")),
+			"new_asset_value": flt(frappe.db.get_value("Asset", asset.name, "net_book_value")) + 200_000,
+			"difference_account": oci,
+		}
+	)
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+	ava_je = frappe.db.get_value("Asset Value Adjustment", ava.name, "journal_entry")
+
+	# one period posted AFTER the revaluation, reflecting the new value
+	_post_through(asset.name, "2026-06-30")
+	_sched, rows = _rows(asset.name)
+	depr_je = [r.journal_entry for r in rows if r.journal_entry and getdate(r.schedule_date) == getdate("2026-06-30")]
+	depr_je = depr_je[0] if depr_je else None
+
+	ava.reload()
+	ava.cancel()
+	reversal = frappe.db.get_value(
+		"Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1},
+		["name", "journal_entry", "difference_amount"], as_dict=True,
+	)
+	originals_posted = (
+		frappe.db.get_value("Journal Entry", ava_je, "docstatus") == 1
+		and (frappe.db.get_value("Journal Entry", depr_je, "docstatus") == 1 if depr_je else False)
+	)
+	mirror_legs = (
+		{(r.account, flt(r.debit, 2), flt(r.credit, 2)) for r in _gl(reversal.journal_entry)}
+		if reversal and reversal.journal_entry
+		else set()
+	)
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	values = recalculate_asset_values(asset.name, save=False)
+	ok = (
+		reversal
+		and originals_posted
+		and (oci, 200_000.00, 0.00) in mirror_legs
+		and flt(values["historical_asset_value"], 2) == 1_200_000.00
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"revaluation entry {ava_je} and the 30/06 depreciation {depr_je} both still "
+		f"posted={originals_posted}; reversal AVA {reversal and reversal.name} mirrors "
+		f"{sorted(mirror_legs)}; HAV back to {flt(values['historical_asset_value']):,.2f}; "
+		f"accum stays {flt(values['accumulated_depreciation_value']):,.2f}",
+	)
+
+
+# ============================================================= TC-047b
+@tc("TC-047b", "Repair Reversal — Subsequent Depreciation Exists")
+def tc047b():
+	_ensure_fiscal_years(2025, 2032)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	asset = _depreciating_asset(
+		company, cat, "TC-047b Repair + Depr", 1_200_000, "2026-05-31", 36, "2026-05-01"
+	)
+	repair = _make_repair(company, asset.name, 25_000, clearing, posting_date="2026-06-01")
+	repair_je = frappe.db.get_value(
+		"Financial Treatment",
+		{"source_doctype": "Asset Repair", "source_name": repair.name, "status": "Posted"},
+		"journal_entry",
+	)
+	_post_through(asset.name, "2026-06-30")
+	_sched, rows = _rows(asset.name)
+	depr_je = [r.journal_entry for r in rows if r.journal_entry and getdate(r.schedule_date) == getdate("2026-06-30")]
+	depr_je = depr_je[0] if depr_je else None
+	posted_before = [(str(r.schedule_date), flt(r.depreciation_amount)) for r in rows if r.journal_entry]
+
+	repair.reload()
+	repair.cancel()
+	reversal = frappe.db.get_value(
+		"Asset Repair", {"reversal_of_repair": repair.name, "docstatus": 1}, "name"
+	)
+	originals_posted = (
+		(frappe.db.get_value("Journal Entry", repair_je, "docstatus") == 1 if repair_je else True)
+		and (frappe.db.get_value("Journal Entry", depr_je, "docstatus") == 1 if depr_je else False)
+	)
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	values = recalculate_asset_values(asset.name, save=False)
+	_sched2, rows_after = _rows(asset.name)
+	posted_after = [(str(r.schedule_date), flt(r.depreciation_amount)) for r in rows_after if r.journal_entry]
+	ok = (
+		bool(reversal)
+		and originals_posted
+		and flt(values["historical_asset_value"], 2) == 1_200_000.00
+		and posted_before == posted_after
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"reversal repair {reversal}; repair entry {repair_je} and the 30/06 depreciation "
+		f"{depr_je} both still posted={originals_posted}; HAV back to "
+		f"{flt(values['historical_asset_value']):,.2f}; posted rows untouched="
+		f"{posted_before == posted_after}",
+	)
+
+
+# ============================================================= TC-047c
+@tc("TC-047c", "Repair Reversal — Stock Return via Material Receipt")
+def tc047c():
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	item = _stock_item()
+	warehouse = _warehouse(company)
+	_stock_in(company, item, warehouse, 200, 200)
+	asset = _plain_asset(company, cat, "TC-047c Stock Repair", 500_000)
+	asset.submit()
+
+	qty_before = flt(
+		frappe.db.get_value("Bin", {"item_code": item, "warehouse": warehouse}, "actual_qty")
+	)
+	repair = _make_repair(
+		company, asset.name, 25_000, clearing,
+		stock_rows=[
+			{"item_code": item, "consumed_quantity": 100, "valuation_rate": 200,
+			 "warehouse": warehouse, "total_value": 20_000}
+		],
+	)
+	qty_after_repair = flt(
+		frappe.db.get_value("Bin", {"item_code": item, "warehouse": warehouse}, "actual_qty")
+	)
+	repair.reload()
+	repair.cancel()
+	qty_after_reversal = flt(
+		frappe.db.get_value("Bin", {"item_code": item, "warehouse": warehouse}, "actual_qty")
+	)
+	reversal = frappe.db.get_value(
+		"Asset Repair", {"reversal_of_repair": repair.name, "docstatus": 1}, "name"
+	)
+	receipt = frappe.db.sql(
+		"""select se.name, se.stock_entry_type from `tabStock Entry` se
+		   join `tabStock Entry Detail` sed on sed.parent = se.name
+		   where se.docstatus = 1 and sed.item_code = %s and sed.t_warehouse = %s
+		     and se.creation > %s
+		   order by se.creation desc limit 1""",
+		(item, warehouse, repair.creation),
+		as_dict=True,
+	)
+	ok = (
+		bool(reversal)
+		and qty_after_repair == qty_before - 100
+		and qty_after_reversal == qty_before
+		and receipt
+		and receipt[0].stock_entry_type == "Material Receipt"
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"stock {qty_before:,.0f} -> {qty_after_repair:,.0f} on repair -> "
+		f"{qty_after_reversal:,.0f} after reversal; reversal repair {reversal}; return entry "
+		f"{receipt and receipt[0].name} ({receipt and receipt[0].stock_entry_type})",
+	)
+
+
+# ============================================================== TC-049
+@tc("TC-049", "Adding Value to Composite — Two-Leg via Clearing")
+def tc049():
+	"""A standalone depreciating asset is merged into a composite: its
+	period is prorated to the merge date, then the disposal and addition
+	legs pass through the Capitalization Clearing account, which nets to
+	zero."""
+	_ensure_fiscal_years(2024, 2032)
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	frappe.db.set_value(
+		"Asset Category Account", {"parent": cat, "company_name": company},
+		"capitalization_clearing_account", clearing, update_modified=False,
+	)
+	composite = _plain_asset(company, cat, "TC-049 COMPOSITE-KILN", 42_500_000)
+	composite.submit()
+	source = _depreciating_asset(
+		company, cat, "TC-049 COMP-REFRAC-002", 8_000_000, "2024-06-30", 60, "2024-06-01"
+	)
+
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	cap = _cm_merge(company, composite.name, source.name, posting_date="2024-06-07")
+
+	legs = []
+	for je in frappe.get_all(
+		"Journal Entry", filters={"user_remark": ("like", f"%{cap.name}%"), "docstatus": 1}, pluck="name"
+	):
+		legs.extend(_gl(je))
+	clearing_net = flt(sum(flt(r.debit) - flt(r.credit) for r in legs if r.account == clearing), 2)
+	clearing_moved = flt(sum(flt(r.debit) for r in legs if r.account == clearing), 2)
+	fa_credit_source = flt(
+		sum(flt(r.credit) for r in legs if r.account == _account(company, "Fixed Asset")), 2
+	)
+	comp_values = recalculate_asset_values(composite.name, save=False)
+	# the source is cancelled by the merge, so read what actually moved:
+	# the clearing account carried its net book value at the merge date.
+	nbv_at_merge = clearing_moved
+	prorated = flt(8_000_000 - nbv_at_merge, 2)
+	src_state = frappe.db.get_value("Asset", source.name, ["docstatus", "status"], as_dict=True)
+	ok = (
+		clearing_net == 0.00
+		and prorated > 0
+		and fa_credit_source == 8_000_000.00
+		and flt(comp_values["historical_asset_value"], 2) == flt(42_500_000 + nbv_at_merge, 2)
+		and src_state.docstatus == 2
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"source prorated to 07/06: {prorated:,.2f} posted, NBV {nbv_at_merge:,.2f}; clearing "
+		f"carried {clearing_moved:,.2f} and nets {clearing_net:,.2f}; source cost credited "
+		f"{fa_credit_source:,.2f} (want 8,000,000); composite HAV "
+		f"{flt(comp_values['historical_asset_value']):,.2f} (want "
+		f"{42_500_000 + nbv_at_merge:,.2f}); source docstatus {src_state.docstatus}",
+	)
