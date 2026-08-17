@@ -15,10 +15,12 @@ from frappe.utils import getdate
 def execute_mass_depreciation(doc):
 	_check_authority(doc)
 
-	filters = {
-		"status": "Active",
-		"docstatus": 1,
-	}
+	# The summary reports THIS run only. A document created via the UI's
+	# Duplicate action arrives carrying the source run's result rows
+	# (client, MAD-2026-00475 copied from MAD-2026-00435) — submitted
+	# as-is it claims journal entries another run posted.
+	doc.set("result_summary", [])
+
 	rows = frappe.db.sql(
 		"""
 		select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
@@ -93,6 +95,34 @@ def execute_mass_depreciation(doc):
 				"result_summary",
 				{"asset": row.asset, "outcome": "Failed", "reason": str(e)[:140]},
 			)
+
+	# VR-007, document level: a run in which nothing posted and nothing
+	# needs attention is a DUPLICATE of whatever already covered this
+	# scope — refuse the submit instead of recording an empty run that
+	# reads as if it booked depreciation.
+	outcomes = {r.outcome for r in doc.get("result_summary")}
+	if not outcomes.intersection({"Posted", "Failed", "Manual Posting Required"}):
+		scope = {
+			"company": doc.company,
+			"posting_date": doc.posting_date,
+			"mode": doc.mode,
+			"docstatus": 1,
+			"name": ("!=", doc.name),
+		}
+		if doc.mode == "Selected Asset Category":
+			scope["asset_category"] = doc.asset_category
+		last = frappe.db.get_value(
+			"Mass Asset Depreciation", scope, "name", order_by="creation desc"
+		)
+		frappe.throw(
+			_(
+				"Nothing to post — every due row up to {0} for this scope is already "
+				"posted{1}. A duplicate Mass Asset Depreciation run is not allowed (VR-007)."
+			).format(
+				frappe.format(getdate(doc.posting_date), {"fieldtype": "Date"}),
+				_(" (last run: {0})").format(last) if last else "",
+			)
+		)
 
 	doc.flags.ignore_validate_update_after_submit = True
 	doc.save(ignore_permissions=True)

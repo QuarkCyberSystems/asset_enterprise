@@ -67,7 +67,8 @@
    "fieldtype": "Table",
    "label": "Result Summary",
    "options": "Mass Asset Depreciation Result",
-   "read_only": 1
+   "read_only": 1,
+   "no_copy": 1
   }
  ],
  "is_submittable": 1,

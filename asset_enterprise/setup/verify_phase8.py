@@ -58,7 +58,18 @@ def _run():
 		print(f"mad    results={[(r.asset, r.outcome) for r in results]} {'OK' if m_ok else 'FAIL'}")
 		ok = ok and m_ok
 
-		# VR-007: immediate re-run skips.
+		# VR-007 document level: an identical re-run has nothing to post and
+		# must be REFUSED, not recorded as an empty submitted run (client,
+		# MAD-2026-00475 duplicating MAD-2026-00435). The one legitimate
+		# quiet outcome is a site whose only remaining due rows need the
+		# manual §4.10 flow — that run carries information and may submit.
+		# ignore_no_copy=False mirrors the UI's Duplicate action, which
+		# honours no_copy (server-side copy_doc ignores it by default).
+		dup_draft = frappe.copy_doc(mad, ignore_no_copy=False)
+		copy_ok = not dup_draft.get("result_summary")
+		print(f"vr007a Duplicate carries no result rows: {'OK' if copy_ok else 'FAIL'}")
+		ok = ok and copy_ok
+
 		mad2 = frappe.get_doc(
 			{
 				"doctype": "Mass Asset Depreciation",
@@ -69,13 +80,25 @@ def _run():
 		)
 		mad2.flags.ignore_permissions = True
 		mad2.insert()
-		mad2.submit()
-		re_posted = frappe.get_all(
-			"Mass Asset Depreciation Result",
-			filters={"parent": mad2.name, "outcome": "Posted", "asset": a1.name},
-		)
-		print(f"vr007  re-run double-post: {'OK' if not re_posted else 'FAIL'}")
-		ok = ok and not re_posted
+		try:
+			mad2.submit()
+			results2 = frappe.get_all(
+				"Mass Asset Depreciation Result",
+				filters={"parent": mad2.name},
+				fields=["outcome"],
+			)
+			outcomes2 = {r.outcome for r in results2}
+			# submitted without throwing: only acceptable when manual-flow
+			# rows justified the document — and never with a Posted row.
+			m2_ok = "Posted" not in outcomes2 and "Manual Posting Required" in outcomes2
+			print(
+				f"vr007b duplicate run submitted with outcomes {sorted(outcomes2)} "
+				f"{'OK (manual rows justify it)' if m2_ok else 'FAIL (empty duplicate accepted)'}"
+			)
+		except frappe.ValidationError as e:
+			m2_ok = "VR-007" in str(e)
+			print(f"vr007b duplicate run blocked: {'OK' if m2_ok else 'FAIL: ' + str(e)[:120]}")
+		ok = ok and m2_ok
 
 		# VR-006: restricted mode without authority role.
 		mad3 = frappe.get_doc(
