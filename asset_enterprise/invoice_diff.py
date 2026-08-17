@@ -65,6 +65,15 @@ def stamp_asset_dimension(doc, method=None):
 
 
 def pr_on_submit(doc, method=None):
+	"""NOTE on sheet item 2 (auto-submitting the assets a receipt
+	creates): tried and withdrawn 16/08/2026. ERPNext forbids changing
+	Available for Use Date OR Calculate Depreciation after submit, so a
+	submitted asset can only start depreciating through Enable
+	Depreciation — and that route builds the schedule from the enable
+	date, losing the receiving-date catch-up entirely (a 108-day first
+	row collapsed to 1 day in TC-005). Auto-submit becomes safe once
+	enable_depreciation uses the asset's available-for-use date as the
+	basis; until then the draft step is what protects the schedule."""
 	if not _enterprise():
 		return
 	for row in doc.items:
@@ -100,6 +109,50 @@ def _stamp_receiving_date_basis(pr_doc, asset_names):
 		frappe.db.set_value(
 			"Asset", name, "available_for_use_date", pr_doc.posting_date, update_modified=False
 		)
+
+
+def _submit_receipt_assets(pr_doc, asset_names):
+	"""NOT WIRED — see the note in pr_on_submit. Kept because the client
+	asked for it (sheet item 2) and it is one line from being live once
+	Enable Depreciation honours the receiving-date basis.
+	"""
+	"""Submit the assets the receipt just created (client decision
+	16/08/2026, sheet item 2). Depreciation can still be switched on
+	afterwards via Enable Depreciation, so the draft step only cost the
+	user a click per asset.
+
+	Only assets that already carry an available-for-use date are
+	submitted — the date cannot be set after submit, so submitting
+	without one would trap the asset. Everything else stays a draft, and
+	the receipt itself never fails because one asset needs a decision.
+	"""
+	for name in asset_names:
+		state = frappe.db.get_value(
+			"Asset", name, ["docstatus", "available_for_use_date"], as_dict=True
+		)
+		if not state or state.docstatus != 0:
+			continue
+		# Without an available-for-use date the asset must stay a draft:
+		# ERPNext forbids setting that field after submit, so submitting
+		# now would trap the asset with no way to ever start depreciating.
+		if not state.available_for_use_date:
+			continue
+		frappe.db.savepoint("ae_asset_submit")
+		try:
+			asset = frappe.get_doc("Asset", name)
+			asset.flags.ignore_permissions = True
+			asset.submit()
+		except Exception as e:
+			frappe.db.rollback(save_point="ae_asset_submit")
+			frappe.msgprint(
+				_(
+					"Asset {0} was created as a draft — it needs attention before it can "
+					"be submitted: {1}"
+				).format(name, str(e)[:160]),
+				title=_("Asset Left as Draft"),
+				indicator="orange",
+			)
+
 
 
 def _validate_pr_over_allocation(row, linked_assets):

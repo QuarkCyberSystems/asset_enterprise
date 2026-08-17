@@ -344,18 +344,30 @@ def tc005():
 
 	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
 	asset = frappe.get_doc("Asset", asset_name)
-	asset.calculate_depreciation = 1
-	if not asset.finance_books:
-		asset.append("finance_books", {})
-	fb = asset.finance_books[0]
-	fb.depreciation_method = "Straight Line"
-	fb.total_number_of_depreciations = 60
-	fb.frequency_of_depreciation = 1
-	fb.depreciation_start_date = "2026-06-30"
-	asset.available_for_use_date = None
-	asset.flags.ignore_permissions = True
-	asset.save()
-	asset.submit()
+	if asset.docstatus == 0:
+		asset.calculate_depreciation = 1
+		if not asset.finance_books:
+			asset.append("finance_books", {})
+		fb = asset.finance_books[0]
+		fb.depreciation_method = "Straight Line"
+		fb.total_number_of_depreciations = 60
+		fb.frequency_of_depreciation = 1
+		fb.depreciation_start_date = "2026-06-30"
+		asset.flags.ignore_permissions = True
+		asset.save()
+		asset.submit()
+	else:
+		# the receipt submitted it already (client decision, sheet item 2)
+		# — depreciation is switched on through Enable Depreciation, the
+		# only route ERPNext leaves open after submit.
+		from asset_enterprise.depreciation import enable_depreciation
+
+		enable_depreciation(
+			asset.name,
+			total_number_of_depreciations=60,
+			frequency_of_depreciation=1,
+			depreciation_start_date="2026-06-30",
+		)
 	asset.reload()
 
 	sched = frappe.db.get_value(
