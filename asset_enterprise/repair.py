@@ -15,7 +15,7 @@ was deployed, or against stale application workers.
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import add_days, cint, date_diff, flt, getdate
 
 
 def find_missing_opening_entries(company=None, asset=None):
@@ -359,3 +359,308 @@ def refresh_stored_asset_values(company=None, dry_run=1):
 	frappe.db.commit()
 	print(f"refreshed {len(stale)} asset(s)")
 	return [s[0] for s in stale]
+
+
+# --------------------------------------------------------------------------
+# Fallout of the reschedule monkeypatch never reaching core (§4.8 / GAP-031)
+# --------------------------------------------------------------------------
+
+
+def _cancelled_schedules(company=None, asset=None):
+	conditions, params = "", []
+	if company:
+		conditions += " and ads.company = %s"
+		params.append(company)
+	if asset:
+		conditions += " and ads.asset = %s"
+		params.append(asset)
+	return frappe.db.sql(
+		f"""
+		select ads.name, ads.asset
+		from `tabAsset Depreciation Schedule` ads
+		where (ads.docstatus = 2 or ads.status = 'Cancelled'){conditions}
+		order by ads.asset, ads.creation
+		""",
+		params,
+		as_dict=True,
+	)
+
+
+def resupersede_cancelled_schedules(company=None, asset=None, dry_run=1):
+	"""Cancelled depreciation schedules -> Superseded (GAP-031).
+
+	Until the reschedule wrapper was rebound onto every module that had
+	imported it, core's reschedule_depreciation ran on disposal and ended
+	in current_schedule.cancel(). The supersede-never-cancel rule says
+	that generation stays SUBMITTED with status "Superseded" so its
+	posted rows and JE links remain readable history.
+
+	Asset values are unaffected: _posted_depreciation_total sums the
+	ACTIVE generation only, and Superseded is excluded exactly as
+	Cancelled was. Any posted JE that exists ONLY on the cancelled
+	generation is reported and left alone — that is an accumulated-
+	depreciation shortfall, a separate question from this flip.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.resupersede_cancelled_schedules \\
+	        --kwargs "{'dry_run': 0}"
+	"""
+	targets = _cancelled_schedules(company, asset)
+	if not targets:
+		print("no cancelled depreciation schedules")
+		return []
+
+	print(f"{len(targets)} cancelled schedule(s) to re-supersede:")
+	orphans = []
+	for row in targets:
+		missing = frappe.db.sql(
+			"""
+			select ds.journal_entry
+			from `tabDepreciation Schedule` ds
+			where ds.parent = %s and ifnull(ds.journal_entry, '') != ''
+			  and ds.journal_entry not in (
+				select ifnull(a.journal_entry, '')
+				from `tabDepreciation Schedule` a
+				join `tabAsset Depreciation Schedule` s on a.parent = s.name
+				where s.asset = %s and s.status = 'Active' and s.docstatus = 1
+			  )
+			""",
+			(row.name, row.asset),
+			pluck=True,
+		)
+		flag = f"  !! {len(missing)} posted JE(s) not on the Active generation: {missing}" if missing else ""
+		print(f"  {row.name}  ({row.asset}){flag}")
+		if missing:
+			orphans.append((row.asset, row.name, missing))
+
+	if orphans:
+		print(
+			f"\n  {len(orphans)} schedule(s) carry posted depreciation the Active generation "
+			f"does not — their assets under-state accumulated depreciation. Reported only; "
+			f"the flip below does not change any value."
+		)
+
+	if cint(dry_run):
+		print("dry run — nothing changed. Re-run with dry_run=0 to apply.")
+		return [r.name for r in targets]
+
+	changed = []
+	for row in targets:
+		frappe.db.set_value(
+			"Asset Depreciation Schedule",
+			row.name,
+			{"docstatus": 1, "status": "Superseded"},
+			update_modified=False,
+		)
+		changed.append(row.name)
+	frappe.db.commit()
+	print(f"re-superseded {len(changed)} schedule(s)")
+	return changed
+
+
+def find_collapsed_horizons(company=None, asset=None):
+	"""Active schedules carrying less future depreciation than the asset
+	still has to depreciate — value with no row to charge it through.
+
+	Each regeneration took its horizon from the PREVIOUS generation's
+	last row, so once core truncated a generation at a disposal date
+	every later generation inherited the short horizon. The test is the
+	shortfall itself, not the horizon: a schedule that merely ends a few
+	weeks early still spreads the whole NBV across the rows it has, and
+	strands nothing.
+	"""
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import schedule_horizon_from_life
+
+	conditions, params = "", []
+	if company:
+		conditions += " and a.company = %s"
+		params.append(company)
+	if asset:
+		conditions += " and a.name = %s"
+		params.append(asset)
+
+	rows = frappe.db.sql(
+		f"""
+		select ads.asset, ads.name sched, max(ds.schedule_date) last_row,
+		       sum(case when ifnull(ds.journal_entry,'') = '' then 1 else 0 end) unposted,
+		       coalesce(sum(case when ifnull(ds.journal_entry,'') = ''
+		                         then ds.depreciation_amount else 0 end), 0) future_amount
+		from `tabAsset Depreciation Schedule` ads
+		join `tabAsset` a on a.name = ads.asset
+		join `tabDepreciation Schedule` ds on ds.parent = ads.name
+		where ads.status = 'Active' and ads.docstatus = 1 and a.docstatus = 1
+		  and a.calculate_depreciation = 1
+		  and a.status not in ('Scrapped', 'Sold', 'Disposed', 'Capitalized', 'Cancelled')
+		  {conditions}
+		group by ads.name
+		order by ads.asset
+		""",
+		params,
+		as_dict=True,
+	)
+
+	found = []
+	for row in rows:
+		nbv = flt(recalculate_asset_values(row.asset, save=False)["net_book_value"])
+		salvage = flt(
+			frappe.db.get_value(
+				"Asset Finance Book", {"parent": row.asset}, "expected_value_after_useful_life"
+			)
+			or 0
+		)
+		# What still has to depreciate, minus what the schedule can carry.
+		stranded = flt(nbv - salvage - flt(row.future_amount), 2)
+		if stranded <= 0.005:
+			continue
+		horizon = schedule_horizon_from_life(row.asset)
+		found.append(
+			{
+				"asset": row.asset,
+				"schedule": row.sched,
+				"last_row": getdate(row.last_row),
+				"horizon": getdate(horizon) if horizon else None,
+				"unposted": cint(row.unposted),
+				"stranded": stranded,
+				"repairable": bool(horizon and getdate(horizon) > getdate(row.last_row)),
+			}
+		)
+	return found
+
+
+def restore_collapsed_horizons(company=None, asset=None, dry_run=1):
+	"""Regenerate Active schedules back out to the finance-book end of
+	life, so stranded NBV has rows to depreciate through. Posted rows are
+	copied verbatim as always; only the future is rebuilt.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.restore_collapsed_horizons \\
+	        --kwargs "{'asset': 'ACC-ASS-2026-00102', 'dry_run': 0}"
+	"""
+	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
+
+	found = find_collapsed_horizons(company, asset)
+	if not found:
+		print("no collapsed schedule horizons")
+		return []
+
+	print(f"{len(found)} asset(s) with depreciation no schedule row can carry:")
+	for row in found:
+		note = "" if row["repairable"] else "  !! life already ended — needs a finance-book decision"
+		print(
+			f"  {row['asset']}  {row['schedule']} ends {row['last_row']} ({row['unposted']} "
+			f"unposted row(s)), life runs to {row['horizon']} — {row['stranded']:,.2f} "
+			f"cannot depreciate{note}"
+		)
+	if cint(dry_run):
+		print("dry run — nothing changed. Re-run with dry_run=0 to apply.")
+		return [r["asset"] for r in found]
+
+	repaired = []
+	for row in found:
+		if not row["repairable"]:
+			print(f"  SKIPPED {row['asset']}: end of life {row['horizon']} is not past {row['last_row']}")
+			continue
+		try:
+			as_of = last_posted_schedule_date(row["asset"]) or row["last_row"]
+			new = supersede_and_regenerate(
+				row["asset"],
+				as_of_date=as_of,
+				end_of_life_override=row["horizon"],
+				reason=_("Horizon restored to end of life ({0})").format(row["horizon"]),
+			)
+			frappe.db.commit()
+			print(f"  {row['asset']}: {new.name} now runs to {row['horizon']}")
+			repaired.append(row["asset"])
+		except Exception as e:
+			frappe.db.rollback()
+			print(f"  FAILED {row['asset']}: {str(e)[:160]}")
+	return repaired
+
+
+def backfill_row_daycount_metadata(company=None, asset=None, dry_run=1):
+	"""Fill days_in_period / daily_rate on rows that core created.
+
+	Core writes neither field, so rows it built — every schedule the
+	cancel-and-recreate path produced — display as "0 days @ 0.000000"
+	once they are carried forward into our generations. The amounts are
+	posted and are NOT touched: days come from the gap to the previous
+	row (or the in-service date for the first), and the rate is derived
+	from the amount actually booked, so rate x days reproduces it.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.backfill_row_daycount_metadata \\
+	        --kwargs "{'dry_run': 0}"
+	"""
+	conditions, params = "", []
+	if company:
+		conditions += " and ads.company = %s"
+		params.append(company)
+	if asset:
+		conditions += " and ads.asset = %s"
+		params.append(asset)
+
+	schedules = frappe.db.sql(
+		f"""
+		select distinct ads.name, ads.asset
+		from `tabAsset Depreciation Schedule` ads
+		join `tabDepreciation Schedule` ds on ds.parent = ads.name
+		where ads.docstatus = 1 and ads.status = 'Active'
+		  and ifnull(ds.days_in_period, 0) = 0 and ifnull(ds.daily_rate, 0) = 0
+		  {conditions}
+		order by ads.asset
+		""",
+		params,
+		as_dict=True,
+	)
+	if not schedules:
+		print("no rows missing day-count metadata")
+		return []
+
+	updates = []
+	for sched in schedules:
+		basis = frappe.db.get_value("Asset", sched.asset, "available_for_use_date")
+		rows = frappe.get_all(
+			"Depreciation Schedule",
+			filters={"parent": sched.name},
+			fields=["name", "schedule_date", "depreciation_amount", "days_in_period", "daily_rate"],
+			order_by="schedule_date, idx",
+		)
+		prev = add_days(getdate(basis), -1) if basis else None
+		for row in rows:
+			this_date = getdate(row.schedule_date)
+			if flt(row.days_in_period) or flt(row.daily_rate):
+				prev = this_date
+				continue
+			days = date_diff(this_date, prev) if prev else 0
+			if days <= 0:
+				prev = this_date
+				continue
+			amount = flt(row.depreciation_amount)
+			updates.append((sched.asset, sched.name, row.name, this_date, days, amount / days))
+			prev = this_date
+
+	if not updates:
+		print("no rows could be reconstructed (no usable in-service date)")
+		return []
+
+	print(f"{len(updates)} row(s) across {len(schedules)} schedule(s) to backfill:")
+	shown = updates if len(updates) <= 120 else updates[:120]
+	for asset_name, sched_name, _row, date, days, rate in shown:
+		print(f"  {asset_name} {sched_name} {date}: {days} days @ {rate:.6f}")
+	if len(shown) < len(updates):
+		print(f"  ... and {len(updates) - len(shown)} more")
+	if cint(dry_run):
+		print("dry run — nothing changed. Re-run with dry_run=0 to apply.")
+		return [u[2] for u in updates]
+
+	for _asset, _sched, row_name, _date, days, rate in updates:
+		frappe.db.set_value(
+			"Depreciation Schedule",
+			row_name,
+			{"days_in_period": days, "daily_rate": rate},
+			update_modified=False,
+		)
+	frappe.db.commit()
+	print(f"backfilled {len(updates)} row(s)")
+	return [u[2] for u in updates]
