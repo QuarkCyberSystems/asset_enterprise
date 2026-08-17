@@ -19,7 +19,12 @@ frappe.treeview_settings["Asset Tree"] = {
 
 	// A tree view has no columns, so the money is rendered onto the node
 	// itself: the asset's own net book value, and for a parent the total
-	// of its whole subtree (client sheet, row 44).
+	// across its whole subtree (client sheet, row 44).
+	//
+	// "group total", NOT "with parts": children in this tree stay
+	// independent assets with their own books. A component merged into a
+	// composite is a different thing entirely and ceases to exist on its
+	// own — borrowing that vocabulary here misleads.
 	onrender: function (node) {
 		const d = node.data || {};
 		if (d.nbv === undefined || d.nbv === null) {
@@ -30,7 +35,7 @@ frappe.treeview_settings["Asset Tree"] = {
 		const own = `<span class="text-muted">${__("NBV")} ${fmt(d.nbv)}</span>`;
 		const subtree =
 			has_children && d.subtree_nbv !== d.nbv
-				? ` <span class="text-muted">· ${__("with parts")} ${fmt(d.subtree_nbv)}</span>`
+				? ` <span class="text-muted">· ${__("group total")} ${fmt(d.subtree_nbv)}</span>`
 				: "";
 		$(node.$tree_link)
 			.find(".tree-label")
