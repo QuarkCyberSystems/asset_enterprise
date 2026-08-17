@@ -41,16 +41,19 @@ class ScrapTransaction(Document):
 	def _validate_component(self):
 		"""Component must be an Active Merge Log row of this asset; its
 		NBV-at-merge defaults the scrap value (2026-07-23 review)."""
-		row = frappe.db.get_value(
-			"Composite Merge Log Entry",
-			{
-				"parent": self.asset,
-				"merged_source_asset": self.composite_component,
-				"status": "Active",
-			},
-			["net_book_value_at_merge"],
+		# A child table has to be queried with its parent doctype named,
+		# or frappe finds nothing — this rejected components the Merge Log
+		# plainly listed as Active (client sheet item 8).
+		rows = frappe.db.sql(
+			"""select net_book_value_at_merge
+			   from `tabComposite Merge Log Entry`
+			   where parent = %s and parenttype = 'Asset'
+			     and merged_source_asset = %s and status = 'Active'
+			   limit 1""",
+			(self.asset, self.composite_component),
 			as_dict=True,
 		)
+		row = rows[0] if rows else None
 		if not row:
 			frappe.throw(
 				_(
