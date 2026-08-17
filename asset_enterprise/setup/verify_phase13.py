@@ -282,10 +282,11 @@ def _run():
 		pa = frappe.get_doc(
 			"Asset", frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
 		)
-		pa.available_for_use_date = nowdate()
-		pa.flags.ignore_permissions = True
-		pa.save()
-		pa.submit()
+		if pa.docstatus == 0:  # the receipt may already have submitted it
+			pa.available_for_use_date = nowdate()
+			pa.flags.ignore_permissions = True
+			pa.save()
+			pa.submit()
 		pi = frappe.get_doc(
 			{"doctype": "Purchase Invoice", "company": company, "supplier": supplier,
 			 "posting_date": nowdate(),

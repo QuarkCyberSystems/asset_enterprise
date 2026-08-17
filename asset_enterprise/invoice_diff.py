@@ -115,21 +115,26 @@ def _submit_receipt_assets(pr_doc, asset_names):
 	afterwards via Enable Depreciation, so the draft step only cost the
 	user a click per asset.
 
-	Only assets that already carry an available-for-use date are
-	submitted — the date cannot be set after submit, so submitting
-	without one would trap the asset. Everything else stays a draft, and
-	the receipt itself never fails because one asset needs a decision.
+	Per GAP-002 the available-for-use date is needed only when the asset
+	depreciates, so a non-depreciating asset submits without one. Only a
+	DEPRECIATING asset with no date waits as a draft — that date cannot
+	be set after submit, so submitting would trap it. The receipt itself
+	never fails because one asset needs a decision.
 	"""
 	for name in asset_names:
 		state = frappe.db.get_value(
-			"Asset", name, ["docstatus", "available_for_use_date"], as_dict=True
+			"Asset", name, ["docstatus", "available_for_use_date", "calculate_depreciation"],
+			as_dict=True,
 		)
 		if not state or state.docstatus != 0:
 			continue
-		# Without an available-for-use date the asset must stay a draft:
-		# ERPNext forbids setting that field after submit, so submitting
-		# now would trap the asset with no way to ever start depreciating.
-		if not state.available_for_use_date:
+		# GAP-002: the date is required only when the asset DEPRECIATES and
+		# its category is not on the receiving-date basis. A
+		# non-depreciating asset submits without one quite legitimately
+		# (TC-003), so only a depreciating asset with no date has to wait
+		# — for that one the date cannot be set after submit, which would
+		# trap it.
+		if not state.available_for_use_date and state.calculate_depreciation:
 			continue
 		frappe.db.savepoint("ae_asset_submit")
 		try:

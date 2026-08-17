@@ -492,18 +492,27 @@ def tc007():
 	pr.submit()
 	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
 	asset = frappe.get_doc("Asset", asset_name)
-	asset.available_for_use_date = asset.purchase_date
-	asset.calculate_depreciation = 1
-	if not asset.finance_books:
-		asset.append("finance_books", {})
-	fb = asset.finance_books[0]
-	fb.depreciation_method = "Straight Line"
-	fb.total_number_of_depreciations = 12
-	fb.frequency_of_depreciation = 1
-	fb.depreciation_start_date = get_last_day(asset.purchase_date)
-	asset.flags.ignore_permissions = True
-	asset.save()
-	asset.submit()
+	if asset.docstatus == 0:
+		asset.available_for_use_date = asset.purchase_date
+		asset.calculate_depreciation = 1
+		if not asset.finance_books:
+			asset.append("finance_books", {})
+		fb = asset.finance_books[0]
+		fb.depreciation_method = "Straight Line"
+		fb.total_number_of_depreciations = 12
+		fb.frequency_of_depreciation = 1
+		fb.depreciation_start_date = get_last_day(asset.purchase_date)
+		asset.flags.ignore_permissions = True
+		asset.save()
+		asset.submit()
+	else:
+		# the receipt submitted it; depreciation goes on afterwards
+		from asset_enterprise.depreciation import enable_depreciation
+
+		enable_depreciation(
+			asset.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+			depreciation_start_date=get_last_day(asset.purchase_date),
+		)
 
 	try:
 		pr.reload()
@@ -966,10 +975,11 @@ def tc014():
 	pr.submit()
 	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
 	asset = frappe.get_doc("Asset", asset_name)
-	asset.available_for_use_date = asset.purchase_date
-	asset.flags.ignore_permissions = True
-	asset.save()
-	asset.submit()
+	if asset.docstatus == 0:  # the receipt may already have submitted it
+		asset.available_for_use_date = asset.purchase_date
+		asset.flags.ignore_permissions = True
+		asset.save()
+		asset.submit()
 
 	from asset_enterprise import disposal
 
@@ -1381,10 +1391,11 @@ def tc023():
 	pr.submit()
 	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
 	asset = frappe.get_doc("Asset", asset_name)
-	asset.available_for_use_date = asset.purchase_date
-	asset.flags.ignore_permissions = True
-	asset.save()
-	asset.submit()
+	if asset.docstatus == 0:  # the receipt may already have submitted it
+		asset.available_for_use_date = asset.purchase_date
+		asset.flags.ignore_permissions = True
+		asset.save()
+		asset.submit()
 
 	pi = make_purchase_invoice(pr.name)
 	pi.posting_date = nowdate()
@@ -1479,10 +1490,11 @@ def tc024():
 	pr.submit()
 	asset_name = frappe.get_all("Asset", filters={"purchase_receipt": pr.name}, pluck="name")[0]
 	asset = frappe.get_doc("Asset", asset_name)
-	asset.available_for_use_date = asset.purchase_date
-	asset.flags.ignore_permissions = True
-	asset.save()
-	asset.submit()
+	if asset.docstatus == 0:  # the receipt may already have submitted it
+		asset.available_for_use_date = asset.purchase_date
+		asset.flags.ignore_permissions = True
+		asset.save()
+		asset.submit()
 
 	from asset_enterprise import disposal
 	from asset_enterprise.asset_values import recalculate_asset_values

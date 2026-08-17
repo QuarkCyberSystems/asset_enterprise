@@ -53,10 +53,11 @@ def _run():
 		# ------------------------------------ GAP-001 positive (TC-001) + GAP-002 (TC-003)
 		a1 = make_test_asset(company, gross=1_000_000, submit=False)
 		a1.opening_accumulated_depreciation = 400_000
-		a1.available_for_use_date = None  # TC-003: AFU optional, no depreciation
-		a1.flags.ignore_permissions = True
-		a1.save()
-		a1.submit()
+		if a1.docstatus == 0:  # the receipt may already have submitted it
+			a1.available_for_use_date = None  # TC-003: AFU optional, no depreciation
+			a1.flags.ignore_permissions = True
+			a1.save()
+			a1.submit()
 
 		ft = frappe.db.get_value(
 			"Financial Treatment",

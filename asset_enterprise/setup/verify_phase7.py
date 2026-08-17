@@ -97,10 +97,11 @@ def _run():
 
 		# PR cancel guard: submit one asset, PR cancel must block.
 		a1 = frappe.get_doc("Asset", assets[0])
-		a1.available_for_use_date = nowdate()
-		a1.flags.ignore_permissions = True
-		a1.save()
-		a1.submit()
+		if a1.docstatus == 0:  # the receipt may already have submitted it
+			a1.available_for_use_date = nowdate()
+			a1.flags.ignore_permissions = True
+			a1.save()
+			a1.submit()
 		try:
 			pr.reload()
 			pr.cancel()
@@ -336,10 +337,11 @@ def _run():
 		pr5.submit()
 		asset5 = frappe.get_all("Asset", filters={"purchase_receipt": pr5.name}, pluck="name")[0]
 		a5 = frappe.get_doc("Asset", asset5)
-		a5.available_for_use_date = nowdate()
-		a5.flags.ignore_permissions = True
-		a5.save()
-		a5.submit()
+		if a5.docstatus == 0:  # the receipt may already have submitted it
+			a5.available_for_use_date = nowdate()
+			a5.flags.ignore_permissions = True
+			a5.save()
+			a5.submit()
 
 		pi5 = frappe.get_doc(
 			{
