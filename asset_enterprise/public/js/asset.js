@@ -1,6 +1,17 @@
 // GA-0005-01 v2.14 — Asset form extensions (§9.6). JS is UX-only;
 // every action calls a whitelisted backend that re-validates (C126).
 frappe.ui.form.on("Asset", {
+	// ERPNext decides whether Purchase Receipt / Purchase Invoice are
+	// mandatory in toggle_reference_doc, which it triggers on refresh and
+	// on those two fields — but NOT on asset_type. A new Asset therefore
+	// refreshes with no type set, falls through to the fallback that
+	// flags both mandatory, and choosing "Existing Asset" afterwards
+	// never clears them. The user is then blocked by two fields that
+	// depends_on has hidden from the form (client report 17/08/2026).
+	asset_type(frm) {
+		frm.trigger("toggle_reference_doc");
+	},
+
 	refresh(frm) {
 		if (frm.doc.docstatus !== 1) return;
 
