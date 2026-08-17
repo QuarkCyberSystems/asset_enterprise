@@ -416,13 +416,16 @@ def _run():
 		s5_ok = (
 			d_cl2 == 0 and tgt_fa == 100_000 and src_fa == 0
 			and len(mrows) == 2 and all(r.get("remaining_useful_life_in_months") is not None for r in mrows)
-			and reg_src is None  # cancelled sources leave the register
+			# a merged source now stays SUBMITTED with status Disposed
+			# (client, sheet item 24), so it remains listed — but carrying
+			# nothing: its value moved to the composite.
+			and (reg_src is None or flt(reg_src.get("asset_value")) == 0)
 			and register_row(company, tgt.name) is not None
 		)
 		print(
 			f"s5 merge | clearing net={d_cl2} (want 0) | FA-by-asset target={tgt_fa} (want 100000) "
-			f"sources={src_fa} (want 0) | merge-log rows={len(mrows)} | sources out of register="
-			f"{reg_src is None} {'OK' if s5_ok else 'FAIL'}"
+			f"sources={src_fa} (want 0) | merge-log rows={len(mrows)} | source carries nothing="
+			f"{reg_src is None or flt(reg_src.get("asset_value")) == 0} {'OK' if s5_ok else 'FAIL'}"
 		)
 		ok = ok and bool(s5_ok)
 

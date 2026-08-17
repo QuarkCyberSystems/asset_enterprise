@@ -44,6 +44,7 @@ def sync_customizations():
 	create_custom_fields(CUSTOM_FIELDS, ignore_validate=True)
 	apply_property_setters()
 	_ava_property_setters()
+	_asset_status_property_setter()
 	seed_masters()
 	seed_setting_defaults()
 	register_asset_accounting_dimension()
@@ -251,6 +252,17 @@ def apply_property_setters():
 			prop,
 			value,
 			prop_type,
+			validate_fields_for_doctype=False,
+		)
+
+
+def _asset_status_property_setter():
+	"""A merged-away asset is DISPOSED, not cancelled — core's status list
+	has no such value (client, sheet item 24)."""
+	options = frappe.get_meta("Asset").get_field("status").options or ""
+	if "Disposed" not in options:
+		make_property_setter(
+			"Asset", "status", "options", options.rstrip() + "\nDisposed", "Text",
 			validate_fields_for_doctype=False,
 		)
 

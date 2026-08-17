@@ -13,7 +13,8 @@ account (per 2026-07-14 meeting — no direct FA-to-FA transfer):
            CR Capitalization Clearing          [NBV]
 
 One balanced JE carries both legs; the clearing account nets to zero
-per merge. The source Asset leaves the active register (docstatus=2
+per merge. The source Asset leaves the active register (status
+"Disposed", document stays submitted
 via db_set — its booking GL is NOT re-reversed; the disposal leg above
 is the ledger truth), gets `merged_into_asset`, and the composite's
 Merge Log snapshots HAV / Accum / NBV at merge (values tracked for
@@ -181,8 +182,11 @@ def merge_sources_into_composite(cap_doc):
 	for source, snap in merged:
 		# Source leaves the active register; booking GL untouched
 		# (the disposal leg above is the ledger truth).
-		source.db_set("status", "Capitalized", update_modified=False)
-		source.db_set("docstatus", 2, update_modified=False)
+		# A merge DISPOSES of the source; it does not cancel the document
+		# that created it. The asset stays submitted — as a scrapped or
+		# sold asset does — and leaves the active register by status
+		# (client, sheet item 24).
+		source.db_set("status", "Disposed", update_modified=False)
 		source.db_set("merged_into_asset", target.name, update_modified=False)
 
 		target.append(

@@ -2345,7 +2345,8 @@ def tc029():
 	ok = (
 		clearing_net == 0.00
 		and flt(tgt["historical_asset_value"], 2) == 1_500_000.00
-		and src_state.docstatus == 2
+		and src_state.docstatus == 1
+		and src_state.status == "Disposed"
 		and merge_log >= 1
 	)
 	return (
@@ -3090,7 +3091,8 @@ def tc049():
 		and prorated > 0
 		and fa_credit_source == 8_000_000.00
 		and flt(comp_values["historical_asset_value"], 2) == flt(42_500_000 + nbv_at_merge, 2)
-		and src_state.docstatus == 2
+		and src_state.docstatus == 1
+		and src_state.status == "Disposed"
 	)
 	return (
 		("PASS" if ok else "FAIL"),
@@ -3098,5 +3100,6 @@ def tc049():
 		f"carried {clearing_moved:,.2f} and nets {clearing_net:,.2f}; source cost credited "
 		f"{fa_credit_source:,.2f} (want 8,000,000); composite HAV "
 		f"{flt(comp_values['historical_asset_value']):,.2f} (want "
-		f"{42_500_000 + nbv_at_merge:,.2f}); source docstatus {src_state.docstatus}",
+		f"{42_500_000 + nbv_at_merge:,.2f}); source stays submitted as "
+		f"{src_state.status} (docstatus {src_state.docstatus})",
 	)

@@ -84,6 +84,7 @@ def _run():
 
 		# Assertions.
 		src_docstatus = frappe.db.get_value("Asset", source.name, "docstatus")
+		src_status = frappe.db.get_value("Asset", source.name, "status")
 		src_merged_into = frappe.db.get_value("Asset", source.name, "merged_into_asset")
 		log = frappe.get_all(
 			"Composite Merge Log Entry",
@@ -116,7 +117,8 @@ def _run():
 		snap_accum = flt(log[0].accumulated_depreciation_at_merge) if log else 0
 		snap_nbv = flt(log[0].net_book_value_at_merge) if log else 0
 		m_ok = (
-			src_docstatus == 2
+			src_docstatus == 1
+			and src_status == "Disposed"
 			and src_merged_into == composite.name
 			and len(log) == 1
 			and snap_hav == 50_000
@@ -126,7 +128,7 @@ def _run():
 			and flt(net) == 0
 		)
 		print(
-			f"merge  src docstatus={src_docstatus} merged_into={src_merged_into == composite.name} "
+			f"merge  src docstatus={src_docstatus} status={src_status} merged_into={src_merged_into == composite.name} "
 			f"log_rows={len(log)} snapshot(HAV/Accum/NBV)=({snap_hav}/{snap_accum}/{snap_nbv}) "
 			f"composite HAV={hav} (want 120000+NBV) clearing_net={net} {'OK' if m_ok else 'FAIL'}"
 		)
@@ -163,18 +165,19 @@ def _run():
 		)
 		hav_after = recalculate_asset_values(composite.name, save=False)["historical_asset_value"]
 		src_after = frappe.db.get_value("Asset", source.name, "docstatus")
+		src_after_status = frappe.db.get_value("Asset", source.name, "status")
 		reversed_by = frappe.db.get_value("Asset Capitalization", cap.name, "reversed_by_capitalization")
 
 		r_ok = (
 			reversal
 			and log_status == "Reversed"
 			and hav_after == 120_000
-			and src_after == 2  # stays cancelled — manual re-creation per design
+			and src_after_status == "Disposed"  # stays cancelled — manual re-creation per design
 			and reversed_by == reversal
 		)
 		print(
 			f"revcm  reversal={reversal} log={log_status} HAV back={hav_after} "
-			f"src stays cancelled={src_after == 2} backref={'OK' if reversed_by == reversal else reversed_by} "
+			f"src stays disposed={src_after_status == 'Disposed'} backref={'OK' if reversed_by == reversal else reversed_by} "
 			f"{'OK' if r_ok else 'FAIL'}"
 		)
 		ok = ok and bool(r_ok)
