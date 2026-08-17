@@ -126,13 +126,18 @@ def apply_patches():
 
 	core_make_entry = core_depr.make_depreciation_entry
 
+	@frappe.whitelist()
 	def make_depreciation_entry(
 		depr_schedule_name, date=None, sch_start_idx=None, sch_end_idx=None,
 		accounting_dimensions=None,
 	):
 		"""The schedule form's own button. Core posts a plain JE that
 		skips the §4.7 prior-year split and the Financial Treatment —
-		route it through the same engine the scheduler uses."""
+		route it through the same engine the scheduler uses.
+
+		MUST stay whitelisted: the button calls core's dotted path, frappe
+		resolves the attribute to THIS function, and an undecorated
+		replacement makes the button fail with "Method Not Allowed"."""
 		from asset_enterprise.depreciation import enterprise_enabled, post_schedule_entries
 
 		if enterprise_enabled():
