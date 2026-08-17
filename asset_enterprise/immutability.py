@@ -20,7 +20,10 @@ REVERSAL_ROUTE = {
 	"Asset Repair": _("cancel it — a Reversal Repair is created automatically"),
 	"Asset Value Adjustment": _("cancel it — a Reversal AVA is created automatically"),
 	"Scrap Transaction": _("restore the asset, or create a replacement asset"),
-	"Asset": _("reverse the asset once its depreciation entries are reversed"),
+	# NOT Asset: frappe already refuses to delete a submitted one, and
+	# cancelling a Purchase Receipt legitimately deletes the draft or
+	# reversed assets it created. Guarding Asset here blocked that cancel
+	# even after the asset had been properly reversed.
 }
 
 

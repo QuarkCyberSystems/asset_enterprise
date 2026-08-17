@@ -87,9 +87,6 @@ doc_events = {
 	"Scrap Transaction": {
 		"on_trash": "asset_enterprise.immutability.block_deletion_of_posted_document",
 	},
-	"Asset": {
-		"on_trash": "asset_enterprise.immutability.block_deletion_of_posted_document",
-	},
 }
 
 # Upgrade guard (build plan §2.3 / §6): every bench migrate re-verifies
