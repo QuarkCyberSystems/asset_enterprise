@@ -204,7 +204,50 @@ def recalculate_asset_values(asset_name, save=True):
 	}
 	if save:
 		frappe.db.set_value("Asset", asset_name, values, update_modified=False)
+		_sync_core_bookkeeping(asset, nbv, accum)
 	return values
+
+
+def _sync_core_bookkeeping(asset, nbv, accum):
+	"""Keep core's own counters honest against the derived values.
+
+	Core decrements finance_books.value_after_depreciation on every
+	depreciation JE and its status logic reads THAT counter — but no
+	core code credits it on our value events (TCC additions, invoice
+	adjustments, revaluations). On ACC-ASS-2026-00125 a +100,000
+	invoice adjustment left the counter 100,000 short, it went negative
+	one row before the end, and core declared "Fully Depreciated" while
+	6,162.30 was still unposted. The derived NBV is the authority —
+	overwrite the counter with it after every recalculation, and
+	restate the depreciation-lifecycle status from it.
+	"""
+	if asset.docstatus != 1 or not asset.calculate_depreciation:
+		return
+	frappe.db.set_value(
+		"Asset Finance Book",
+		{"parent": asset.name, "parenttype": "Asset"},
+		"value_after_depreciation",
+		flt(nbv),
+		update_modified=False,
+	)
+	# Only the depreciation-lifecycle statuses may be restated — never
+	# Disposed / Scrapped / Sold / Capitalized, which our flows own.
+	if asset.status not in ("Submitted", "Partially Depreciated", "Fully Depreciated"):
+		return
+	salvage = flt(
+		frappe.db.get_value(
+			"Asset Finance Book", {"parent": asset.name}, "expected_value_after_useful_life"
+		)
+		or 0
+	)
+	if flt(nbv) <= salvage + 0.005:
+		status = "Fully Depreciated"
+	elif flt(accum) > 0:
+		status = "Partially Depreciated"
+	else:
+		status = "Submitted"
+	if status != asset.status:
+		frappe.db.set_value("Asset", asset.name, "status", status, update_modified=False)
 
 
 def assert_nbv_covers_reversal(asset_name, amount, context=None):

@@ -538,6 +538,13 @@ def _run():
 		by = {str(r.schedule_date): r for r in t10_rows}
 		jul, aug, sep = by.get("2026-07-31"), by.get("2026-08-31"), by.get("2026-09-30")
 		future_sum = flt(sum(flt(r.depreciation_amount) for r in t10_rows if not r.je), 2)
+		# Core's counter must track the derived NBV after value events —
+		# it is what core's status logic reads (client, ACC-ASS-2026-00125:
+		# counter went negative and status flipped to Fully Depreciated
+		# with a row still unposted).
+		t10_counter = flt(frappe.db.get_value(
+			"Asset Finance Book", {"parent": t10.name}, "value_after_depreciation"))
+		t10_status = frappe.db.get_value("Asset", t10.name, "status")
 		t10_ok = (
 			jul and aug and sep
 			and flt(jul.depreciation_amount, 2) == 2_123.29
@@ -546,14 +553,17 @@ def _run():
 			and flt(aug.depreciation_amount, 2) == 2_400.78
 			and flt(sep.depreciation_amount, 2) == 2_695.15
 			and future_sum == 154_643.85  # the post-event NBV, already net of posted
+			and flt(t10_counter, 2) == 154_643.85
+			and t10_status == "Partially Depreciated"
 		)
 		print(
 			f"t10    rate change only after its date: Jul={jul and flt(jul.depreciation_amount, 2)} "
 			f"@{jul and flt(jul.daily_rate, 6)} (want 2,123.29 @68.493151 UNCHANGED), "
 			f"Aug={aug and flt(aug.depreciation_amount, 2)}/{aug and aug.days_in_period}d "
 			f"(want 2,400.78/31 split at 18/08), Sep={sep and flt(sep.depreciation_amount, 2)} "
-			f"(want 2,695.15 new rate), future-sum={future_sum:,.2f} (want 154,643.85) "
-			f"{'OK' if t10_ok else 'FAIL'}"
+			f"(want 2,695.15 new rate), future-sum={future_sum:,.2f} (want 154,643.85), "
+			f"core counter={t10_counter:,.2f} (want =NBV) status={t10_status} "
+			f"(want Partially Depreciated) {'OK' if t10_ok else 'FAIL'}"
 		)
 		ok = ok and bool(t10_ok)
 
