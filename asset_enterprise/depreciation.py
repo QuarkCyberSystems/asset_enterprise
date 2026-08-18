@@ -145,6 +145,89 @@ def build_prospective_rows(nbv_base, as_of_date, end_of_life_date, company, firs
 	)
 
 
+def build_rows_after_rate_change(
+	unposted_rows, nbv_base, as_of_date, rate_change_date, end_of_life, company
+):
+	"""§4.3 read faithfully: a value change re-prices the schedule only
+	AFTER its date (client, Ruba 18/08: an 18/08 capitalization must not
+	touch July's unposted row — "the 7 dep not run before").
+
+	- Unposted periods ending on or before the event date are copied
+	  VERBATIM from the superseded generation — identical to the cent.
+	- The event month splits at the event date: old rate through the
+	  event day, the new rate after, one full-length row (the mid-month
+	  stub row was client sheet item 4).
+	- The remaining base spreads from the day after the event over the
+	  remaining days (build_prospective_rows).
+
+	Returns None when the pre-event rows alone exceed the new base (a
+	downward change bigger than the preserved accrual) — the caller
+	falls back to the uniform re-spread, which is the only layout that
+	still lands on salvage.
+	"""
+	rate_change = getdate(rate_change_date)
+	copied, event_row = [], None
+	for r in unposted_rows:
+		if getdate(r.schedule_date) <= rate_change:
+			copied.append(
+				{
+					"schedule_date": getdate(r.schedule_date),
+					"days_in_period": cint(r.days_in_period),
+					"daily_rate": flt(r.daily_rate),
+					"amount": flt(r.depreciation_amount),
+					"cost_center": r.get("cost_center"),
+				}
+			)
+		else:
+			event_row = r
+			break
+	copied_total = fa_module_round(sum(x["amount"] for x in copied), company)
+	if copied_total >= nbv_base:
+		return None
+
+	prev = getdate(copied[-1]["schedule_date"]) if copied else getdate(as_of_date)
+	a_days = max(0, date_diff(rate_change, prev))
+	old_rate = 0.0
+	if event_row is not None:
+		old_rate = flt(event_row.daily_rate)
+		if not old_rate and cint(event_row.days_in_period):
+			old_rate = flt(event_row.depreciation_amount) / cint(event_row.days_in_period)
+	a_part = fa_module_round(
+		min(old_rate * a_days, nbv_base - copied_total), company
+	) if a_days and old_rate else 0.0
+
+	seg_b_base = fa_module_round(nbv_base - copied_total - a_part, company)
+	seg_b = (
+		build_prospective_rows(seg_b_base, rate_change, end_of_life, company)
+		if getdate(end_of_life) > rate_change and seg_b_base > 0
+		else []
+	)
+	if a_part and seg_b:
+		first = seg_b.pop(0)
+		amount = fa_module_round(a_part + flt(first["amount"]), company)
+		days = a_days + cint(first["days_in_period"])
+		seg_b.insert(
+			0,
+			{
+				"schedule_date": first["schedule_date"],
+				"days_in_period": days,
+				"daily_rate": flt(amount / days, 9) if days else 0.0,
+				"amount": amount,
+			},
+		)
+	elif a_part:
+		# the event month is the schedule's last period
+		seg_b = [
+			{
+				"schedule_date": rate_change,
+				"days_in_period": a_days,
+				"daily_rate": old_rate,
+				"amount": a_part,
+			}
+		]
+	return copied + seg_b
+
+
 def truncate_rows_at_disposal(rows, period_basis, disposal_date, company):
 	"""§4.8: a disposal ENDS the schedule at the disposal date.
 
@@ -228,6 +311,7 @@ def supersede_and_regenerate(
 	end_of_life_override=None,
 	first_posting_date=None,
 	disposal_date=None,
+	rate_change_date=None,
 ):
 	"""Replace reschedule-by-cancel with supersession.
 
@@ -303,17 +387,30 @@ def supersede_and_regenerate(
 	)
 	nbv_base = fa_module_round(flt(values["net_book_value"]) - salvage, company)
 
-	future_rows = (
-		# first_posting_date (v2.16 Path 3): the first regenerated row
-		# accumulates every day from as_of to that posting month's EOM in
-		# ONE catch-up entry (§4.5) — e.g. a September restore of a July
-		# disposal posts 3 months in September.
-		build_prospective_rows(
-			nbv_base, as_of_date, end_of_life, company, first_posting_date=first_posting_date
+	future_rows = None
+	# rate_change_date (Ruba, 18/08): a value change re-prices rows only
+	# AFTER its date — pre-event unposted periods are preserved verbatim.
+	if (
+		rate_change_date
+		and getdate(rate_change_date) > as_of_date
+		and unposted
+		and nbv_base > 0
+	):
+		future_rows = build_rows_after_rate_change(
+			unposted, nbv_base, as_of_date, rate_change_date, end_of_life, company
 		)
-		if getdate(end_of_life) > as_of_date and nbv_base > 0
-		else []
-	)
+	if future_rows is None:
+		future_rows = (
+			# first_posting_date (v2.16 Path 3): the first regenerated row
+			# accumulates every day from as_of to that posting month's EOM in
+			# ONE catch-up entry (§4.5) — e.g. a September restore of a July
+			# disposal posts 3 months in September.
+			build_prospective_rows(
+				nbv_base, as_of_date, end_of_life, company, first_posting_date=first_posting_date
+			)
+			if getdate(end_of_life) > as_of_date and nbv_base > 0
+			else []
+		)
 	if disposal_date:
 		future_rows = truncate_rows_at_disposal(
 			future_rows, as_of_date, disposal_date, company
@@ -359,6 +456,8 @@ def supersede_and_regenerate(
 				"accumulated_depreciation_amount": fa_module_round(accumulated, company),
 				"days_in_period": row["days_in_period"],
 				"daily_rate": row["daily_rate"],
+				# verbatim pre-event copies keep their GAP-021 cost centre
+				"cost_center": row.get("cost_center"),
 			},
 		)
 
@@ -494,21 +593,24 @@ def regenerate_after_value_change(asset_name, adjustment_date, reason, end_of_li
 	"""
 	last_posted = last_posted_schedule_date(asset_name)
 	# Rows resume from where POSTING stopped, not from the adjustment
-	# date. Regenerating from a mid-month adjustment left the days
+	# date — regenerating from a mid-month adjustment left the days
 	# between the last posted period and that date carrying no charge at
-	# all — an August row of 15 days instead of 31, which finance reads
-	# as a miscalculation (client sheet item 4, 16/08/2026). The value
-	# change still applies from the adjustment; it is the PERIOD boundary
-	# that follows the ledger.
+	# all (client sheet item 4, 16/08/2026). The adjustment date is
+	# passed as the RATE-CHANGE boundary: unposted periods before it are
+	# preserved verbatim and only rows after it re-price (Ruba, 18/08 —
+	# an August capitalization must not touch July's unposted row).
 	as_of = getdate(adjustment_date or nowdate())
+	rate_change = None
 	if last_posted:
 		as_of = getdate(last_posted)
+		rate_change = getdate(adjustment_date or nowdate())
 	try:
 		return supersede_and_regenerate(
 			asset_name,
 			as_of_date=as_of,
 			reason=reason,
 			end_of_life_override=end_of_life_override,
+			rate_change_date=rate_change,
 		)
 	except frappe.ValidationError:
 		return None  # no Active schedule (non-depreciating asset)

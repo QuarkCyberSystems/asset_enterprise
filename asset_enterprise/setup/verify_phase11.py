@@ -10,7 +10,7 @@ depreciation reversal at merge · F7 SI disposal gate.
 import traceback
 
 import frappe
-from frappe.utils import add_days, add_months, flt, get_first_day, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, flt, get_first_day, getdate, nowdate
 
 
 def run():
@@ -489,6 +489,73 @@ def _run():
 			f"{'OK' if t9_ok else 'FAIL'}"
 		)
 		ok = ok and bool(t9_ok)
+
+		# T10 (Ruba, 18/08, ACC-ASS-2026-00118): a value change re-prices
+		# the schedule only AFTER its date. Asset 125,000 / 60m in
+		# service 31/03/2026, posted through 30/06 at 68.493151/day, then
+		# +35,945.21 added on 18/08. July's unposted row must stay
+		# 2,123.29 to the cent; August splits at the event (18 days old
+		# rate + 13 days new) into one 31-day row; September onward runs
+		# at the new rate; the future rows still sum to the full NBV.
+		from asset_enterprise.depreciation import enable_depreciation as t10_enable
+
+		t10 = make_test_asset(company, gross=125_000, submit=True)
+		t10_enable(
+			t10.name, total_number_of_depreciations=60,
+			available_for_use_date="2026-03-31", depreciation_start_date="2026-03-31",
+		)
+		from asset_enterprise.depreciation import post_schedule_entries
+
+		t10_sched = frappe.db.get_value(
+			"Asset Depreciation Schedule",
+			{"asset": t10.name, "status": "Active", "docstatus": 1}, "name",
+		)
+		post_schedule_entries(t10_sched, "2026-06-30")
+
+		t10_diff = pick_plain_account(company, "Liability")
+		t10_ava = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": t10.name, "company": company,
+			"date": "2026-08-18", "transaction_type": "Upward Revaluation",
+			"current_asset_value": 118_698.64, "new_asset_value": 154_643.85,
+			"difference_account": t10_diff,
+			"cost_center": frappe.db.get_value("Asset", t10.name, "cost_center"),
+		})
+		t10_ava.flags.ignore_permissions = True
+		t10_ava.insert()
+		t10_ava.submit()
+
+		t10_rows = frappe.db.sql(
+			"""
+			select ds.schedule_date, ds.depreciation_amount, ds.days_in_period,
+			       ds.daily_rate, ifnull(ds.journal_entry, '') je
+			from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			order by ds.schedule_date
+			""",
+			t10.name, as_dict=True,
+		)
+		by = {str(r.schedule_date): r for r in t10_rows}
+		jul, aug, sep = by.get("2026-07-31"), by.get("2026-08-31"), by.get("2026-09-30")
+		future_sum = flt(sum(flt(r.depreciation_amount) for r in t10_rows if not r.je), 2)
+		t10_ok = (
+			jul and aug and sep
+			and flt(jul.depreciation_amount, 2) == 2_123.29
+			and flt(jul.daily_rate, 6) == 68.493151
+			and cint(aug.days_in_period) == 31
+			and flt(aug.depreciation_amount, 2) == 2_400.78
+			and flt(sep.depreciation_amount, 2) == 2_695.15
+			and future_sum == 154_643.85  # the post-event NBV, already net of posted
+		)
+		print(
+			f"t10    rate change only after its date: Jul={jul and flt(jul.depreciation_amount, 2)} "
+			f"@{jul and flt(jul.daily_rate, 6)} (want 2,123.29 @68.493151 UNCHANGED), "
+			f"Aug={aug and flt(aug.depreciation_amount, 2)}/{aug and aug.days_in_period}d "
+			f"(want 2,400.78/31 split at 18/08), Sep={sep and flt(sep.depreciation_amount, 2)} "
+			f"(want 2,695.15 new rate), future-sum={future_sum:,.2f} (want 154,643.85) "
+			f"{'OK' if t10_ok else 'FAIL'}"
+		)
+		ok = ok and bool(t10_ok)
 
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
