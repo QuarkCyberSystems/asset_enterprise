@@ -13,6 +13,57 @@ def recalculate(asset_name):
 
 
 @frappe.whitelist()
+def enable_depreciation_defaults(asset_name):
+	"""Prefill for the GAP-011 Enable Depreciation dialog from the Asset
+	Category's finance-book defaults — the same values core copies onto a
+	new Asset when the category is chosen at creation (client, 18/08:
+	the dialog opened empty although the category carries them)."""
+	from frappe.utils import flt
+
+	from asset_enterprise.rounding import fa_module_round
+
+	frappe.has_permission("Asset", "read", asset_name, throw=True)
+	asset = frappe.db.get_value(
+		"Asset",
+		asset_name,
+		["asset_category", "company", "net_purchase_amount"],
+		as_dict=True,
+	)
+	if not asset or not asset.asset_category:
+		return {}
+
+	rows = frappe.get_all(
+		"Asset Finance Book",
+		filters={"parent": asset.asset_category, "parenttype": "Asset Category"},
+		fields=[
+			"finance_book",
+			"total_number_of_depreciations",
+			"frequency_of_depreciation",
+			"expected_value_after_useful_life",
+			"salvage_value_percentage",
+		],
+		order_by="idx",
+	)
+	if not rows:
+		return {}
+	default_fb = frappe.db.get_value("Company", asset.company, "default_finance_book")
+	row = next((r for r in rows if r.finance_book == default_fb), rows[0])
+
+	# Category-level salvage is normally a percentage of the asset's own
+	# value; an absolute amount on the row wins when someone set one.
+	salvage = flt(row.expected_value_after_useful_life) or fa_module_round(
+		flt(asset.net_purchase_amount) * flt(row.salvage_value_percentage) / 100,
+		asset.company,
+	)
+	return {
+		"total_number_of_depreciations": row.total_number_of_depreciations,
+		"frequency_of_depreciation": row.frequency_of_depreciation or 1,
+		"expected_value_after_useful_life": salvage,
+		"finance_book": row.finance_book,
+	}
+
+
+@frappe.whitelist()
 def tree_panel(asset_name):
 	"""GAP-009: parent + children + subtree totals for the Asset form's
 	tree panel."""

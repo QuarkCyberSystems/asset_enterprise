@@ -283,6 +283,33 @@ def _run():
 		)
 		ok = ok and e_ok
 
+		# GAP-011b: the dialog prefills from the Asset Category's
+		# finance-book defaults (client, 18/08 — it opened empty).
+		c2 = make_test_asset(company, gross=50_000, submit=True)
+		cat = frappe.db.get_value("Asset", c2.name, "asset_category")
+		frappe.get_doc("Asset Category", cat).append(
+			"finance_books",
+			{
+				"depreciation_method": "Straight Line",
+				"total_number_of_depreciations": 36,
+				"frequency_of_depreciation": 1,
+				"salvage_value_percentage": 10,
+			},
+		).db_insert()
+		from asset_enterprise.api import enable_depreciation_defaults
+
+		defaults = enable_depreciation_defaults(c2.name)
+		d_ok = (
+			defaults.get("total_number_of_depreciations") == 36
+			and defaults.get("frequency_of_depreciation") == 1
+			and flt(defaults.get("expected_value_after_useful_life")) == 5_000
+		)
+		print(
+			f"gap011b dialog defaults from category: {defaults} "
+			f"(want 36 / 1 / salvage 5,000 = 10% of 50,000) {'OK' if d_ok else 'FAIL'}"
+		)
+		ok = ok and d_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase9_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

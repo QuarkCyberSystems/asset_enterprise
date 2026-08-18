@@ -168,6 +168,17 @@ function render_tree_panel(frm) {
 }
 
 function enable_depreciation_dialog(frm) {
+	// Prefill from the Asset Category's finance-book defaults — the same
+	// values a new Asset inherits when the category is picked (client,
+	// 18/08: dialog opened empty although the category carries them).
+	frappe.call({
+		method: "asset_enterprise.api.enable_depreciation_defaults",
+		args: { asset_name: frm.doc.name },
+		callback: (r) => open_enable_depreciation_dialog(frm, r.message || {}),
+	});
+}
+
+function open_enable_depreciation_dialog(frm, defaults) {
 	const d = new frappe.ui.Dialog({
 		title: __("Enable Depreciation — {0}", [frm.doc.name]),
 		fields: [
@@ -175,13 +186,14 @@ function enable_depreciation_dialog(frm) {
 				fieldname: "total_number_of_depreciations",
 				fieldtype: "Int",
 				label: __("Number of Depreciations"),
+				default: defaults.total_number_of_depreciations,
 				reqd: 1,
 			},
 			{
 				fieldname: "frequency_of_depreciation",
 				fieldtype: "Int",
 				label: __("Frequency (Months)"),
-				default: 1,
+				default: defaults.frequency_of_depreciation || 1,
 				reqd: 1,
 			},
 			{
@@ -195,13 +207,14 @@ function enable_depreciation_dialog(frm) {
 				fieldname: "expected_value_after_useful_life",
 				fieldtype: "Currency",
 				label: __("Salvage Value"),
-				default: 0,
+				default: defaults.expected_value_after_useful_life || 0,
 			},
 			{
 				fieldname: "finance_book",
 				fieldtype: "Link",
 				options: "Finance Book",
 				label: __("Finance Book"),
+				default: defaults.finance_book,
 			},
 		],
 		primary_action_label: __("Enable"),
