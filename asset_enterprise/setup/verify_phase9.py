@@ -8,7 +8,7 @@ GAP-009 (TC-012/013), GAP-010 (TC-014), GAP-011 (TC-018).
 import traceback
 
 import frappe
-from frappe.utils import add_days, flt, getdate, nowdate
+from frappe.utils import add_days, add_months, flt, get_last_day, getdate, nowdate
 
 
 def run():
@@ -299,18 +299,36 @@ def _run():
 		from asset_enterprise.api import enable_depreciation_defaults
 
 		defaults = enable_depreciation_defaults(c2.name)
+		c2_afu = frappe.db.get_value("Asset", c2.name, "available_for_use_date")
 		d_ok = (
 			defaults.get("total_number_of_depreciations") == 36
 			and defaults.get("frequency_of_depreciation") == 1
 			and flt(defaults.get("expected_value_after_useful_life")) == 5_000
-			and getdate(defaults.get("available_for_use_date"))
-			== getdate(frappe.db.get_value("Asset", c2.name, "available_for_use_date"))
+			and getdate(defaults.get("available_for_use_date")) == getdate(c2_afu)
+			# posting-date default = EOM of the in-service month (core's
+			# rule, asset.py:617) — never "today" (Ruba, 18/08).
+			and getdate(defaults.get("depreciation_start_date")) == getdate(get_last_day(c2_afu))
 		)
 		print(
 			f"gap011b dialog defaults from category: {defaults} "
-			f"(want 36 / 1 / salvage 5,000 = 10% of 50,000 + the asset's AFU) {'OK' if d_ok else 'FAIL'}"
+			f"(want 36 / 1 / salvage 5,000 = 10% of 50,000 + AFU + EOM posting) {'OK' if d_ok else 'FAIL'}"
 		)
 		ok = ok and d_ok
+
+		# A date set on the category row itself wins over the EOM rule.
+		cat_date = get_last_day(add_months(c2_afu, 2))
+		frappe.db.set_value(
+			"Asset Finance Book",
+			{"parent": cat, "parenttype": "Asset Category"},
+			"depreciation_start_date", cat_date, update_modified=False,
+		)
+		d2 = enable_depreciation_defaults(c2.name)
+		d2_ok = getdate(d2.get("depreciation_start_date")) == getdate(cat_date)
+		print(
+			f"gap011b2 category posting date wins: {d2.get('depreciation_start_date')} "
+			f"(want {cat_date}) {'OK' if d2_ok else 'FAIL'}"
+		)
+		ok = ok and d2_ok
 
 		# GAP-011c (Ruba, 18/08): the dialog's two dates — an explicit
 		# Available-for-Use Date becomes the §4.4 basis and is stamped on

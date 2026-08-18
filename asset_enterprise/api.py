@@ -50,6 +50,7 @@ def enable_depreciation_defaults(asset_name):
 			"frequency_of_depreciation",
 			"expected_value_after_useful_life",
 			"salvage_value_percentage",
+			"depreciation_start_date",
 		],
 		order_by="idx",
 	)
@@ -64,12 +65,24 @@ def enable_depreciation_defaults(asset_name):
 		flt(asset.net_purchase_amount) * flt(row.salvage_value_percentage) / 100,
 		asset.company,
 	)
+	# Posting-date default, core's rule (asset.py:617): the category
+	# row's own date when it has one and it is not before the in-service
+	# date, else the last day of the in-service month — never "today"
+	# (Ruba, 18/08).
+	from frappe.utils import get_last_day, getdate
+
+	posting = row.depreciation_start_date
+	if afu:
+		if not posting or getdate(posting) < getdate(afu):
+			posting = get_last_day(afu)
+
 	return {
 		"total_number_of_depreciations": row.total_number_of_depreciations,
 		"frequency_of_depreciation": row.frequency_of_depreciation or 1,
 		"expected_value_after_useful_life": salvage,
 		"finance_book": row.finance_book,
 		"available_for_use_date": afu,
+		"depreciation_start_date": posting,
 	}
 
 

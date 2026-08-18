@@ -207,11 +207,12 @@ function open_enable_depreciation_dialog(frm, defaults) {
 			},
 			{
 				// §4.5 — when the first entry posts; days between the two
-				// dates arrive as one catch-up entry.
+				// dates arrive as one catch-up entry. Default: category
+				// setting, else end of the in-service month (core's rule).
 				fieldname: "depreciation_start_date",
 				fieldtype: "Date",
 				label: __("Depreciation Posting Date"),
-				default: "Today",
+				default: defaults.depreciation_start_date || "Today",
 				reqd: 1,
 			},
 			{
