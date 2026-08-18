@@ -109,7 +109,13 @@ def merge_sources_into_composite(cap_doc):
 		hav = flt(values["historical_asset_value"])
 		accum = flt(values["accumulated_depreciation_value"])
 		nbv = fa_module_round(hav - accum, company)
-		rul_months = flt(values["remaining_useful_life_months"])
+		# CH-06: the Merge Log snapshots CALENDAR remaining life — what
+		# the component still brings to the composite. The displayed RUL
+		# is posting-based and reads 0 here (the source's schedule is
+		# already terminated at the merge date).
+		from asset_enterprise.asset_values import calendar_remaining_life_months
+
+		rul_months = calendar_remaining_life_months(source)
 		if nbv < 0:
 			frappe.throw(_("Source Asset {0} has negative NBV.").format(source.name))
 
@@ -493,7 +499,9 @@ def reclassify(cap_doc):
 	values = recalculate_asset_values(source.name, save=False)
 	gross = flt(values["historical_asset_value"])
 	accum = flt(values["accumulated_depreciation_value"])
-	rul_months = flt(values["remaining_useful_life_months"])
+	from asset_enterprise.asset_values import calendar_remaining_life_months
+
+	rul_months = calendar_remaining_life_months(source)  # CH-06 calendar snapshot
 	salvage = flt(
 		frappe.db.get_value(
 			"Asset Finance Book", {"parent": source.name}, "expected_value_after_useful_life"

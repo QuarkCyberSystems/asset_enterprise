@@ -1593,23 +1593,21 @@ def tc025():
 		if getdate(r.schedule_date) > getdate("2025-12-31")
 	]
 	future_total = flt(sum(flt(r.depreciation_amount) for r in future), 2)
-	from frappe.utils import month_diff
-
-	start = frappe.db.get_value("Asset Finance Book", {"parent": asset.name}, "depreciation_start_date")
-	elapsed = max(0, month_diff(nowdate(), start) - 1)
+	# RUL is posting-based (client, 18/08): the unposted periods left on
+	# the Active schedule — which is also the document's own figure of 24.
 	ok = (
 		cint_(fb) == 48
 		and getdate(horizon_after) == getdate(add_months(horizon_before, 12))
 		and future_total == flt(values["net_book_value"], 2)
-		and flt(values["remaining_useful_life_months"]) == flt(48 - elapsed)
+		and flt(values["remaining_useful_life_months"]) == flt(len(future))
+		and len(future) == 24
 	)
 	return (
 		("PASS" if ok else "FAIL"),
 		f"finance book periods {fb} (want 48); horizon {horizon_before} -> {horizon_after}; "
 		f"{len(future)} future rows totalling {future_total:,.2f} vs NBV "
 		f"{flt(values['net_book_value']):,.2f}; RUL {values['remaining_useful_life_months']} months "
-		f"(want 48 - {elapsed} elapsed = {48 - elapsed}; the doc's 24 is the value at the "
-		f"adjustment date, this is the live one)",
+		f"(want 24 = unposted periods, matching the document)",
 	)
 
 

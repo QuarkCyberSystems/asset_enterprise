@@ -152,9 +152,11 @@ def _manual_gl_adjustments(asset):
 	return hav_delta, accum_delta
 
 
-def _remaining_life_months(asset, life_delta_months):
-	"""C33: original UL − elapsed months since posting-basis date + net
-	UL adjustments from AVA transactions (signed)."""
+def calendar_remaining_life_months(asset):
+	"""C33: original UL − elapsed months since the posting-basis date.
+	Calendar time to the end of life — what a merged component still
+	brings to a composite (CH-06 Merge Log snapshot keeps THIS meaning).
+	"""
 	fb = frappe.db.get_value(
 		"Asset Finance Book",
 		{"parent": asset.name},
@@ -172,6 +174,31 @@ def _remaining_life_months(asset, life_delta_months):
 	elapsed = month_diff(nowdate(), start) - 1 if start else 0
 	elapsed = max(0, elapsed)
 	return max(0.0, flt(total_months - elapsed, 2))
+
+
+def _remaining_life_months(asset, life_delta_months):
+	"""Remaining Useful Life as DISPLAYED: what is left to POST (client,
+	18/08 — "base it on the depreciated posting"). A backdated asset
+	whose calendar life already ended still shows the periods finance
+	has not booked yet, and the figure counts down to zero as entries
+	post. Assets with no Active schedule (depreciation not enabled yet)
+	fall back to the calendar measure."""
+	has_schedule = frappe.db.exists(
+		"Asset Depreciation Schedule",
+		{"asset": asset.name, "status": "Active", "docstatus": 1},
+	)
+	if not has_schedule:
+		return calendar_remaining_life_months(asset)
+	unposted = frappe.db.sql(
+		"""
+		select count(*) from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		  and ifnull(ds.journal_entry, '') = ''
+		""",
+		asset.name,
+	)[0][0]
+	return flt(unposted)
 
 
 def recalculate_asset_values(asset_name, save=True):
