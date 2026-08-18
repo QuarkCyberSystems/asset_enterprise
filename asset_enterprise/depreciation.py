@@ -612,6 +612,7 @@ def enable_depreciation(
 	expected_value_after_useful_life=0,
 	finance_book=None,
 	depreciation_method="Straight Line",
+	available_for_use_date=None,
 ):
 	"""GAP-011: amendment-free enablement on a submitted asset.
 
@@ -657,8 +658,21 @@ def enable_depreciation(
 	# posting catching up (§4.5) — otherwise a back-dated asset silently
 	# loses everything before the enable date, and a receiving-date asset
 	# loses its whole catch-up (client sheet item 2, 16/08/2026).
+	# Two dates, core vocabulary (client, Ruba 18/08): the
+	# available-for-use date is the BASIS depreciation counts from; the
+	# depreciation posting date is when the first entry POSTS. Days in
+	# between arrive as the §4.5 catch-up.
 	first_posting = getdate(depreciation_start_date) if depreciation_start_date else None
-	basis = getdate(asset.available_for_use_date or depreciation_start_date or nowdate())
+	if available_for_use_date and first_posting and first_posting < getdate(available_for_use_date):
+		frappe.throw(
+			_("Depreciation Posting Date cannot be before the Available-for-Use Date.")
+		)
+	basis = getdate(
+		available_for_use_date
+		or asset.available_for_use_date
+		or depreciation_start_date
+		or nowdate()
+	)
 	if first_posting and first_posting < basis:
 		basis = first_posting
 	start = basis
@@ -706,7 +720,12 @@ def enable_depreciation(
 	fb_row.db_insert()
 
 	asset.db_set("calculate_depreciation", 1, update_modified=False)
-	if not asset.available_for_use_date:
+	# An explicit dialog date wins — nothing has posted yet on this
+	# asset (the flow requires calc off and no Active schedule), so the
+	# in-service date may still be corrected here.
+	if available_for_use_date:
+		asset.db_set("available_for_use_date", getdate(available_for_use_date), update_modified=False)
+	elif not asset.available_for_use_date:
 		asset.db_set("available_for_use_date", start, update_modified=False)
 
 	ads = frappe.get_doc(

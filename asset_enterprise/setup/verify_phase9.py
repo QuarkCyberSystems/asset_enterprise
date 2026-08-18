@@ -8,7 +8,7 @@ GAP-009 (TC-012/013), GAP-010 (TC-014), GAP-011 (TC-018).
 import traceback
 
 import frappe
-from frappe.utils import add_days, flt, nowdate
+from frappe.utils import add_days, flt, getdate, nowdate
 
 
 def run():
@@ -303,12 +303,46 @@ def _run():
 			defaults.get("total_number_of_depreciations") == 36
 			and defaults.get("frequency_of_depreciation") == 1
 			and flt(defaults.get("expected_value_after_useful_life")) == 5_000
+			and getdate(defaults.get("available_for_use_date"))
+			== getdate(frappe.db.get_value("Asset", c2.name, "available_for_use_date"))
 		)
 		print(
 			f"gap011b dialog defaults from category: {defaults} "
-			f"(want 36 / 1 / salvage 5,000 = 10% of 50,000) {'OK' if d_ok else 'FAIL'}"
+			f"(want 36 / 1 / salvage 5,000 = 10% of 50,000 + the asset's AFU) {'OK' if d_ok else 'FAIL'}"
 		)
 		ok = ok and d_ok
+
+		# GAP-011c (Ruba, 18/08): the dialog's two dates — an explicit
+		# Available-for-Use Date becomes the §4.4 basis and is stamped on
+		# the asset; the Depreciation Posting Date drives the §4.5
+		# catch-up; posting before in-service is refused.
+		afu, posting = "2026-02-28", nowdate()
+		ads_c2 = enable_depreciation(
+			c2.name, total_number_of_depreciations=36,
+			available_for_use_date=afu, depreciation_start_date=posting,
+		)
+		stamped = frappe.db.get_value("Asset", c2.name, "available_for_use_date")
+		horizon = frappe.db.sql(
+			"select max(schedule_date) from `tabDepreciation Schedule` where parent = %s",
+			ads_c2.name if hasattr(ads_c2, "name") else ads_c2,
+		)[0][0]
+		c_ok = getdate(stamped) == getdate(afu) and getdate(horizon) == getdate("2029-02-27")
+		print(
+			f"gap011c explicit AFU: stamped={stamped} (want {afu}) horizon={horizon} "
+			f"(want 2029-02-27 = basis + 36m - 1d) {'OK' if c_ok else 'FAIL'}"
+		)
+		ok = ok and c_ok
+
+		c3 = make_test_asset(company, gross=20_000, submit=True)
+		try:
+			enable_depreciation(
+				c3.name, total_number_of_depreciations=12,
+				available_for_use_date=nowdate(), depreciation_start_date="2026-01-01",
+			)
+			print("gap011d FAIL (posting date before AFU accepted)")
+			ok = False
+		except frappe.ValidationError:
+			print("gap011d posting date before AFU refused: OK")
 
 	finally:
 		frappe.db.rollback(save_point="phase9_verify")

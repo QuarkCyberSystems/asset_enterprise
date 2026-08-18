@@ -197,9 +197,20 @@ function open_enable_depreciation_dialog(frm, defaults) {
 				reqd: 1,
 			},
 			{
+				// §4.4 basis — when the asset went into service;
+				// depreciation counts from this date.
+				fieldname: "available_for_use_date",
+				fieldtype: "Date",
+				label: __("Available-for-Use Date"),
+				default: defaults.available_for_use_date,
+				reqd: 1,
+			},
+			{
+				// §4.5 — when the first entry posts; days between the two
+				// dates arrive as one catch-up entry.
 				fieldname: "depreciation_start_date",
 				fieldtype: "Date",
-				label: __("Start Basis Date"),
+				label: __("Depreciation Posting Date"),
 				default: "Today",
 				reqd: 1,
 			},

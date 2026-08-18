@@ -26,11 +26,20 @@ def enable_depreciation_defaults(asset_name):
 	asset = frappe.db.get_value(
 		"Asset",
 		asset_name,
-		["asset_category", "company", "net_purchase_amount"],
+		["asset_category", "company", "net_purchase_amount", "available_for_use_date", "purchase_receipt"],
 		as_dict=True,
 	)
-	if not asset or not asset.asset_category:
+	if not asset:
 		return {}
+
+	# §4.4 basis prefill: the asset's own in-service date, else the
+	# receipt posting date it arrived on (Ruba, 18/08).
+	afu = asset.available_for_use_date or (
+		asset.purchase_receipt
+		and frappe.db.get_value("Purchase Receipt", asset.purchase_receipt, "posting_date")
+	)
+	if not asset.asset_category:
+		return {"available_for_use_date": afu}
 
 	rows = frappe.get_all(
 		"Asset Finance Book",
@@ -45,7 +54,7 @@ def enable_depreciation_defaults(asset_name):
 		order_by="idx",
 	)
 	if not rows:
-		return {}
+		return {"available_for_use_date": afu}
 	default_fb = frappe.db.get_value("Company", asset.company, "default_finance_book")
 	row = next((r for r in rows if r.finance_book == default_fb), rows[0])
 
@@ -60,6 +69,7 @@ def enable_depreciation_defaults(asset_name):
 		"frequency_of_depreciation": row.frequency_of_depreciation or 1,
 		"expected_value_after_useful_life": salvage,
 		"finance_book": row.finance_book,
+		"available_for_use_date": afu,
 	}
 
 
