@@ -367,7 +367,24 @@ def _resupersede(target_name, posting_date, cap_doc):
 	# (client, ACC-ASS-2026-00102 — Extended Life 0).
 	extra = flt(cap_doc.get("extended_life_months") or 0)
 	if cap_doc.get("fully_depreciated_treatment") == "Add Value and Extend Life" and extra > 0:
+		# fully-depreciated target: no life remains — the added value
+		# gets a fresh life anchored at the merge date.
 		end_override = add_months(posting_date, extra)
+	elif extra > 0:
+		# LIVING target (client, 19/08 — an overhaul that prolongs
+		# service life): the months extend the CURRENT end of life,
+		# exactly like a Useful Life Adjustment folded into the merge.
+		# Anchoring at the posting date here is what collapsed
+		# ACC-ASS-2026-00127's remaining 4.5 years into 12 months.
+		from asset_enterprise.depreciation import (
+			active_schedule_horizon,
+			bump_useful_life_periods,
+		)
+
+		horizon = active_schedule_horizon(target_name)
+		if horizon:
+			end_override = add_months(getdate(horizon), int(round(extra)))
+			bump_useful_life_periods(target_name, extra)
 	try:
 		regenerate_after_value_change(
 			target_name,

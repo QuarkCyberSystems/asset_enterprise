@@ -221,19 +221,9 @@ class EnterpriseAVA(AssetValueAdjustment):
 			add_months(getdate(horizon), cint(round(life_delta))), cint(round(day_delta))
 		)
 
-		fb = frappe.db.get_value(
-			"Asset Finance Book",
-			{"parent": self.asset},
-			["name", "total_number_of_depreciations", "frequency_of_depreciation"],
-			as_dict=True,
-		)
-		if fb:
-			periods_delta = cint(round(flt(life_delta) / flt(fb.frequency_of_depreciation or 1)))
-			frappe.db.set_value(
-				"Asset Finance Book", fb.name, "total_number_of_depreciations",
-				max(0, cint(fb.total_number_of_depreciations) + periods_delta),
-				update_modified=False,
-			)
+		from asset_enterprise.depreciation import bump_useful_life_periods
+
+		bump_useful_life_periods(self.asset, life_delta)
 
 		if getdate(new_end) <= getdate(self.date):
 			# VR-018: shortening below the adjustment date exhausts RUL —

@@ -617,12 +617,52 @@ def _run():
 		})
 		try:
 			t11_probe._validate_cm()
-			print("t11    FAIL (Extended Life accepted on a mid-life target)")
+			print("t11    FAIL (fully-depreciated TREATMENT accepted on a mid-life target)")
 			ok = False
 		except frappe.ValidationError as e:
-			t11_ok = "Useful Life Adjustment" in str(e)
-			print(f"t11    Extended Life on mid-life target refused: {'OK' if t11_ok else 'FAIL: ' + str(e)[:120]}")
+			t11_ok = "Extended Life" in str(e)
+			print(f"t11    treatment on mid-life target refused: {'OK' if t11_ok else 'FAIL: ' + str(e)[:120]}")
 			ok = ok and t11_ok
+
+		# T11b (client, 19/08): Extended Life months ALONE on a LIVING
+		# target extend the CURRENT end of life — an overhaul that
+		# prolongs service life, folded into the merge.
+		from asset_enterprise.depreciation import active_schedule_horizon as t11_horizon
+		from asset_enterprise.setup.verify_tc import (
+			_category as t11_cat_fn, _plain as t11_plain, _cm_merge as t11_cm,
+			_depreciating_asset as t11_dep_asset,
+		)
+
+		t11_company_cat = t11_cat_fn(company, "TC IT Equipment", suspense=t11_plain(company, "Liability"))
+		frappe.db.set_value(
+			"Asset Category Account", {"parent": t11_company_cat, "company_name": company},
+			"capitalization_clearing_account", t11_plain(company, "Liability"), update_modified=False)
+		t11_tgt = t11_dep_asset(company, t11_company_cat, "T11B TARGET", 60_000, "2026-02-28", 36, "2026-02-01")
+		t11_src = t11_dep_asset(company, t11_company_cat, "T11B SOURCE", 12_000, "2026-02-28", 36, "2026-02-01")
+		h11_before = getdate(t11_horizon(t11_tgt.name))
+		fb11_before = cint(frappe.db.get_value(
+			"Asset Finance Book", {"parent": t11_tgt.name}, "total_number_of_depreciations"))
+		cap11 = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": t11_tgt.name, "posting_date": nowdate(), "set_posting_time": 1,
+			"extended_life_months": 12,
+			"asset_items": [{"asset": t11_src.name}]})
+		cap11.flags.ignore_permissions = True
+		cap11.insert()
+		cap11.submit()
+		h11_after = getdate(t11_horizon(t11_tgt.name))
+		fb11_after = cint(frappe.db.get_value(
+			"Asset Finance Book", {"parent": t11_tgt.name}, "total_number_of_depreciations"))
+		t11b_ok = (
+			h11_after == getdate(add_months(h11_before, 12))
+			and fb11_after == fb11_before + 12
+		)
+		print(f"t11b   living-target Extended Life: horizon {h11_before} -> {h11_after} "
+		      f"(want +12mo), fb periods {fb11_before} -> {fb11_after} (want +12) "
+		      f"{'OK' if t11b_ok else 'FAIL'}")
+		ok = ok and t11b_ok
 
 		# T12–T14 (19/08 caller audit): every path that regenerates a
 		# schedule must resume from the last POSTED row, and non-SL

@@ -293,13 +293,18 @@ CUSTOM_FIELDS = {
 			"description": "Required when the target composite is fully depreciated.",
 		},
 		{
+			# Living target: extends the CURRENT end of life, like a Useful
+			# Life Adjustment folded into the merge (client, 19/08 — an
+			# overhaul that prolongs service life). Fully-depreciated
+			# target: a fresh life from the merge date.
 			"fieldname": "extended_life_months",
 			"fieldtype": "Float",
 			"label": "Extended Life (Months)",
 			"precision": "2",
-			"depends_on": "eval:doc.fully_depreciated_treatment==='Add Value and Extend Life'",
+			"depends_on": "eval:doc.transaction_type==='Capitalized Maintenance' && doc.transaction_sub_type!=='Reclassification / Asset Category Transfer'",
 			"mandatory_depends_on": "eval:doc.fully_depreciated_treatment==='Add Value and Extend Life'",
 			"insert_after": "fully_depreciated_treatment",
+			"description": "Extends the target's remaining useful life by this many months. On a fully-depreciated target, the added value depreciates over this life from the merge date.",
 		},
 	],
 	# ----------------------------------------------------------- Asset Repair

@@ -647,6 +647,27 @@ def active_schedule_horizon(asset_name):
 	)[0][0]
 
 
+def bump_useful_life_periods(asset_name, months):
+	"""Move the finance book's period count by ±months — the ONE place
+	both life-changing doors (Useful Life Adjustment and Capitalized
+	Maintenance extension) go through, so the counter can never drift
+	between them."""
+	fb = frappe.db.get_value(
+		"Asset Finance Book",
+		{"parent": asset_name},
+		["name", "total_number_of_depreciations", "frequency_of_depreciation"],
+		as_dict=True,
+	)
+	if not fb:
+		return
+	periods_delta = cint(round(flt(months) / flt(fb.frequency_of_depreciation or 1)))
+	frappe.db.set_value(
+		"Asset Finance Book", fb.name, "total_number_of_depreciations",
+		max(0, cint(fb.total_number_of_depreciations) + periods_delta),
+		update_modified=False,
+	)
+
+
 def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transaction_type):
 	"""GAP-013 / VR-018 (Phase 11 F2): when an adjustment drives RUL to
 	zero, the full remaining depreciable base (NBV − salvage) posts as

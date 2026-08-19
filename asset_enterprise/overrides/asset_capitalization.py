@@ -114,17 +114,22 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			if not flt(row.get("amount")) and flt(row.get("qty")) and flt(row.get("rate")):
 				row.amount = flt(row.qty) * flt(row.rate)
 
-		# GAP-017: the fully-depreciated treatment (and its Extended Life
-		# months) exists ONLY for a target already down to salvage — the
-		# design shows the field only when the target's NBV = 0. On a
-		# mid-life target the months silently re-anchored the horizon to
-		# the POSTING date and crammed years of remaining value into a
-		# few periods (client, ACC-ASS-2026-00127: 4.5 remaining years
-		# collapsed into 12 months, daily rate 60.27 -> 328.40).
-		if target.docstatus == 1 and (
-			self.get("fully_depreciated_treatment")
-			or flt(self.get("extended_life_months") or 0)
-		):
+		# GAP-017 + living-target extension (client, 19/08): Extended Life
+		# months on a LIVING target extend the current end of life — a
+		# real overhaul scenario — handled in merge._resupersede. The
+		# fully-depreciated TREATMENT select stays scoped to a target
+		# already down to salvage (its options are meaningless on a
+		# living asset); shortening a life goes through the Useful Life
+		# Adjustment, which owns the exhaustion mechanics.
+		months = flt(self.get("extended_life_months") or 0)
+		if months < 0:
+			frappe.throw(
+				_(
+					"Extended Life cannot be negative on a Capitalized Maintenance. To "
+					"shorten an asset's useful life, post a Useful Life Adjustment."
+				)
+			)
+		if target.docstatus == 1 and self.get("fully_depreciated_treatment"):
 			from asset_enterprise.asset_values import recalculate_asset_values
 
 			nbv = flt(recalculate_asset_values(target.name, save=False)["net_book_value"])
@@ -138,10 +143,10 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			if nbv > salvage + 0.005:
 				frappe.throw(
 					_(
-						"Fully-Depreciated Treatment / Extended Life applies only when the "
-						"target's NBV is already down to salvage — {0} still carries NBV {1}. "
-						"To extend a mid-life asset's useful life, post a Useful Life "
-						"Adjustment (Asset Value Adjustment) after the merge instead."
+						"Fully-Depreciated Target Treatment applies only when the target's "
+						"NBV is already down to salvage — {0} still carries NBV {1}. To "
+						"extend this asset's life with the merge, just set Extended Life "
+						"(Months); the current end of life moves by that many months."
 					).format(target.name, frappe.format_value(nbv, {"fieldtype": "Currency"}))
 				)
 
