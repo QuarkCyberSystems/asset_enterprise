@@ -60,7 +60,10 @@ class EnterpriseAVA(AssetValueAdjustment):
 		ul_only = (
 			self._enterprise()
 			and not flt(self.difference_amount)
-			and flt(self.get("adjusted_life_months") or 0)
+			and (
+				flt(self.get("adjusted_life_months") or 0)
+				or flt(self.get("adjusted_life_days") or 0)
+			)
 		)
 		if self._enterprise():
 			# core reschedules inside on_submit, BEFORE our TCC records the
@@ -96,8 +99,11 @@ class EnterpriseAVA(AssetValueAdjustment):
 				"reversed_by_ava", self.name, update_modified=False,
 			)
 			# A reversed life adjustment must swing the horizon back too.
-			if flt(self.get("adjusted_life_months") or 0):
-				self._apply_life_adjustment(flt(self.adjusted_life_months))
+			if flt(self.get("adjusted_life_months") or 0) or flt(self.get("adjusted_life_days") or 0):
+				self._apply_life_adjustment(
+					flt(self.get("adjusted_life_months") or 0),
+					flt(self.get("adjusted_life_days") or 0),
+				)
 			elif flt(self.difference_amount):
 				from asset_enterprise.depreciation import regenerate_after_value_change
 
@@ -114,7 +120,9 @@ class EnterpriseAVA(AssetValueAdjustment):
 			transaction_type=self.get("transaction_type") or category,
 			asset=self.asset,
 			posting_date=self.date,
-			amount=abs(flt(self.difference_amount)) or abs(flt(self.get("adjusted_life_months") or 0)),
+			amount=abs(flt(self.difference_amount))
+			or abs(flt(self.get("adjusted_life_months") or 0))
+			or abs(flt(self.get("adjusted_life_days") or 0)),
 			hav_delta=hav_delta,
 			life_delta_months=life_delta,
 			journal_entry=self.get("journal_entry"),
@@ -123,8 +131,10 @@ class EnterpriseAVA(AssetValueAdjustment):
 		# GAP-013 (Phase 11 F2): a life delta genuinely moves the
 		# schedule horizon and the finance-book period count; RUL
 		# exhausted -> immediate depreciation of the remaining base.
-		if life_delta:
-			self._apply_life_adjustment(life_delta)
+		# Days combine with months (client, 18/08): +3 months +15 days.
+		day_delta = flt(self.get("adjusted_life_days") or 0)
+		if life_delta or day_delta:
+			self._apply_life_adjustment(life_delta, day_delta)
 		elif hav_delta:
 			# §4.3 prospective recalc — runs HERE (not inside core's
 			# on_submit) so the new NBV is already recorded.
@@ -137,8 +147,8 @@ class EnterpriseAVA(AssetValueAdjustment):
 				),
 			)
 
-	def _apply_life_adjustment(self, life_delta):
-		from frappe.utils import add_months, cint, getdate
+	def _apply_life_adjustment(self, life_delta, day_delta=0):
+		from frappe.utils import add_days, add_months, cint, getdate
 
 		from asset_enterprise.depreciation import (
 			active_schedule_horizon,
@@ -149,7 +159,12 @@ class EnterpriseAVA(AssetValueAdjustment):
 		horizon = active_schedule_horizon(self.asset)
 		if not horizon:
 			return  # no Active schedule — nothing to reshape
-		new_end = add_months(getdate(horizon), cint(round(life_delta)))
+		# Months move the horizon calendar-wise; days shift it on top —
+		# the daily-rate engine handles any end date, the final stub row
+		# simply covers the extra days (client, 18/08).
+		new_end = add_days(
+			add_months(getdate(horizon), cint(round(life_delta))), cint(round(day_delta))
+		)
 
 		fb = frappe.db.get_value(
 			"Asset Finance Book",
@@ -190,8 +205,8 @@ class EnterpriseAVA(AssetValueAdjustment):
 				as_of_date=getdate(last_posted) if last_posted else self.date,
 				end_of_life_override=new_end,
 				rate_change_date=getdate(self.date) if last_posted else None,
-				reason=_("Useful Life Adjustment via {0} ({1:+} months)").format(
-					self.name, cint(round(life_delta))
+				reason=_("Useful Life Adjustment via {0} ({1:+} months, {2:+} days)").format(
+					self.name, cint(round(life_delta)), cint(round(day_delta))
 				),
 			)
 
@@ -256,6 +271,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 				"current_asset_value": self.new_asset_value,
 				"new_asset_value": self.current_asset_value,  # swap -> core posts mirror JE
 				"adjusted_life_months": -flt(self.get("adjusted_life_months") or 0) or None,
+				"adjusted_life_days": -flt(self.get("adjusted_life_days") or 0) or None,
 				"difference_account": self.get("difference_account"),
 				"cost_center": self.get("cost_center"),
 				"reversal_of_ava": self.name,

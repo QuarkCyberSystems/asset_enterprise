@@ -142,6 +142,32 @@ def _run():
 		print(f"f2b    RUL exhausted -> NBV {v2['net_book_value']} (want 0) immediate-FT={bool(imm_ft)} {'OK' if f2b_ok else 'FAIL'}")
 		ok = ok and f2b_ok
 
+		# F2c (client, 18/08): life adjusts by DAYS as well as months —
+		# +2 months +15 days moves the horizon by exactly that.
+		u3 = make_test_asset(company, gross=24_000, submit=True)
+		enable_depreciation(
+			u3.name, total_number_of_depreciations=24, frequency_of_depreciation=1,
+			depreciation_start_date=nowdate(),
+		)
+		h3_before = getdate(active_schedule_horizon(u3.name))
+		ava3 = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": u3.name, "company": company,
+			"date": nowdate(), "transaction_type": "Useful Life Adjustment",
+			"current_asset_value": 24_000, "new_asset_value": 24_000,
+			"adjusted_life_months": 2, "adjusted_life_days": 15,
+		})
+		ava3.flags.ignore_permissions = True
+		ava3.insert()
+		ava3.submit()
+		h3_after = getdate(active_schedule_horizon(u3.name))
+		h3_want = getdate(add_days(add_months(h3_before, 2), 15))
+		f2c_ok = h3_after == h3_want
+		print(
+			f"f2c    +2 months +15 days: horizon {h3_before} -> {h3_after} "
+			f"(want {h3_want}) {'OK' if f2c_ok else 'FAIL'}"
+		)
+		ok = ok and f2c_ok
+
 		# --------------------- F3: manual depreciation blocks asset cancel
 		m1 = make_test_asset(company, gross=10_000, submit=True)  # calc off
 		aca = frappe.db.get_value(

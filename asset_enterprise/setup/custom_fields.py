@@ -338,12 +338,20 @@ CUSTOM_FIELDS = {
 			"description": "GAP-013: positive extends, negative shortens useful life. Prospective recalc.",
 		},
 		{
+			"fieldname": "adjusted_life_days",
+			"fieldtype": "Int",
+			"label": "Adjusted Life (Days)",
+			"insert_after": "adjusted_life_months",
+			"description": "Combines with months: +3 months +15 days moves the end of life by "
+			"both. Positive extends, negative shortens (client, 18/08).",
+		},
+		{
 			"fieldname": "reversal_of_ava",
 			"fieldtype": "Link",
 			"label": "Reversal Of AVA",
 			"options": "Asset Value Adjustment",
 			"read_only": 1,
-			"insert_after": "adjusted_life_months",
+			"insert_after": "adjusted_life_days",
 		},
 		{
 			"fieldname": "reversed_by_ava",
