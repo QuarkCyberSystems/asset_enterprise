@@ -177,8 +177,19 @@ class EnterpriseAVA(AssetValueAdjustment):
 				reason=_("Useful life exhausted via {0}").format(self.name),
 			)
 		else:
+			# Resume from the last POSTED row with the adjustment date as
+			# the rate-change boundary — regenerating from the adjustment
+			# date itself left the days since the last posting with no
+			# row of their own (a 13-day August, the same short-row shape
+			# as client sheet item 4).
+			from asset_enterprise.depreciation import last_posted_schedule_date
+
+			last_posted = last_posted_schedule_date(self.asset)
 			supersede_and_regenerate(
-				self.asset, as_of_date=self.date, end_of_life_override=new_end,
+				self.asset,
+				as_of_date=getdate(last_posted) if last_posted else self.date,
+				end_of_life_override=new_end,
+				rate_change_date=getdate(self.date) if last_posted else None,
 				reason=_("Useful Life Adjustment via {0} ({1:+} months)").format(
 					self.name, cint(round(life_delta))
 				),
