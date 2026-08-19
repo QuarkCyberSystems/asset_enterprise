@@ -664,9 +664,32 @@ def _run():
 		      f"(want full month) {'OK' if t12_ok else 'FAIL'}")
 		ok = ok and bool(t12_ok)
 
-		# T13: Path 1 restore — the schedule must come back ALIVE.
+		# T12b (client, 19/08 — ACC-ASS-2026-00139): a full scrap POSTS its
+		# proration up to the scrap date. Core's disposal path handed the
+		# posting a list instead of a name, the blanket except swallowed
+		# it, and the freeze dropped the unposted rows — usage days
+		# silently became disposal loss.
 		p2 = _mk_posted(24_000)
 		t_disposal.scrap_asset(p2.name, scrap_date=mid_month, scrapping_type="Damage")
+		p2_rows = frappe.db.sql("""
+			select ds.schedule_date, ds.days_in_period, ifnull(ds.journal_entry,'') je
+			from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			order by ds.schedule_date""", p2.name, as_dict=True)
+		unposted_due = [str(r.schedule_date) for r in p2_rows if not r.je]
+		stub = p2_rows[-1] if p2_rows else None
+		t12b_ok = (
+			not unposted_due
+			and stub and str(stub.schedule_date) == mid_month
+			and cint(stub.days_in_period) == 15
+		)
+		print(f"t12b   full scrap posts ALL rows incl. the stub: unposted={unposted_due or 'none'}, "
+		      f"last row {stub and (str(stub.schedule_date), stub.days_in_period)} "
+		      f"(want {mid_month}/15d incl. the scrap day) {'OK' if t12b_ok else 'FAIL'}")
+		ok = ok and t12b_ok
+
+		# T13: Path 1 restore — the schedule must come back ALIVE.
 		from asset_enterprise.restore import restore_asset as t_restore
 
 		t_restore(p2.name)

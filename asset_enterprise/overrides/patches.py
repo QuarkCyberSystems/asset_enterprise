@@ -212,6 +212,17 @@ def apply_patches():
 		depr_schedule_name, date=None, sch_start_idx=None, sch_end_idx=None,
 		accounting_dimensions=None,
 	):
+		# Core's make_depreciation_entry_on_disposal passes the RAW
+		# frappe.get_all result — a list of dicts — instead of a name.
+		# Left as-is, the posting matched nothing and every full scrap
+		# silently skipped its proration rows (client, 19/08:
+		# ACC-ASS-2026-00139 — 14 days of April never posted).
+		if isinstance(depr_schedule_name, (list, tuple)):
+			depr_schedule_name = depr_schedule_name[0] if depr_schedule_name else None
+		if isinstance(depr_schedule_name, dict):
+			depr_schedule_name = depr_schedule_name.get("name")
+		if not depr_schedule_name:
+			return None
 		"""The schedule form's own button. Core posts a plain JE that
 		skips the §4.7 prior-year split and the Financial Treatment —
 		route it through the same engine the scheduler uses.

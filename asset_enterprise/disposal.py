@@ -94,13 +94,13 @@ def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
 	validate_asset_for_scrap(asset, scrap_date)  # incl. VR-041 status gate
 	assert_fully_invoiced(asset)  # GAP-010 / VR-011
 
-	# Mid-period proration up to the scrap date (existing engine).
+	# Mid-period proration up to the scrap date (existing engine). A
+	# proration failure FAILS the scrap — the blanket except here
+	# swallowed a broken posting for weeks and the usage days silently
+	# became disposal loss (client, 19/08, ACC-ASS-2026-00139).
 	if asset.calculate_depreciation:
-		try:
-			depreciate_asset(asset, scrap_date, _("Scrapped on {0}").format(scrap_date))
-			asset.reload()
-		except Exception:
-			pass
+		depreciate_asset(asset, scrap_date, _("Scrapped on {0}").format(scrap_date))
+		asset.reload()
 
 	values = recalculate_asset_values(asset.name, save=False)
 	hav = flt(values["historical_asset_value"])
@@ -360,9 +360,22 @@ def _post_disposal_je(asset, posting_date, scrapping_type, accum_debit, loss_deb
 
 def _freeze_schedule(asset_name, as_of_date, reason):
 	"""After full disposal NBV is zero — supersession leaves only the
-	posted rows (no future rows regenerate from a zero base)."""
+	posted rows (no future rows regenerate from a zero base).
+
+	Skipped when the Active generation is ALREADY terminated at the
+	disposal date (the reschedule wrapper truncated it): a second
+	supersession there was pure churn — and it silently DROPPED any
+	still-unposted proration row (client, 19/08)."""
 	from asset_enterprise.depreciation import supersede_and_regenerate
 
+	last_row = frappe.db.sql(
+		"""select max(ds.schedule_date) from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1""",
+		asset_name,
+	)[0][0]
+	if last_row and getdate(last_row) <= getdate(as_of_date):
+		return  # already frozen by the disposal truncation
 	try:
 		supersede_and_regenerate(asset_name, as_of_date=as_of_date, reason=reason)
 	except frappe.ValidationError:
