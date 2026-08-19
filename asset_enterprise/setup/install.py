@@ -309,6 +309,13 @@ def _ava_property_setters():
 		"Data",
 		validate_fields_for_doctype=False,
 	)
+	# The list showed only the two point-in-time VALUES; the sign of the
+	# adjustment lives in difference_amount — a reversal reads −5,000
+	# there (client, 19/08: "shouldn't the reversal indicate a −").
+	make_property_setter(
+		"Asset Value Adjustment", "difference_amount", "in_list_view", "1", "Check",
+		validate_fields_for_doctype=False,
+	)
 
 
 def seed_masters():
