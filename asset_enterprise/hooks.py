@@ -38,6 +38,9 @@ doctype_js = {
 	# GAP-012: scope the Asset Allocation picker to assets this invoice
 	# can cover, and surface the section on fixed-asset invoices.
 	"Purchase Invoice": "public/js/purchase_invoice.js",
+	# Reversal AVAs must announce themselves (client, 19/08): banner on
+	# the reversal and on the reversed original.
+	"Asset Value Adjustment": "public/js/asset_value_adjustment.js",
 }
 
 # §4.8: an asset carries the live schedule plus one frozen copy per
@@ -47,6 +50,8 @@ doctype_list_js = {
 	# the badge on both list and form reads from this map — without an
 	# entry, a new status silently displays as the document state
 	"Asset": "public/js/asset_list.js",
+	# reversal AVAs badge as "Reversal", reversed originals as "Reversed"
+	"Asset Value Adjustment": "public/js/asset_value_adjustment_list.js",
 }
 
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
