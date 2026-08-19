@@ -300,6 +300,12 @@ override_doctype_dashboards = {
 #
 # auto_cancel_exempted_doctypes = ["Auto Repeat"]
 
+# GAP-031: schedules are NEVER cancelled — they are superseded. Without
+# this, the desk's "Cancel All Documents" dialog (fed by the
+# triggered_by dynamic link) offered to cancel the Active schedule
+# together with the AVA (client, 19/08, ACC-AVA-2026-00002).
+auto_cancel_exempted_doctypes = ["Asset Depreciation Schedule"]
+
 # Ignore links to specified DocTypes when deleting documents
 # -----------------------------------------------------------
 

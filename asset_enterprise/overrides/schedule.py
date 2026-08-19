@@ -21,6 +21,28 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 		super().validate()
 		self._protect_posted_rows()
 
+	def before_cancel(self):
+		# GAP-031: a schedule is never cancelled — it is superseded. The
+		# one legitimate cancel is the GA-0001-01 asset reversal, where
+		# core cancels the asset's schedules as part of unwinding the
+		# asset itself (flag set by EnterpriseAsset.on_cancel). Anything
+		# else — the desk's Cancel All dialog, a manual cancel on the
+		# form — is refused (client, 19/08).
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if not enterprise_enabled():
+			return
+		if frappe.flags.get("ae_asset_reversal") == self.asset:
+			return
+		frappe.throw(
+			frappe._(
+				"Depreciation schedules are never cancelled under the immutable model — "
+				"they are superseded by the transaction that changes them. To reverse the "
+				"underlying change, cancel THAT document (adjustment, capitalization, "
+				"repair); to unwind the asset itself, cancel the Asset."
+			)
+		)
+
 	def validate_update_after_submit(self):
 		# Submitted-schedule saves skip validate() — the posted-row
 		# protection must run here (VR-036, Phase 11b).

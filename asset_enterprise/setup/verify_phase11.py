@@ -860,6 +860,26 @@ def _run():
 		      f"{'OK' if t19_ok else 'FAIL'}")
 		ok = ok and t19_ok
 
+		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
+		# dialog must never offer the depreciation schedule, and a direct
+		# schedule cancel is refused; the asset reversal (the one flow
+		# that legitimately cancels schedules) keeps working — covered by
+		# F4 above.
+		exempted = frappe.get_hooks("auto_cancel_exempted_doctypes")
+		t20a_ok = "Asset Depreciation Schedule" in exempted
+		g3 = _mk_posted(9_000)
+		g3_sched = frappe.get_doc("Asset Depreciation Schedule", frappe.db.get_value(
+			"Asset Depreciation Schedule", {"asset": g3.name, "status": "Active", "docstatus": 1}, "name"))
+		try:
+			g3_sched.cancel()
+			print("t20    FAIL (direct schedule cancel allowed)")
+			ok = False
+		except frappe.ValidationError as e:
+			t20b_ok = "superseded" in str(e)
+			print(f"t20    Cancel-All exemption={t20a_ok}; direct schedule cancel refused: "
+			      f"{'OK' if (t20a_ok and t20b_ok) else 'FAIL'}")
+			ok = ok and t20a_ok and t20b_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

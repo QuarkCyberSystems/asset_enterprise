@@ -453,7 +453,14 @@ class EnterpriseAsset(Asset):
 		if self._enterprise():
 			self._block_when_depreciation_posted()
 			self._reverse_existing_asset_opening()
-		super().on_cancel()
+		# The asset reversal is the ONE flow allowed to cancel this
+		# asset's schedules (core does it inside on_cancel); the
+		# schedule guard reads this flag.
+		frappe.flags.ae_asset_reversal = self.name
+		try:
+			super().on_cancel()
+		finally:
+			frappe.flags.ae_asset_reversal = None
 		if self._enterprise():
 			# Core just overwrote ignore_linked_doctypes with its own
 			# tuple — re-extend it so the mirror JE / FT / Activity rows
