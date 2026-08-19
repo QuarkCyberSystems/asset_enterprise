@@ -289,6 +289,13 @@ after_install = "asset_enterprise.setup.install.after_install"
 # 	"Task": "asset_enterprise.task.get_dashboard_data"
 # }
 
+# Connections tab: surface the one-to-many side (Financial Treatments,
+# triggered schedule generations, reversal counterpart) — the causal
+# one-to-one links stay as hard fields on the form.
+override_doctype_dashboards = {
+	"Asset Value Adjustment": "asset_enterprise.dashboards.ava_dashboard",
+}
+
 # exempt linked doctypes from being automatically cancelled
 #
 # auto_cancel_exempted_doctypes = ["Auto Repeat"]

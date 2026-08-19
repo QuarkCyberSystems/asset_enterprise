@@ -263,6 +263,7 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 
 		# Cancel of a CM -> auto-create the dedicated reversal doc.
 		self.ignore_linked_doctypes = (
+			"Asset Depreciation Schedule",  # triggered_by dynamic link
 			"GL Entry",
 			"Asset",
 			"Asset Capitalization",

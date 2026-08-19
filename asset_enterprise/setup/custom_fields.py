@@ -396,6 +396,27 @@ CUSTOM_FIELDS = {
 			"read_only": 1,
 			"insert_after": "supersedes",
 		},
+		{
+			# which business document caused this generation — makes the
+			# "why does this asset have N superseded schedules" question
+			# self-answering on screen (client, 19/08).
+			"fieldname": "triggered_by_doctype",
+			"fieldtype": "Link",
+			"label": "Triggered By Type",
+			"options": "DocType",
+			"read_only": 1,
+			"hidden": 1,
+			"insert_after": "superseded_on",
+		},
+		{
+			"fieldname": "triggered_by",
+			"fieldtype": "Dynamic Link",
+			"label": "Triggered By",
+			"options": "triggered_by_doctype",
+			"read_only": 1,
+			"insert_after": "triggered_by_doctype",
+			"depends_on": "eval:doc.triggered_by",
+		},
 	],
 	# ------------------------------------------- Depreciation Schedule (child)
 	"Depreciation Schedule": [

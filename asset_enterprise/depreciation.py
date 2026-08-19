@@ -312,6 +312,7 @@ def supersede_and_regenerate(
 	first_posting_date=None,
 	disposal_date=None,
 	rate_change_date=None,
+	triggered_by=None,
 ):
 	"""Replace reschedule-by-cancel with supersession.
 
@@ -428,6 +429,10 @@ def supersede_and_regenerate(
 	new.status = "Active"
 	new.supersedes = old.get("supersedes") if drop_old else old.name
 	new.superseded_on = as_of_date
+	# provenance: the business document that caused this generation
+	if triggered_by is not None and new.meta.has_field("triggered_by"):
+		new.triggered_by_doctype = getattr(triggered_by, "doctype", None)
+		new.triggered_by = getattr(triggered_by, "name", None)
 	new.set("depreciation_schedule", [])
 	accumulated = 0.0
 	for r in posted:
@@ -595,7 +600,9 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 		return None
 
 
-def regenerate_after_value_change(asset_name, adjustment_date, reason, end_of_life_override=None):
+def regenerate_after_value_change(
+	asset_name, adjustment_date, reason, end_of_life_override=None, triggered_by=None
+):
 	"""Supersede + regenerate once the value change is recorded.
 
 	`as_of` is never earlier than the last POSTED schedule date, so an
@@ -621,6 +628,7 @@ def regenerate_after_value_change(asset_name, adjustment_date, reason, end_of_li
 			reason=reason,
 			end_of_life_override=end_of_life_override,
 			rate_change_date=rate_change,
+			triggered_by=triggered_by,
 		)
 	except frappe.ValidationError:
 		return None  # no Active schedule (non-depreciating asset)

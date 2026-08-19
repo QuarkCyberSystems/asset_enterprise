@@ -374,6 +374,7 @@ def _resupersede(target_name, posting_date, cap_doc):
 			posting_date,
 			_("Capitalized Maintenance {0}").format(cap_doc.name),
 			end_of_life_override=end_override,
+			triggered_by=cap_doc,
 		)
 	except frappe.ValidationError:
 		pass  # composite without an Active schedule — value-only

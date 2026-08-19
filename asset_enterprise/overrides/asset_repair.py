@@ -55,6 +55,7 @@ class EnterpriseAssetRepair(AssetRepair):
 			regenerate_after_value_change(
 				self.asset, self.completion_date or nowdate(),
 				_("Capitalized Repair {0} — prospective recalculation").format(self.name),
+				triggered_by=self,
 			)
 
 	def _submit_reversal(self):
@@ -130,6 +131,7 @@ class EnterpriseAssetRepair(AssetRepair):
 				as_of_date=getdate(last_posted) if last_posted else nowdate(),
 				rate_change_date=getdate(nowdate()) if last_posted else None,
 				reason=_("Reversal Repair {0} of {1}").format(self.name, source.name),
+				triggered_by=self,
 			)
 		except frappe.ValidationError:
 			pass  # asset without an Active schedule (no depreciation) — nothing to supersede
@@ -167,6 +169,7 @@ class EnterpriseAssetRepair(AssetRepair):
 		# Replace the destructive core path with a Reversal Repair. The
 		# reversal + FT/Activity rows deliberately link this doc.
 		self.ignore_linked_doctypes = (
+			"Asset Depreciation Schedule",  # triggered_by dynamic link
 			"GL Entry",
 			"Stock Ledger Entry",
 			"Stock Entry",  # core's consumption SE + our return SE link this repair

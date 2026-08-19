@@ -742,13 +742,20 @@ def _run():
 		ul_ok_doc.insert()
 		ul_ok_doc.submit()
 		je_after = frappe.db.count("Journal Entry", {"docstatus": 1})
+		# provenance: the regenerated schedule names the AVA that caused it,
+		# and the document carries a real series name (client, 19/08).
+		t16_trigger = frappe.db.get_value("Asset Depreciation Schedule",
+			{"asset": g1.name, "status": "Active", "docstatus": 1}, "triggered_by")
 		t16_ok = (
 			je_after == je_before
 			and not ul_ok_doc.get("journal_entry")
 			and flt(ul_ok_doc.difference_amount) == 0
+			and ul_ok_doc.name.startswith("ACC-AVA-")
+			and t16_trigger == ul_ok_doc.name
 		)
 		print(f"t16    UL adjustment posts no JE (difference normalised to "
-		      f"{flt(ul_ok_doc.difference_amount)}): {'OK' if t16_ok else 'FAIL'}")
+		      f"{flt(ul_ok_doc.difference_amount)}); name={ul_ok_doc.name} (want ACC-AVA-*); "
+		      f"schedule triggered_by={t16_trigger} {'OK' if t16_ok else 'FAIL'}")
 		ok = ok and t16_ok
 
 		# T17: value-only type refuses life fields.

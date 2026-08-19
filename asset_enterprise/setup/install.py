@@ -331,6 +331,17 @@ def _ava_property_setters():
 			"eval:doc.transaction_type != 'Useful Life Adjustment'", "Data",
 			validate_fields_for_doctype=False,
 		)
+	# Core ships the doctype with HASH autonaming — unquotable in a UAT
+	# sheet (client, 19/08). Series in line with every sibling document;
+	# existing hash-named docs keep their names.
+	make_property_setter(
+		"Asset Value Adjustment", None, "autoname", "ACC-AVA-.YYYY.-.#####", "Data",
+		for_doctype=True, validate_fields_for_doctype=False,
+	)
+	make_property_setter(
+		"Asset Value Adjustment", None, "naming_rule", "Expression (old style)", "Data",
+		for_doctype=True, validate_fields_for_doctype=False,
+	)
 
 
 def seed_masters():

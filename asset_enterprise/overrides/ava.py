@@ -163,6 +163,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 				regenerate_after_value_change(
 					self.asset, self.date,
 					_("Reversal AVA {0} — prospective recalculation").format(self.name),
+					triggered_by=self,
 				)
 			return
 
@@ -198,6 +199,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 				_("{0} via {1} — prospective recalculation").format(
 					self.get("transaction_type") or "Value adjustment", self.name
 				),
+				triggered_by=self,
 			)
 
 	def _apply_life_adjustment(self, life_delta, day_delta=0):
@@ -243,6 +245,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 			supersede_and_regenerate(
 				self.asset, as_of_date=self.date, end_of_life_override=self.date,
 				reason=_("Useful life exhausted via {0}").format(self.name),
+				triggered_by=self,
 			)
 		else:
 			# Resume from the last POSTED row with the adjustment date as
@@ -261,6 +264,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 				reason=_("Useful Life Adjustment via {0} ({1:+} months, {2:+} days)").format(
 					self.name, cint(round(life_delta)), cint(round(day_delta))
 				),
+				triggered_by=self,
 			)
 
 	def _classify(self):
@@ -308,6 +312,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 		# The reversal + FT/Activity rows deliberately link this doc —
 		# exempt them from frappe's cancel-time link check.
 		self.ignore_linked_doctypes = (
+			"Asset Depreciation Schedule",  # triggered_by dynamic link
 			"GL Entry",
 			"Asset Value Adjustment",
 			"Financial Treatment",
