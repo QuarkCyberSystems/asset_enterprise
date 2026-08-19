@@ -322,28 +322,29 @@ CUSTOM_FIELDS = {
 	# ------------------------------------------------- Asset Value Adjustment
 	"Asset Value Adjustment": [
 		{
+			# No "Downward Revaluation" option on purpose: value drops
+			# below carrying value are Impairment (IAS 16).
 			"fieldname": "transaction_type",
 			"fieldtype": "Select",
 			"label": "Transaction Type",
 			"options": "\nInitial Impairment\nUpward Revaluation\nInvoice Adjustment\nUseful Life Adjustment\nValue + Life Adjustment",
 			"insert_after": "company",
-			"description": "No Downward Revaluation — value drops below carrying value are Impairment (IAS 16).",
 		},
 		{
+			# GAP-013: positive extends, negative shortens; prospective recalc.
 			"fieldname": "adjusted_life_months",
 			"fieldtype": "Float",
 			"label": "Adjusted Life (Months)",
 			"precision": "2",
 			"insert_after": "new_asset_value",
-			"description": "GAP-013: positive extends, negative shortens useful life. Prospective recalc.",
 		},
 		{
+			# Combines with months: +3 months +15 days moves the end of
+			# life by both. Days shift the horizon, not the period count.
 			"fieldname": "adjusted_life_days",
 			"fieldtype": "Int",
 			"label": "Adjusted Life (Days)",
 			"insert_after": "adjusted_life_months",
-			"description": "Combines with months: +3 months +15 days moves the end of life by "
-			"both. Positive extends, negative shortens (client, 18/08).",
 		},
 		{
 			"fieldname": "reversal_of_ava",
