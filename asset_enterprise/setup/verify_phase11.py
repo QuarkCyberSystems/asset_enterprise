@@ -567,6 +567,30 @@ def _run():
 		)
 		ok = ok and bool(t10_ok)
 
+		# T11 (client, ACC-ASS-2026-00127): Extended Life / the fully-
+		# depreciated treatment is refused on a target still carrying
+		# NBV — it re-anchored the horizon to the posting date and
+		# collapsed years of remaining life. Mid-life extension goes
+		# through a Useful Life Adjustment instead.
+		t11_probe = frappe.get_doc({
+			"doctype": "Asset Capitalization",
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": t10.name,  # mid-life, NBV 154,643.85
+			"company": company,
+			"extended_life_months": 12,
+			"fully_depreciated_treatment": "Add Value and Extend Life",
+			"asset_items": [{"asset": s1.name}],
+		})
+		try:
+			t11_probe._validate_cm()
+			print("t11    FAIL (Extended Life accepted on a mid-life target)")
+			ok = False
+		except frappe.ValidationError as e:
+			t11_ok = "Useful Life Adjustment" in str(e)
+			print(f"t11    Extended Life on mid-life target refused: {'OK' if t11_ok else 'FAIL: ' + str(e)[:120]}")
+			ok = ok and t11_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

@@ -100,6 +100,37 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			if not flt(row.get("amount")) and flt(row.get("qty")) and flt(row.get("rate")):
 				row.amount = flt(row.qty) * flt(row.rate)
 
+		# GAP-017: the fully-depreciated treatment (and its Extended Life
+		# months) exists ONLY for a target already down to salvage — the
+		# design shows the field only when the target's NBV = 0. On a
+		# mid-life target the months silently re-anchored the horizon to
+		# the POSTING date and crammed years of remaining value into a
+		# few periods (client, ACC-ASS-2026-00127: 4.5 remaining years
+		# collapsed into 12 months, daily rate 60.27 -> 328.40).
+		if target.docstatus == 1 and (
+			self.get("fully_depreciated_treatment")
+			or flt(self.get("extended_life_months") or 0)
+		):
+			from asset_enterprise.asset_values import recalculate_asset_values
+
+			nbv = flt(recalculate_asset_values(target.name, save=False)["net_book_value"])
+			salvage = flt(
+				frappe.db.get_value(
+					"Asset Finance Book", {"parent": target.name},
+					"expected_value_after_useful_life",
+				)
+				or 0
+			)
+			if nbv > salvage + 0.005:
+				frappe.throw(
+					_(
+						"Fully-Depreciated Treatment / Extended Life applies only when the "
+						"target's NBV is already down to salvage — {0} still carries NBV {1}. "
+						"To extend a mid-life asset's useful life, post a Useful Life "
+						"Adjustment (Asset Value Adjustment) after the merge instead."
+					).format(target.name, frappe.format_value(nbv, {"fieldtype": "Currency"}))
+				)
+
 		# §12.3 / TC-027 / TC-046: service costs may be capitalized onto a
 		# submitted asset; asset rows merge components. At least one.
 		if not self.get("asset_items") and not self.get("service_items"):
