@@ -67,12 +67,26 @@ def restore_asset(asset_name):
 	if disposal_ft:
 		tcc.reverse(disposal_ft, ("Asset", asset.name), journal_entry=mirror)
 
-	# Future depreciation resumes prospectively.
-	from asset_enterprise.depreciation import supersede_and_regenerate
+	# Future depreciation resumes prospectively. Two traps found in the
+	# 19/08 caller audit: (a) as_of must be the last POSTED row, not
+	# today, or the gap days get no row; (b) the schedule being
+	# superseded was TERMINATED at the disposal date, so the default
+	# horizon (its last row) generated NO future rows at all — the asset
+	# came back with NBV but a dead schedule. The horizon is re-derived
+	# from the finance book, as Path 3 does.
+	from asset_enterprise.depreciation import (
+		last_posted_schedule_date,
+		schedule_horizon_from_life,
+		supersede_and_regenerate,
+	)
 
+	last_posted = last_posted_schedule_date(asset.name)
 	try:
 		supersede_and_regenerate(
-			asset.name, as_of_date=nowdate(), reason=_("Restored via {0}").format(mirror)
+			asset.name,
+			as_of_date=getdate(last_posted) if last_posted else nowdate(),
+			end_of_life_override=schedule_horizon_from_life(asset.name),
+			reason=_("Restored via {0}").format(mirror),
 		)
 	except frappe.ValidationError:
 		pass
@@ -116,11 +130,21 @@ def restore_partial_scrap(asset_name, financial_treatment):
 
 	tcc.reverse(ft.name, ("Asset", asset_name), journal_entry=mirror)
 
-	from asset_enterprise.depreciation import supersede_and_regenerate
+	# Resume from the last posted row; the restore date is the
+	# rate-change boundary (value comes back today — days before it stay
+	# at the post-scrap rate that was in force).
+	from asset_enterprise.depreciation import (
+		last_posted_schedule_date,
+		supersede_and_regenerate,
+	)
 
+	last_posted = last_posted_schedule_date(asset_name)
 	try:
 		supersede_and_regenerate(
-			asset_name, as_of_date=nowdate(), reason=_("Partial scrap restored via {0}").format(mirror)
+			asset_name,
+			as_of_date=getdate(last_posted) if last_posted else nowdate(),
+			rate_change_date=getdate(nowdate()) if last_posted else None,
+			reason=_("Partial scrap restored via {0}").format(mirror),
 		)
 	except frappe.ValidationError:
 		pass

@@ -223,11 +223,22 @@ def partial_scrap_asset(
 	)
 
 	# Prospective schedule over the reduced base; asset remains active.
-	from asset_enterprise.depreciation import supersede_and_regenerate
+	# Resume from the last POSTED row with the scrap date as the
+	# rate-change boundary — regenerating from the scrap date left the
+	# days before it with no row of their own (same short-row defect as
+	# the UL adjustment, caught in the 19/08 caller audit).
+	from asset_enterprise.depreciation import (
+		last_posted_schedule_date,
+		supersede_and_regenerate,
+	)
 
+	last_posted = last_posted_schedule_date(asset.name)
 	try:
 		supersede_and_regenerate(
-			asset.name, as_of_date=scrap_date, reason=_("Partial scrap via {0}").format(je)
+			asset.name,
+			as_of_date=getdate(last_posted) if last_posted else scrap_date,
+			rate_change_date=getdate(scrap_date) if last_posted else None,
+			reason=_("Partial scrap via {0}").format(je),
 		)
 	except frappe.ValidationError:
 		pass

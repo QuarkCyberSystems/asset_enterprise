@@ -617,6 +617,81 @@ def _run():
 			print(f"t11    Extended Life on mid-life target refused: {'OK' if t11_ok else 'FAIL: ' + str(e)[:120]}")
 			ok = ok and t11_ok
 
+		# T12–T14 (19/08 caller audit): every path that regenerates a
+		# schedule must resume from the last POSTED row, and non-SL
+		# curves must survive our §4.3 rebuild.
+		from asset_enterprise import disposal as t_disposal
+		from asset_enterprise.depreciation import post_schedule_entries as t_post
+
+		def _mk_posted(gross):
+			x = make_test_asset(company, gross=gross, submit=True)
+			start = get_first_day(add_months(nowdate(), -4))
+			enable_depreciation(
+				x.name, total_number_of_depreciations=36,
+				available_for_use_date=str(start), depreciation_start_date=str(start),
+			)
+			sched = frappe.db.get_value("Asset Depreciation Schedule",
+				{"asset": x.name, "status": "Active", "docstatus": 1}, "name")
+			t_post(sched, str(add_days(get_first_day(nowdate()), -1)))
+			return x
+
+		def _future(asset_name):
+			return frappe.db.sql("""
+				select ds.schedule_date, ds.depreciation_amount, ds.days_in_period
+				from `tabDepreciation Schedule` ds
+				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+				where ads.asset = %s and ads.status='Active' and ads.docstatus=1
+				  and ifnull(ds.journal_entry,'') = ''
+				order by ds.schedule_date""", asset_name, as_dict=True)
+
+		mid_month = str(add_days(get_first_day(nowdate()), 14))
+
+		# T12: mid-month partial scrap — the event month stays one full row.
+		p1 = _mk_posted(36_000)
+		t_disposal.partial_scrap_asset(
+			p1.name, scrap_value=6_000, scrap_date=mid_month, scrapping_type="Damage")
+		f1_rows = _future(p1.name)
+		t12_ok = f1_rows and cint(f1_rows[0].days_in_period) >= 28
+		print(f"t12    partial scrap mid-month: first future row "
+		      f"{f1_rows and (str(f1_rows[0].schedule_date), f1_rows[0].days_in_period)} "
+		      f"(want full month) {'OK' if t12_ok else 'FAIL'}")
+		ok = ok and bool(t12_ok)
+
+		# T13: Path 1 restore — the schedule must come back ALIVE.
+		p2 = _mk_posted(24_000)
+		t_disposal.scrap_asset(p2.name, scrap_date=mid_month, scrapping_type="Damage")
+		from asset_enterprise.restore import restore_asset as t_restore
+
+		t_restore(p2.name)
+		f2_rows = _future(p2.name)
+		t13_ok = bool(f2_rows) and getdate(f2_rows[-1].schedule_date) > getdate(nowdate())
+		print(f"t13    path-1 restore: {len(f2_rows)} future rows, horizon "
+		      f"{f2_rows and f2_rows[-1].schedule_date} (want a live schedule) "
+		      f"{'OK' if t13_ok else 'FAIL'}")
+		ok = ok and t13_ok
+
+		# T14: a WDV asset keeps its declining curve through our on_submit.
+		w1 = make_test_asset(company, gross=50_000, submit=False, with_depreciation=True)
+		w1.finance_books[0].depreciation_method = "Written Down Value"
+		w1.finance_books[0].rate_of_depreciation = 40
+		w1.finance_books[0].daily_prorata_based = 0
+		w1.flags.ignore_permissions = True
+		w1.save()
+		w1.submit()
+		w_rows = frappe.db.sql("""
+			select ds.depreciation_amount from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status='Active' and ads.docstatus=1
+			order by ds.schedule_date limit 15""", w1.name)
+		amts = [flt(r[0]) for r in w_rows]
+		# WDV declines YEAR over year (equal monthly rows within a year);
+		# our flattened rebuild would instead show day-count variation
+		# month to month and no year step.
+		t14_ok = len(amts) >= 14 and amts[1] > amts[13] and amts[1] == amts[2]
+		print(f"t14    WDV curve preserved: yr1 {amts[1:3]} vs yr2 {amts[13:14]} "
+		      f"(want yearly decline, flat within year) {'OK' if t14_ok else 'FAIL'}")
+		ok = ok and t14_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

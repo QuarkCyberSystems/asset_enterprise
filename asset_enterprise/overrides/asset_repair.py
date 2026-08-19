@@ -113,12 +113,22 @@ class EnterpriseAssetRepair(AssetRepair):
 		if original_ft:
 			tcc.reverse(original_ft, self, posting_date=nowdate())
 
-		# 4. Prospective schedule from the reduced base.
-		from asset_enterprise.depreciation import supersede_and_regenerate
+		# 4. Prospective schedule from the reduced base — resuming from
+		# the last POSTED row, with today (the reversal) as the
+		# rate-change boundary (19/08 caller audit).
+		from asset_enterprise.depreciation import (
+			last_posted_schedule_date,
+			supersede_and_regenerate,
+		)
 
+		from frappe.utils import getdate
+
+		last_posted = last_posted_schedule_date(self.asset)
 		try:
 			supersede_and_regenerate(
-				self.asset, as_of_date=nowdate(),
+				self.asset,
+				as_of_date=getdate(last_posted) if last_posted else nowdate(),
+				rate_change_date=getdate(nowdate()) if last_posted else None,
 				reason=_("Reversal Repair {0} of {1}").format(self.name, source.name),
 			)
 		except frappe.ValidationError:

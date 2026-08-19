@@ -543,6 +543,16 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 	schedule over the real calendar span, giving a different rate inside
 	a leap year). Posted rows are preserved verbatim; only future rows
 	are regenerated, so this is safe on assets already depreciating."""
+	# §4.3's daily-rate model IS straight line — rebuilding a Written
+	# Down Value (or Double Declining) schedule here would silently
+	# replace the declining curve with flat rows (19/08 caller audit).
+	# Non-SL assets keep core's schedule untouched.
+	method_filters = {"parent": asset_name}
+	if finance_book:
+		method_filters["finance_book"] = finance_book
+	method = frappe.db.get_value("Asset Finance Book", method_filters, "depreciation_method")
+	if method and method != "Straight Line":
+		return None
 	if is_rule_built_schedule(asset_name):
 		return None
 	end_of_life = schedule_horizon_from_life(asset_name, finance_book)
