@@ -94,7 +94,7 @@ CUSTOM_FIELDS = {
 			"label": "Parent Asset",
 			"options": "Asset",
 			"insert_after": "traceability_section",
-			"description": "Asset Tree grouping (GAP-009). No GL impact.",
+			"description": "Groups this asset under a parent in the Asset Tree. No GL impact.",
 		},
 		{
 			"fieldname": "replacement_of_asset",
@@ -103,7 +103,7 @@ CUSTOM_FIELDS = {
 			"options": "Asset",
 			"read_only": 1,
 			"insert_after": "parent_asset",
-			"description": "Set when this Asset was created via Create Replacement Asset on a disposed Asset (GAP-016 Path 2).",
+			"description": "Set when this Asset was created via Create Replacement Asset on a disposed Asset.",
 		},
 		{
 			"fieldname": "replaced_by_asset",
@@ -125,7 +125,7 @@ CUSTOM_FIELDS = {
 			"options": "Journal Entry",
 			"read_only": 1,
 			"insert_after": "traceability_cb",
-			"description": "Mirror JE posted by the same-period restore (GAP-016 Path 1 / GAP-029).",
+			"description": "Mirror journal entry posted when this asset was restored after disposal.",
 		},
 		{
 			"fieldname": "merged_into_asset",
@@ -134,7 +134,7 @@ CUSTOM_FIELDS = {
 			"options": "Asset",
 			"read_only": 1,
 			"insert_after": "scrap_reversal_journal_entry",
-			"description": "Composite this Asset was merged into via Capitalized Maintenance (GAP-035 bidirectional linkage).",
+			"description": "Composite this Asset was merged into via Capitalized Maintenance.",
 		},
 		{
 			"fieldname": "reclassified_from",
@@ -143,9 +143,9 @@ CUSTOM_FIELDS = {
 			"options": "Asset",
 			"read_only": 1,
 			"insert_after": "merged_into_asset",
-			"description": "GAP-014 Reclassification (Phase 11): source asset this one "
-			"was created from on category transfer. Suppresses the GAP-001 "
-			"opening JE — the reclassification JE carries the booking.",
+			# Suppresses the GAP-001 opening JE — the reclassification JE
+			# carries the booking.
+			"description": "Source asset this one was created from on category transfer.",
 		},
 		{
 			"fieldname": "merge_log_section",
@@ -190,13 +190,13 @@ CUSTOM_FIELDS = {
 			"disposal_account_override",
 			"Disposal Account Override",
 			"fa_count_discovery_account",
-			description="Category-level override of Company disposal account (GA-0005-01 §3.5 chain).",
+			description="Category-level override of the Company disposal account.",
 		),
 		_acc(
 			"capitalization_clearing_account",
 			"Capitalization Clearing Account",
 			"disposal_account_override",
-			description="Intermediary for the Capitalized Maintenance two-leg merge GL (GAP-014). Nets to zero per merge.",
+			description="Intermediary for the Capitalized Maintenance merge entries. Nets to zero per merge.",
 		),
 	],
 	# ---------------------------------------------------------- Asset Category
@@ -206,14 +206,14 @@ CUSTOM_FIELDS = {
 			"fieldtype": "Check",
 			"label": "Depreciation Start From Receiving Date",
 			"insert_after": "enable_cwip_accounting",
-			"description": "GAP-003: depreciation start basis = PR posting date when set.",
+			"description": "When set, depreciation counts from the Purchase Receipt posting date for assets in this category.",
 		},
 		{
 			"fieldname": "subject_to_impairment_review",
 			"fieldtype": "Check",
 			"label": "Subject to Impairment Review",
 			"insert_after": "calculate_from_receiving_date",
-			"description": "GAP-008: reporting flag only — no automatic GL impact.",
+			"description": "Reporting flag only — no automatic GL impact.",
 		},
 	],
 	# ---------------------------------------------------- Asset Capitalization
@@ -277,7 +277,7 @@ CUSTOM_FIELDS = {
 			"label": "Fully Depreciated Target Treatment",
 			"options": "\nExpense Immediately\nAdd Value and Extend Life",
 			"insert_after": "target_asset_category",
-			"description": "Required when the target composite is fully depreciated (GAP-014, per 2026-07-14 meeting).",
+			"description": "Required when the target composite is fully depreciated.",
 		},
 		{
 			"fieldname": "extended_life_months",
@@ -372,7 +372,7 @@ CUSTOM_FIELDS = {
 			"options": "Asset Depreciation Schedule",
 			"read_only": 1,
 			"insert_after": "status",
-			"description": "GAP-031: the schedule this one replaced. The old schedule stays submitted with status Superseded; its posted rows are copied here verbatim (GAP-032).",
+			"description": "The schedule this one replaced. The old schedule stays submitted with status Superseded; its posted rows are copied here verbatim.",
 		},
 		{
 			"fieldname": "superseded_on",
@@ -390,7 +390,7 @@ CUSTOM_FIELDS = {
 			"label": "Cost Center",
 			"options": "Cost Center",
 			"insert_after": "journal_entry",
-			"description": "GAP-021: CC-split depreciation rows on mid-period transfer.",
+			"description": "Cost centre carrying this row after a mid-period transfer split.",
 		},
 		{
 			"fieldname": "is_pya_entry",
@@ -421,7 +421,7 @@ CUSTOM_FIELDS = {
 			"options": "Journal Entry",
 			"read_only": 1,
 			"insert_after": "daily_rate",
-			"description": "GAP-015 (Phase 11): mirror JE that reversed this posted row "
+			"description": "Mirror journal entry that reversed this posted row "
 			"(e.g. straddling depreciation reversed at merge). Row drops out of "
 			"the accumulated fold; original JE stays posted.",
 		},
@@ -443,7 +443,7 @@ CUSTOM_FIELDS = {
 			"label": "Target Cost Center",
 			"options": "Cost Center",
 			"insert_after": "source_cost_center",
-			"description": "GAP-020: future depreciation routes here after transfer.",
+			"description": "Future depreciation routes to this cost centre after the transfer.",
 		},
 	],
 	# ------------------------------------------------------- PR / PI item flags
@@ -454,7 +454,7 @@ CUSTOM_FIELDS = {
 			"label": "Asset Linked",
 			"read_only": 1,
 			"insert_after": "is_fixed_asset",
-			"description": "GAP-004: set when an Asset references this row; PR reversal cascades.",
+			"description": "Set when an Asset references this row. Reverse the asset before cancelling the receipt.",
 		},
 	],
 	"Purchase Invoice Item": [
@@ -482,7 +482,7 @@ CUSTOM_FIELDS = {
 			"label": "PI Asset Allocation",
 			"options": "PI Asset Allocation",
 			"insert_after": "pi_asset_allocation_section",
-			"description": "GAP-012: 1:1 mapping of this (partial) invoice to specific received Assets. Fully-invoiced assets (pi_amount >= pr_amount) are filtered out.",
+			"description": "Maps this (partial) invoice to specific received Assets. Fully-invoiced assets are filtered out.",
 		},
 	],
 	# ------------------------------------------------------------ Asset Activity
