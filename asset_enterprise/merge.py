@@ -486,8 +486,38 @@ def reclassify(cap_doc):
 	source = frappe.get_doc("Asset", cap_doc.asset_items[0].asset)
 	if source.docstatus != 1:
 		frappe.throw(_("Source Asset {0} must be submitted.").format(source.name))
-	target = frappe.get_doc("Asset", cap_doc.target_asset)
 	posting_date = getdate(cap_doc.posting_date or nowdate())
+
+	if cap_doc.get("target_asset"):
+		target = frappe.get_doc("Asset", cap_doc.target_asset)
+	else:
+		# Target named as a MATERIAL (client, 19/08): the transaction
+		# creates the new-category asset itself, like purchasing. The
+		# machine has not moved — location and cost centre carry over;
+		# available-for-use is the transaction date.
+		item = frappe.get_doc("Item", cap_doc.target_item)
+		target = frappe.get_doc(
+			{
+				"doctype": "Asset",
+				"company": source.company,
+				"asset_name": item.item_name or item.name,
+				"item_code": item.name,
+				"asset_category": item.asset_category,
+				"location": source.location,
+				"cost_center": source.get("cost_center"),
+				"asset_quantity": source.get("asset_quantity") or 1,
+				"purchase_date": posting_date,
+				"available_for_use_date": posting_date,
+				"calculate_depreciation": 0,
+				"purchase_amount": flt(source.net_purchase_amount),
+				"net_purchase_amount": flt(source.net_purchase_amount),
+				"reclassified_from": source.name,
+			}
+		)
+		target.flags.ignore_permissions = True
+		target.insert()
+		cap_doc.db_set("target_asset", target.name, update_modified=False)
+		cap_doc.db_set("target_asset_category", item.asset_category, update_modified=False)
 
 	# Standard-disposal proration up to the transfer date.
 	if source.calculate_depreciation:
@@ -584,6 +614,9 @@ def reclassify(cap_doc):
 		target.net_purchase_amount = gross
 		target.opening_accumulated_depreciation = accum
 		target.reclassified_from = source.name
+		# available-for-use = the transaction date (client, 19/08) —
+		# holds for auto-created targets and pre-created drafts alike.
+		target.available_for_use_date = posting_date
 		target.flags.ignore_permissions = True
 		target.flags.ignore_links = True
 		target.save()

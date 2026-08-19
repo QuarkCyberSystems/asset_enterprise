@@ -61,3 +61,13 @@ function set_target_asset_query(frm) {
 		return { filters: { asset_type: "Composite Asset", docstatus: 0 } };
 	});
 }
+
+// Reclassification target-by-material (client, 19/08): only enabled
+// fixed-asset items with a category qualify.
+frappe.ui.form.on("Asset Capitalization", {
+	setup(frm) {
+		frm.set_query("target_item", () => ({
+			filters: { is_fixed_asset: 1, disabled: 0 },
+		}));
+	},
+});

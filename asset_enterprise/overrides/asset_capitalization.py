@@ -68,12 +68,26 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 				frappe.throw(_("Reversal Of Capitalization is required."))
 
 	def _validate_cm(self):
-		if not self.get("target_asset"):
-			frappe.throw(_("Capitalized Maintenance requires a target Asset."))
-		target = frappe.get_doc("Asset", self.target_asset)
 		reclass = (
 			self.get("transaction_sub_type") == "Reclassification / Asset Category Transfer"
 		)
+		# Reclassification may name the NEW MATERIAL instead of a
+		# pre-created asset — the transaction creates the asset, like
+		# purchasing, with available-for-use = posting date (client,
+		# 19/08). Everything else needs a target Asset.
+		if reclass and self.get("target_item") and not self.get("target_asset"):
+			return self._validate_reclassification_item()
+		if not self.get("target_asset"):
+			if reclass:
+				frappe.throw(
+					_(
+						"Reclassification requires either a Target Item (the new-category "
+						"material — the asset is created by this transaction) or a "
+						"pre-created draft Target Asset."
+					)
+				)
+			frappe.throw(_("Capitalized Maintenance requires a target Asset."))
+		target = frappe.get_doc("Asset", self.target_asset)
 		# Reclassification pre-creates the new-category asset as a DRAFT
 		# (Phase 11 F5); every other CM needs a submitted target.
 		if target.docstatus == 2 or (target.docstatus != 1 and not reclass):
@@ -145,6 +159,31 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			self._validate_reclassification(target)
 
 		self._validate_fully_depreciated_choice(target)
+
+	def _validate_reclassification_item(self):
+		"""Target named as a material: the item must be a fixed-asset
+		item whose category DIFFERS from the source's (VR-020)."""
+		item = frappe.db.get_value(
+			"Item", self.target_item, ["is_fixed_asset", "asset_category", "disabled"], as_dict=True
+		)
+		if not item:
+			frappe.throw(_("Target Item {0} does not exist.").format(self.target_item))
+		if item.disabled or not item.is_fixed_asset:
+			frappe.throw(_("Target Item {0} must be an enabled fixed-asset item.").format(self.target_item))
+		if not item.asset_category:
+			frappe.throw(_("Target Item {0} has no Asset Category.").format(self.target_item))
+		self.target_asset_category = item.asset_category
+		if not self.get("asset_items"):
+			frappe.throw(_("Reclassification requires the source Asset row."))
+		for row in self.asset_items:
+			src_cat = frappe.db.get_value("Asset", row.asset, "asset_category")
+			if src_cat == item.asset_category:
+				frappe.throw(
+					_(
+						"Reclassification requires the source category ({0}) to differ "
+						"from the target item's category ({1})."
+					).format(src_cat, item.asset_category)
+				)
 
 	def _validate_reclassification(self, target):
 		# VR-020: both category fields are read-only, fetched from the

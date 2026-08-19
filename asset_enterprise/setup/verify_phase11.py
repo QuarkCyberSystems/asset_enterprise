@@ -794,6 +794,49 @@ def _run():
 		      f"{h_g2} -> {h_g2_after} (want +6mo) {'OK' if t18_ok else 'FAIL'}")
 		ok = ok and t18_ok
 
+		# T19 (client, 19/08): reclassification targets the new MATERIAL —
+		# the asset is created by the transaction, like purchasing, with
+		# available-for-use = the posting date.
+		from asset_enterprise.setup.verify_tc import _category as t19_category, _plain as t19_plain
+
+		r_src = _mk_posted(12_000)
+		t19_cat = t19_category(company, "T19 New Category", suspense=t19_plain(company, "Liability"))
+		if not frappe.db.exists("Item", "T19 Reclass Item"):
+			t19_item = frappe.get_doc({
+				"doctype": "Item", "item_code": "T19 Reclass Item", "item_name": "T19 Reclass Item",
+				"item_group": "Sub Assemblies", "stock_uom": "Nos", "is_fixed_asset": 1,
+				"is_stock_item": 0, "asset_category": t19_cat})
+			t19_item.flags.ignore_permissions = True
+			t19_item.insert()
+		t19_cap = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Reclassification / Asset Category Transfer",
+			"target_item": "T19 Reclass Item", "posting_date": nowdate(),
+			"asset_items": [{"asset": r_src.name}]})
+		t19_cap.flags.ignore_permissions = True
+		t19_cap.insert()
+		t19_cap.submit()
+		t19_cap.reload()
+		new_asset = frappe.db.get_value("Asset", t19_cap.target_asset,
+			["asset_category", "available_for_use_date", "net_purchase_amount",
+			 "opening_accumulated_depreciation", "docstatus", "reclassified_from"], as_dict=True)
+		src_after = frappe.db.get_value("Asset", r_src.name, ["docstatus", "status"], as_dict=True)
+		t19_ok = (
+			bool(t19_cap.target_asset)
+			and new_asset.asset_category == t19_cat
+			and getdate(new_asset.available_for_use_date) == getdate(nowdate())
+			and new_asset.docstatus == 1
+			and flt(new_asset.net_purchase_amount) == 12_000
+			and new_asset.reclassified_from == r_src.name
+			and src_after.docstatus == 2
+		)
+		print(f"t19    reclass by material: created {t19_cap.target_asset} in {new_asset.asset_category} "
+		      f"AFU={new_asset.available_for_use_date} (want today) gross "
+		      f"{flt(new_asset.net_purchase_amount):,.2f} src cancelled={src_after.docstatus == 2} "
+		      f"{'OK' if t19_ok else 'FAIL'}")
+		ok = ok and t19_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

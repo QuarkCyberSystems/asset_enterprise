@@ -236,6 +236,19 @@ CUSTOM_FIELDS = {
 			"insert_after": "transaction_type",
 		},
 		{
+			# Reclassification names the NEW material directly — the asset
+			# is created by the transaction, like purchasing, with
+			# available-for-use = the posting date (client, 19/08). A
+			# pre-created draft target_asset still works as before.
+			"fieldname": "target_item",
+			"fieldtype": "Link",
+			"label": "Target Item (New Category)",
+			"options": "Item",
+			"insert_after": "transaction_sub_type",
+			"depends_on": "eval:doc.transaction_sub_type==='Reclassification / Asset Category Transfer'",
+			"description": "The new-category material. The reclassification creates the new asset from it; available-for-use is the posting date.",
+		},
+		{
 			"fieldname": "reversal_of_capitalization",
 			"fieldtype": "Link",
 			"label": "Reversal Of Capitalization",
