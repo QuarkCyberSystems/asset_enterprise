@@ -310,12 +310,27 @@ def _ava_property_setters():
 		validate_fields_for_doctype=False,
 	)
 	# The list showed only the two point-in-time VALUES; the sign of the
-	# adjustment lives in difference_amount — a reversal reads −5,000
-	# there (client, 19/08: "shouldn't the reversal indicate a −").
+	# adjustment lives in difference_amount — a reversal reads -5,000
+	# there (client, 19/08: "shouldn't the reversal indicate a -").
 	make_property_setter(
 		"Asset Value Adjustment", "difference_amount", "in_list_view", "1", "Check",
 		validate_fields_for_doctype=False,
 	)
+	# §3.2/§3.4 type contract (client, 19/08 — ACC-JV-2026-00661): a
+	# Useful Life Adjustment changes time, not value. Hide the value
+	# fields on it so the conflicting entry cannot be typed; the server
+	# contract in EnterpriseAVA backs this for API paths.
+	for fieldname in (
+		"current_asset_value",
+		"new_asset_value",
+		"difference_amount",
+		"difference_account",
+	):
+		make_property_setter(
+			"Asset Value Adjustment", fieldname, "depends_on",
+			"eval:doc.transaction_type != 'Useful Life Adjustment'", "Data",
+			validate_fields_for_doctype=False,
+		)
 
 
 def seed_masters():

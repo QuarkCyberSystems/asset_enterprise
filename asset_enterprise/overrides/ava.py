@@ -28,6 +28,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 	"""
 
 	def validate(self):
+		self._enforce_type_contract()
 		# §3.5 / §12.14 / §12.15 (Phase 11b T8): default the difference
 		# account from the account-resolution chain by transaction type;
 		# the user can still override.
@@ -50,6 +51,58 @@ class EnterpriseAVA(AssetValueAdjustment):
 				except frappe.ValidationError:
 					pass  # unconfigured — core's mandatory check guides the user
 		super().validate()
+		if self.get("transaction_type") == "Useful Life Adjustment":
+			# Re-assert after core's validate: set_difference_amount runs
+			# in super() and would recompute a difference from whatever
+			# core auto-filled into current_asset_value.
+			self.new_asset_value = self.current_asset_value
+			self.difference_amount = 0
+
+	def _enforce_type_contract(self):
+		"""§3.2/§3.4: each transaction type has ONE meaning — the type
+		governs the fields, not the other way round (client, 19/08:
+		ACC-JV-2026-00661 — a Useful Life Adjustment carrying a value
+		difference made core post a write-down on top of the GAP-013
+		exhaustion depreciation; 499.70 hit the P&L twice).
+
+		- Useful Life Adjustment changes TIME only. Value fields are
+		  neutralised; an explicit conflicting pair is refused. When the
+		  shortened life is exhausted, the engine posts the remainder as
+		  DR Depreciation / CR Accumulated Depreciation (GAP-013).
+		- Value-only types refuse life fields.
+		- Both at once = "Value + Life Adjustment" (§3.4).
+		"""
+		if not self._enterprise():
+			return
+		ttype = self.get("transaction_type")
+		months = flt(self.get("adjusted_life_months") or 0)
+		days = flt(self.get("adjusted_life_days") or 0)
+
+		if ttype == "Useful Life Adjustment":
+			cur, new = flt(self.current_asset_value), flt(self.new_asset_value)
+			if cur and new and abs(cur - new) > 0.005:
+				frappe.throw(
+					_(
+						"A Useful Life Adjustment changes time, not value — Current and New "
+						"Asset Value must stay equal. When the shortened life is already "
+						"exhausted, the remaining base posts automatically as depreciation. "
+						"To change value and life together, use 'Value + Life Adjustment'."
+					)
+				)
+			# untouched / hidden fields: mirror so core's difference is
+			# zero (flt-coerced — core subtracts these before we run again)
+			self.new_asset_value = flt(self.current_asset_value)
+			self.current_asset_value = flt(self.current_asset_value)
+			self.difference_amount = 0
+		elif ttype in ("Initial Impairment", "Upward Revaluation", "Invoice Adjustment") and (
+			months or days
+		):
+			frappe.throw(
+				_(
+					"{0} changes value, not useful life — clear the Adjusted Life fields. "
+					"To change value and life together, use 'Value + Life Adjustment'."
+				).format(_(ttype))
+			)
 
 	# ------------------------------------------------------------- submit
 	def on_submit(self):

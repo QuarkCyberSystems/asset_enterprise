@@ -332,11 +332,13 @@ CUSTOM_FIELDS = {
 		},
 		{
 			# GAP-013: positive extends, negative shortens; prospective recalc.
+			# §3.2/§3.4: life fields belong only to the two life-bearing types.
 			"fieldname": "adjusted_life_months",
 			"fieldtype": "Float",
 			"label": "Adjusted Life (Months)",
 			"precision": "2",
 			"insert_after": "new_asset_value",
+			"depends_on": "eval:['Useful Life Adjustment','Value + Life Adjustment'].includes(doc.transaction_type)",
 		},
 		{
 			# Combines with months: +3 months +15 days moves the end of
@@ -345,6 +347,7 @@ CUSTOM_FIELDS = {
 			"fieldtype": "Int",
 			"label": "Adjusted Life (Days)",
 			"insert_after": "adjusted_life_months",
+			"depends_on": "eval:['Useful Life Adjustment','Value + Life Adjustment'].includes(doc.transaction_type)",
 		},
 		{
 			"fieldname": "reversal_of_ava",

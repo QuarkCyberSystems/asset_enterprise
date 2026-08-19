@@ -692,6 +692,94 @@ def _run():
 		      f"(want yearly decline, flat within year) {'OK' if t14_ok else 'FAIL'}")
 		ok = ok and t14_ok
 
+		# T15–T17 (client, 19/08 — ACC-JV-2026-00661): the transaction
+		# type governs the fields. A UL adjustment posts NO JE of its own
+		# (exhaustion depreciation aside); mixed intent is refused both
+		# ways; the §3.4 combined type carries both legs.
+		def _ava_doc(asset_name, ttype, **extra):
+			base = {
+				"doctype": "Asset Value Adjustment", "asset": asset_name,
+				"company": company, "date": nowdate(), "transaction_type": ttype,
+			}
+			base.update(extra)
+			doc = frappe.get_doc(base)
+			doc.flags.ignore_permissions = True
+			return doc
+
+		# T15: the client's exact malformed entry — UL with a value pair.
+		g1 = _mk_posted(18_000)
+		try:
+			_ava_doc(g1.name, "Useful Life Adjustment",
+				current_asset_value=17_000, new_asset_value=0,
+				adjusted_life_months=-12).insert()
+			# new=0 is treated as untouched and neutralised — must yield
+			# difference 0 and NO core JE on submit.
+			pass
+		except frappe.ValidationError:
+			pass
+		bad = _ava_doc(g1.name, "Useful Life Adjustment",
+			current_asset_value=17_000, new_asset_value=9_000,
+			adjusted_life_months=-6)
+		try:
+			bad.insert()
+			print("t15    FAIL (UL with conflicting value pair accepted)")
+			ok = False
+		except frappe.ValidationError as e:
+			t15_ok = "Value + Life Adjustment" in str(e)
+			print(f"t15    UL with conflicting values refused: {'OK' if t15_ok else 'FAIL: ' + str(e)[:100]}")
+			ok = ok and t15_ok
+
+		# T16: a UL adjustment posts exactly ZERO JEs of its own.
+		je_before = frappe.db.count("Journal Entry", {"docstatus": 1})
+		ul_ok_doc = _ava_doc(g1.name, "Useful Life Adjustment", adjusted_life_months=6)
+		ul_ok_doc.insert()
+		ul_ok_doc.submit()
+		je_after = frappe.db.count("Journal Entry", {"docstatus": 1})
+		t16_ok = (
+			je_after == je_before
+			and not ul_ok_doc.get("journal_entry")
+			and flt(ul_ok_doc.difference_amount) == 0
+		)
+		print(f"t16    UL adjustment posts no JE (difference normalised to "
+		      f"{flt(ul_ok_doc.difference_amount)}): {'OK' if t16_ok else 'FAIL'}")
+		ok = ok and t16_ok
+
+		# T17: value-only type refuses life fields.
+		try:
+			_ava_doc(g1.name, "Upward Revaluation",
+				current_asset_value=17_000, new_asset_value=20_000,
+				adjusted_life_months=6,
+				difference_account=pick_plain_account(company, "Liability")).insert()
+			print("t17    FAIL (Upward Revaluation with life months accepted)")
+			ok = False
+		except frappe.ValidationError as e:
+			t17_ok = "Value + Life Adjustment" in str(e)
+			print(f"t17    value type with life fields refused: {'OK' if t17_ok else 'FAIL: ' + str(e)[:100]}")
+			ok = ok and t17_ok
+
+		# T18: the §3.4 combined type carries BOTH legs — one value JE,
+		# HAV moves, horizon moves.
+		g2 = _mk_posted(20_000)
+		h_g2 = getdate(active_schedule_horizon(g2.name))
+		combo = _ava_doc(g2.name, "Value + Life Adjustment",
+			current_asset_value=flt(recalculate_asset_values(g2.name, save=False)["net_book_value"]),
+			new_asset_value=flt(recalculate_asset_values(g2.name, save=False)["net_book_value"]) + 4_000,
+			adjusted_life_months=6,
+			difference_account=pick_plain_account(company, "Liability"))
+		combo.insert()
+		combo.submit()
+		v_g2 = recalculate_asset_values(g2.name, save=False)
+		h_g2_after = getdate(active_schedule_horizon(g2.name))
+		t18_ok = (
+			bool(combo.get("journal_entry"))
+			and flt(v_g2["historical_asset_value"]) == 24_000
+			and h_g2_after == getdate(add_months(h_g2, 6))
+		)
+		print(f"t18    Value + Life: JE={combo.get('journal_entry')} HAV "
+		      f"{flt(v_g2['historical_asset_value']):,.2f} (want 24,000) horizon "
+		      f"{h_g2} -> {h_g2_after} (want +6mo) {'OK' if t18_ok else 'FAIL'}")
+		ok = ok and t18_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})
