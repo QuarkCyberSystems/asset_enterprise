@@ -138,8 +138,15 @@ def _run():
 			{"asset": u2.name, "transaction_category": "Depreciation",
 			 "transaction_type": ("like", "Immediate Depreciation%"), "status": "Posted"},
 		)
-		f2b_ok = flt(v2["net_book_value"]) == 0 and bool(imm_ft)
-		print(f"f2b    RUL exhausted -> NBV {v2['net_book_value']} (want 0) immediate-FT={bool(imm_ft)} {'OK' if f2b_ok else 'FAIL'}")
+		ava2.reload()
+		f2b_ok = (
+			flt(v2["net_book_value"]) == 0
+			and bool(imm_ft)
+			# the AVA links the depreciation JE it caused (client, 19/08)
+			and bool(ava2.get("exhaustion_journal_entry"))
+		)
+		print(f"f2b    RUL exhausted -> NBV {v2['net_book_value']} (want 0) immediate-FT={bool(imm_ft)} "
+		      f"JE-link={ava2.get('exhaustion_journal_entry')} {'OK' if f2b_ok else 'FAIL'}")
 		ok = ok and f2b_ok
 
 		# F2c (client, 18/08): life adjusts by DAYS as well as months —

@@ -707,6 +707,18 @@ def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transact
 		accum_delta=base,
 		journal_entry=je.name,
 	)
+	# The document that triggered the exhaustion shows the JE it caused
+	# (client, 19/08: "the AVA generated the JV — why is there no link").
+	# Not core's journal_entry field — that one means the revaluation JE
+	# and core cancels it on AVA cancel.
+	if (
+		getattr(source_doc, "doctype", None) == "Asset Value Adjustment"
+		and frappe.get_meta("Asset Value Adjustment").has_field("exhaustion_journal_entry")
+	):
+		frappe.db.set_value(
+			"Asset Value Adjustment", source_doc.name, "exhaustion_journal_entry",
+			je.name, update_modified=False,
+		)
 	return je.name
 
 

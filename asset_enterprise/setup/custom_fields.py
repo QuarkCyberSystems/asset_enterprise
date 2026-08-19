@@ -350,12 +350,24 @@ CUSTOM_FIELDS = {
 			"depends_on": "eval:['Useful Life Adjustment','Value + Life Adjustment'].includes(doc.transaction_type)",
 		},
 		{
+			# GAP-013 exhaustion: the immediate depreciation this AVA
+			# triggered. Distinct from core's journal_entry (the
+			# revaluation JE, which core cancels on AVA cancel).
+			"fieldname": "exhaustion_journal_entry",
+			"fieldtype": "Link",
+			"label": "Depreciation Entry (Life Exhausted)",
+			"options": "Journal Entry",
+			"read_only": 1,
+			"insert_after": "adjusted_life_days",
+			"depends_on": "eval:doc.exhaustion_journal_entry",
+		},
+		{
 			"fieldname": "reversal_of_ava",
 			"fieldtype": "Link",
 			"label": "Reversal Of AVA",
 			"options": "Asset Value Adjustment",
 			"read_only": 1,
-			"insert_after": "adjusted_life_days",
+			"insert_after": "exhaustion_journal_entry",
 		},
 		{
 			"fieldname": "reversed_by_ava",
