@@ -29,6 +29,20 @@ class EnterpriseAssetMovement(AssetMovement):
 		if not self._enterprise():
 			return super().validate_movement(d)
 
+		# The source side is a FACT read from the asset, not user input
+		# (client, 20/08): location, custodian and cost centre are filled
+		# server-side and shown read-only — the user only picks targets.
+		state = frappe.db.get_value(
+			"Asset", d.asset, ["location", "custodian", "cost_center"], as_dict=True
+		)
+		if state:
+			if self.purpose != "Receipt" and state.location:
+				d.source_location = state.location
+			if state.custodian:
+				d.from_employee = state.custodian
+			if d.get("target_cost_center") and not d.get("source_cost_center"):
+				d.source_cost_center = state.cost_center
+
 		if not (d.get("target_location") or d.get("to_employee") or d.get("target_cost_center")):
 			frappe.throw(
 				_(
@@ -156,7 +170,13 @@ class EnterpriseAssetMovement(AssetMovement):
 				frappe.db.set_value(
 					"Asset", d.asset, "cost_center", d.target_cost_center, update_modified=False
 				)
-				self._split_current_period(d.asset, d.target_cost_center)
+				# The PRIOR cost centre must ride along explicitly — the
+				# asset's own field already carries the TARGET by now, and
+				# the split's fallback read it, tagging BOTH halves of the
+				# transfer month with the new CC (client, 20/08,
+				# ACC-ASM-2026-01092: the 01-13/08 portion posted to the
+				# new cost centre).
+				self._split_current_period(d.asset, d.target_cost_center, prior)
 
 	def on_cancel(self):
 		super().on_cancel()
@@ -174,8 +194,10 @@ class EnterpriseAssetMovement(AssetMovement):
 					update_modified=False,
 				)
 
-	def _split_current_period(self, asset_name, new_cc):
-		"""GAP-021: split the covering unposted row at the transfer date."""
+	def _split_current_period(self, asset_name, new_cc, old_cc=None):
+		"""GAP-021: split the covering unposted row at the transfer date —
+		days BEFORE the transfer stay on the old cost centre, days from
+		the transfer on the new one."""
 		from asset_enterprise.depreciation import split_period_for_cc_change
 
 		transfer_date = getdate(self.transaction_date)
@@ -200,9 +222,14 @@ class EnterpriseAssetMovement(AssetMovement):
 		row = row[0]
 		period_start = get_first_day(row.schedule_date)
 		if transfer_date <= period_start or transfer_date >= getdate(row.schedule_date):
-			# Transfer on a boundary — no split needed; tag the row.
+			# Transfer on a boundary — no split needed; tag the row for
+			# the side of the boundary it lies on. A row that ENDS on the
+			# transfer date is wholly pre-transfer and must keep the OLD
+			# cost centre (untagged it would fall back to the asset's
+			# field, which already carries the target).
+			boundary_cc = new_cc if transfer_date <= period_start else (row.cost_center or old_cc)
 			frappe.db.set_value(
-				"Depreciation Schedule", row.name, "cost_center", new_cc, update_modified=False
+				"Depreciation Schedule", row.name, "cost_center", boundary_cc, update_modified=False
 			)
 			return
 
@@ -212,15 +239,16 @@ class EnterpriseAssetMovement(AssetMovement):
 			flt(row.depreciation_amount), days_total, days_old, self.company
 		)
 
-		asset = frappe.db.get_value("Asset", asset_name, "cost_center")
-		# Shrink the existing row to the old-CC portion...
+		# Shrink the existing row to the old-CC portion. The asset's own
+		# cost_center field carries the TARGET by the time this runs, so
+		# it must never be the fallback here.
 		frappe.db.set_value(
 			"Depreciation Schedule",
 			row.name,
 			{
 				"depreciation_amount": old_amount,
 				"schedule_date": transfer_date,
-				"cost_center": row.cost_center or asset,
+				"cost_center": row.cost_center or old_cc,
 				"days_in_period": days_old,
 				"accumulated_depreciation_amount": flt(row.accumulated_depreciation_amount)
 				- new_amount,

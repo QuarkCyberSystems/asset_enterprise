@@ -342,6 +342,14 @@ def _ava_property_setters():
 		"Asset Value Adjustment", None, "naming_rule", "Expression (old style)", "Data",
 		for_doctype=True, validate_fields_for_doctype=False,
 	)
+	# Movement sources are facts read from the asset, not user input
+	# (client, 20/08) — shown read-only; EnterpriseAssetMovement fills
+	# them server-side.
+	for fieldname in ("source_location", "from_employee"):
+		make_property_setter(
+			"Asset Movement Item", fieldname, "read_only", "1", "Check",
+			validate_fields_for_doctype=False,
+		)
 
 
 def seed_masters():

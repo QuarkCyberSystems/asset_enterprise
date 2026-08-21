@@ -3,7 +3,7 @@
 import traceback
 
 import frappe
-from frappe.utils import add_months, flt, nowdate
+from frappe.utils import add_months, cint, flt, getdate, nowdate
 
 
 def run():
@@ -136,10 +136,15 @@ def _run():
 				.insert(ignore_permissions=True)
 				.name
 			)
-		cc2 = frappe.db.get_value(
-			"Cost Center", {"company": company, "is_group": 0, "name": ["!=", a1.cost_center or ""]}, "name"
+		# attribution needs a REAL starting cost centre on the asset —
+		# without one the old half of the split is untagged and the test
+		# cannot see a mistag (which is how the 20/08 defect survived).
+		leaf_ccs = frappe.get_all(
+			"Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2
 		)
-		prior_cc = frappe.db.get_value("Asset", a1.name, "cost_center")
+		cc1, cc2 = leaf_ccs[0], leaf_ccs[1]
+		frappe.db.set_value("Asset", a1.name, "cost_center", cc1, update_modified=False)
+		prior_cc = cc1
 
 		mv = frappe.get_doc(
 			{
@@ -173,17 +178,36 @@ def _run():
 		)
 		ok = ok and combo_ok
 
-		# GAP-021: CC recorded on a future schedule row (split or tag).
-		cc_rows = frappe.db.sql(
+		# GAP-021: the transfer month splits BY COST CENTRE — days before
+		# the transfer stay on the PRIOR cc, days from the transfer on the
+		# new one. Counting tagged rows alone let a mistag through: both
+		# halves carried the new CC (client, 20/08, ACC-ASM-2026-01092 —
+		# the pre-transfer portion posted to the wrong cost centre).
+		halves = frappe.db.sql(
 			"""
-			select count(*) from `tabDepreciation Schedule` ds
+			select ds.schedule_date, ds.cost_center, ds.days_in_period
+			from `tabDepreciation Schedule` ds
 			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-			where ads.asset = %s and ads.status = 'Active' and ds.cost_center = %s
+			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			  and ds.cost_center is not null
+			order by ds.schedule_date, ds.idx
 			""",
-			(a1.name, cc2),
-		)[0][0]
-		print(f"gap021 schedule rows tagged/split to new CC: {cc_rows} {'OK' if cc_rows else 'FAIL'}")
-		ok = ok and cc_rows > 0
+			a1.name, as_dict=True,
+		)
+		new_half = [h for h in halves if h.cost_center == cc2]
+		old_half = [h for h in halves if h.cost_center == prior_cc]
+		day = getdate(nowdate()).day
+		mid_month = day > 1
+		g21_ok = bool(new_half) and (not mid_month or (
+			bool(old_half) and cint(old_half[0].days_in_period) == day - 1
+		))
+		print(
+			f"gap021 transfer-month CC split: old-cc rows "
+			f"{[(str(h.schedule_date), h.days_in_period) for h in old_half]} / new-cc rows "
+			f"{[(str(h.schedule_date), h.days_in_period) for h in new_half]} "
+			f"(want pre-transfer days on {prior_cc}) {'OK' if g21_ok else 'FAIL'}"
+		)
+		ok = ok and g21_ok
 
 		# GAP-028: cancel restores prior CC.
 		mv.reload()
