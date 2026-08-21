@@ -41,6 +41,10 @@ doctype_js = {
 	# Reversal AVAs must announce themselves (client, 19/08): banner on
 	# the reversal and on the reversed original.
 	"Asset Value Adjustment": "public/js/asset_value_adjustment.js",
+	# Client, 20/08: show the disposal account and cost centre resolved
+	# from the Scrapping Type, and unlock the cost centre when that type
+	# allows it to be changed.
+	"Scrap Transaction": "public/js/scrap_transaction.js",
 }
 
 # §4.8: an asset carries the live schedule plus one frozen copy per

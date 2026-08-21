@@ -10,6 +10,7 @@
   "scrapping_type_name",
   "description",
   "enabled",
+  "allow_cost_center_override",
   "accounts"
  ],
  "fields": [
@@ -30,6 +31,13 @@
    "fieldname": "enabled",
    "fieldtype": "Check",
    "label": "Enabled"
+  },
+  {
+   "fieldname": "allow_cost_center_override",
+   "fieldtype": "Check",
+   "label": "Allow Cost Center Change on Scrap",
+   "default": "0",
+   "description": "Off: scrap transactions post to this type's cost centre and the field is locked. On: the user may pick a different cost centre on the transaction."
   },
   {
    "description": "Authoritative disposal-account routing per 2026-07-14 meeting; falls back to Asset Category Disposal Account Override, then Company disposal account.",

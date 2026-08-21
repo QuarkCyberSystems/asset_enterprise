@@ -17,6 +17,11 @@
   "column_break_2",
   "scrap_value",
   "percentage",
+  "accounting_section",
+  "disposal_account",
+  "allow_cost_center_override",
+  "accounting_column",
+  "cost_center",
   "posting_section",
   "journal_entry",
   "amended_from"
@@ -103,6 +108,39 @@
    "fieldname": "percentage",
    "fieldtype": "Percent",
    "label": "Percentage of HAV"
+  },
+  {
+   "fieldname": "accounting_section",
+   "fieldtype": "Section Break",
+   "label": "Accounting"
+  },
+  {
+   "fieldname": "disposal_account",
+   "fieldtype": "Link",
+   "options": "Account",
+   "label": "Disposal Account",
+   "read_only": 1,
+   "description": "Resolved from the Scrapping Type for this company (\u00a73.5)."
+  },
+  {
+   "fieldname": "allow_cost_center_override",
+   "fieldtype": "Check",
+   "label": "Cost Center Change Allowed",
+   "read_only": 1,
+   "hidden": 1,
+   "fetch_from": "scrapping_type.allow_cost_center_override"
+  },
+  {
+   "fieldname": "accounting_column",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "cost_center",
+   "fieldtype": "Link",
+   "options": "Cost Center",
+   "label": "Cost Center",
+   "read_only_depends_on": "eval:!doc.allow_cost_center_override",
+   "description": "From the Scrapping Type. Editable only when that type allows a cost centre change."
   },
   {
    "fieldname": "posting_section",

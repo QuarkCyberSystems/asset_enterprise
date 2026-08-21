@@ -38,6 +38,43 @@ class ScrapTransaction(Document):
 		):
 			frappe.throw(_("Partial Scrap requires a Scrap Value or a Percentage."))
 
+		self._set_posting_accounts()
+
+	def _set_posting_accounts(self):
+		"""Client, 20/08: the transaction SHOWS where it will post.
+
+		The account always comes from the Scrapping Type (§3.5 chain) and
+		is never editable. The cost centre comes from the same place, but
+		a Scrapping Type may allow it to be changed per transaction —
+		"Allow Cost Center Change on Scrap" on the type. Resolving here,
+		rather than only inside the posting engine, means the user sees
+		the accounts before submitting and a missing configuration is
+		reported while the document is still a draft.
+		"""
+		from asset_enterprise.accounts import get_disposal_account, get_disposal_cost_center
+
+		asset = frappe.db.get_value(
+			"Asset", self.asset, ["company", "asset_category", "cost_center"], as_dict=True
+		)
+		if not asset:
+			return
+		self.company = self.company or asset.company
+		self.disposal_account = get_disposal_account(
+			asset.company,
+			scrapping_type=self.scrapping_type,
+			asset_category=asset.asset_category,
+		)
+		self.allow_cost_center_override = frappe.db.get_value(
+			"Scrapping Type", self.scrapping_type, "allow_cost_center_override"
+		)
+		default_cc = get_disposal_cost_center(asset.company, self.scrapping_type) or asset.cost_center
+		if self.allow_cost_center_override:
+			self.cost_center = self.cost_center or default_cc
+		else:
+			# Locked to the type — a value typed in before the type was
+			# chosen (or via the API) must not survive.
+			self.cost_center = default_cc
+
 	def _validate_component(self):
 		"""Component must be an Active Merge Log row of this asset; its
 		NBV-at-merge defaults the scrap value (2026-07-23 review)."""
@@ -76,7 +113,9 @@ class ScrapTransaction(Document):
 		try:
 			if self.scrap_type == "Full Scrap":
 				je = disposal.scrap_asset(
-					self.asset, scrap_date=self.transaction_date, scrapping_type=self.scrapping_type
+					self.asset, scrap_date=self.transaction_date,
+					scrapping_type=self.scrapping_type,
+					cost_center=self.get("cost_center"),
 				)
 			else:
 				# Component defaulting + Merge Log marking live in the engine.
@@ -87,6 +126,7 @@ class ScrapTransaction(Document):
 					scrapping_type=self.scrapping_type,
 					scrap_date=self.transaction_date,
 					composite_component=self.get("composite_component"),
+					cost_center=self.get("cost_center"),
 				)
 		finally:
 			frappe.flags.in_scrap_transaction = False

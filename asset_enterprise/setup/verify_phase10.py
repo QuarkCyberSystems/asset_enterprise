@@ -188,6 +188,60 @@ def _run():
 		print(f"ch09c  auto-recorded on endpoint scrap: {auto} {'OK' if a_ok else 'FAIL'}")
 		ok = ok and bool(a_ok)
 
+		# ch09cc (client, 20/08): the transaction SHOWS its posting accounts,
+		# both taken from the Scrapping Type. The cost centre is LOCKED to
+		# that type unless the type allows a change — and whatever the
+		# document ends up carrying is what the JE actually posts to.
+		ccs = frappe.get_all(
+			"Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2
+		)
+		type_cc, other_cc = ccs[0], ccs[1]
+		frappe.db.set_value("Scrapping Type", "Damage", "allow_cost_center_override", 0)
+		row = frappe.db.get_value(
+			"Scrapping Type Account", {"parent": "Damage", "company": company}, "name"
+		)
+		if row:
+			frappe.db.set_value("Scrapping Type Account", row, "cost_center", type_cc)
+		else:
+			st = frappe.get_doc("Scrapping Type", "Damage")
+			st.append("accounts", {"company": company, "cost_center": type_cc})
+			st.flags.ignore_permissions = True
+			st.save()
+
+		s3 = make_test_asset(company, gross=30_000, submit=True)
+		locked = frappe.get_doc({
+			"doctype": "Scrap Transaction", "asset": s3.name, "company": company,
+			"transaction_date": nowdate(), "scrap_type": "Partial Scrap",
+			"scrapping_type": "Damage", "mode": "By Value", "scrap_value": 3_000,
+			"cost_center": other_cc,  # ignored: the type does not allow a change
+		})
+		locked.flags.ignore_permissions = True
+		locked.insert()
+		locked_ok = locked.cost_center == type_cc and bool(locked.disposal_account)
+
+		# now permit the change and prove it reaches the ledger
+		frappe.db.set_value("Scrapping Type", "Damage", "allow_cost_center_override", 1)
+		s4 = make_test_asset(company, gross=30_000, submit=True)
+		free = frappe.get_doc({
+			"doctype": "Scrap Transaction", "asset": s4.name, "company": company,
+			"transaction_date": nowdate(), "scrap_type": "Partial Scrap",
+			"scrapping_type": "Damage", "mode": "By Value", "scrap_value": 3_000,
+			"cost_center": other_cc,
+		})
+		free.flags.ignore_permissions = True
+		free.insert()
+		free.submit()
+		je_ccs = set(frappe.get_all(
+			"Journal Entry Account", filters={"parent": free.journal_entry}, pluck="cost_center"
+		))
+		d_ok = locked_ok and free.cost_center == other_cc and je_ccs == {other_cc}
+		print(
+			f"ch09cc cost centre locked to type={locked.cost_center} (want {type_cc}), "
+			f"account={locked.disposal_account}; override allowed -> doc={free.cost_center} "
+			f"JE={sorted(je_ccs)} (want {other_cc}) {'OK' if d_ok else 'FAIL'}"
+		)
+		ok = ok and d_ok
+
 		# Component scrap: fake merge-log row (real merge covered phase 5),
 		# component picker defaults the value from the snapshot.
 		comp = make_test_asset(company, gross=80_000, submit=True)

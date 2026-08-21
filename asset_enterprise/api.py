@@ -141,3 +141,37 @@ def tree_aggregate(asset_name):
 		totals["accumulated_depreciation_value"] += values["accumulated_depreciation_value"]
 		totals["net_book_value"] += values["net_book_value"]
 	return totals
+
+
+@frappe.whitelist()
+def scrap_posting_defaults(asset, scrapping_type=None):
+	"""Where a scrap will post — resolved from the Scrapping Type (§3.5).
+
+	The form shows the account and cost centre read-only before submit
+	(client, 20/08). Resolution stays server-side; the JS only displays
+	what this returns.
+	"""
+	from asset_enterprise.accounts import get_disposal_account, get_disposal_cost_center
+
+	frappe.has_permission("Asset", "read", asset, throw=True)
+	a = frappe.db.get_value(
+		"Asset", asset, ["company", "asset_category", "cost_center"], as_dict=True
+	)
+	if not a:
+		return {}
+	allow = frappe.db.get_value(
+		"Scrapping Type", scrapping_type, "allow_cost_center_override"
+	) if scrapping_type else 0
+	try:
+		account = get_disposal_account(
+			a.company, scrapping_type=scrapping_type, asset_category=a.asset_category
+		)
+	except frappe.ValidationError:
+		# Draft form: report the gap rather than blocking the picker.
+		frappe.clear_last_message()
+		account = None
+	return {
+		"disposal_account": account,
+		"cost_center": get_disposal_cost_center(a.company, scrapping_type) or a.cost_center,
+		"allow_cost_center_override": 1 if allow else 0,
+	}

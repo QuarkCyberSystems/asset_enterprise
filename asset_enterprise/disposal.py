@@ -65,7 +65,7 @@ def assert_fully_invoiced(asset):
 
 
 @frappe.whitelist()
-def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
+def scrap_asset(asset_name, scrap_date=None, scrapping_type=None, cost_center=None):
 	"""Whitelisted replacement for core scrap_asset (build plan §2.2)."""
 	from asset_enterprise.depreciation import enterprise_enabled
 
@@ -107,7 +107,9 @@ def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
 	accum = flt(values["accumulated_depreciation_value"])
 	nbv = fa_module_round(hav - accum, asset.company)
 
-	je = _post_disposal_je(asset, scrap_date, scrapping_type, accum, nbv, hav)
+	je = _post_disposal_je(
+		asset, scrap_date, scrapping_type, accum, nbv, hav, cost_center=cost_center
+	)
 
 	asset.db_set("disposal_date", scrap_date)
 	asset.db_set("journal_entry_for_scrap", je)
@@ -125,7 +127,9 @@ def scrap_asset(asset_name, scrap_date=None, scrapping_type=None):
 		journal_entry=je,
 	)
 	_freeze_schedule(asset.name, scrap_date, _("Asset scrapped via {0}").format(je))
-	_record_scrap_transaction(asset.name, "Full Scrap", scrapping_type, scrap_date, je)
+	_record_scrap_transaction(
+		asset.name, "Full Scrap", scrapping_type, scrap_date, je, cost_center=cost_center
+	)
 	return je
 
 
@@ -137,6 +141,7 @@ def partial_scrap_asset(
 	scrapping_type=None,
 	scrap_date=None,
 	composite_component=None,
+	cost_center=None,
 ):
 	"""GAP-018: partial scrap by value or percentage. Asset stays active.
 
@@ -207,7 +212,8 @@ def partial_scrap_asset(
 	loss = fa_module_round(scrap_value - accumulated_reverse, asset.company)
 
 	je = _post_disposal_je(
-		asset, scrap_date, scrapping_type, accumulated_reverse, loss, scrap_value
+		asset, scrap_date, scrapping_type, accumulated_reverse, loss, scrap_value,
+		cost_center=cost_center,
 	)
 
 	tcc.apply(
@@ -249,7 +255,7 @@ def partial_scrap_asset(
 	_record_scrap_transaction(
 		asset.name, "Partial Scrap", scrapping_type, scrap_date, je,
 		scrap_value=scrap_value, percentage=percentage,
-		composite_component=composite_component,
+		composite_component=composite_component, cost_center=cost_center,
 	)
 	if composite_component:
 		# The component row records that this scrap consumed it.
@@ -269,6 +275,7 @@ def _record_scrap_transaction(
 	scrap_value=None,
 	percentage=None,
 	composite_component=None,
+	cost_center=None,
 ):
 	"""v2.16 CH-09: every scrap is a first-class Scrap Transaction. When
 	the posting was triggered from a Scrap Transaction itself, the doc
@@ -287,6 +294,7 @@ def _record_scrap_transaction(
 			"scrap_value": flt(scrap_value) if scrap_value else None,
 			"percentage": flt(percentage) if percentage else None,
 			"composite_component": composite_component,
+			"cost_center": cost_center,
 			"journal_entry": je,
 		}
 	)
@@ -296,7 +304,9 @@ def _record_scrap_transaction(
 	doc.submit()
 
 
-def _post_disposal_je(asset, posting_date, scrapping_type, accum_debit, loss_debit, fa_credit):
+def _post_disposal_je(
+	asset, posting_date, scrapping_type, accum_debit, loss_debit, fa_credit, cost_center=None
+):
 	aca = frappe.db.get_value(
 		"Asset Category Account",
 		{"parent": asset.asset_category, "company_name": asset.company},
@@ -306,8 +316,12 @@ def _post_disposal_je(asset, posting_date, scrapping_type, accum_debit, loss_deb
 	loss_account = get_disposal_account(
 		asset.company, scrapping_type=scrapping_type, asset_category=asset.asset_category
 	)
-	cost_center = get_disposal_cost_center(asset.company, scrapping_type) or asset.get(
-		"cost_center"
+	# An explicit cost centre wins: the Scrapping Type may allow the
+	# transaction to redirect the charge (client, 20/08).
+	cost_center = (
+		cost_center
+		or get_disposal_cost_center(asset.company, scrapping_type)
+		or asset.get("cost_center")
 	)
 
 	accounts = []
