@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import flt, now, nowdate
+from frappe.utils import add_days, add_months, cint, flt, getdate, now, nowdate
 
 from erpnext.assets.doctype.asset_repair.asset_repair import AssetRepair
 
@@ -55,8 +55,56 @@ class EnterpriseAssetRepair(AssetRepair):
 			regenerate_after_value_change(
 				self.asset, self.completion_date or nowdate(),
 				_("Capitalized Repair {0} — prospective recalculation").format(self.name),
+				end_of_life_override=self._extended_horizon(self),
 				triggered_by=self,
 			)
+
+	def _extended_horizon(self, grant_doc, sign=1):
+		"""Move the end of life by a repair's life extension.
+
+		Core grants the extension by bumping `Asset Finance Book.
+		increase_in_asset_life`, which only its OWN schedule builder
+		reads — under supersession (GAP-031) that builder never runs, so
+		the months were recorded and then ignored: the schedule kept its
+		original horizon and the repair value simply re-spread over the
+		unchanged remaining life. The horizon is moved here instead,
+		with days on top per the AVA rule (client, 21/08).
+
+		`sign=-1` retracts the grant. A Reversal Repair is a NEW document
+		rather than a cancel, so core never decrements its counter and
+		both counters are taken back here.
+		"""
+		from asset_enterprise.depreciation import (
+			active_schedule_horizon,
+			bump_useful_life_periods,
+		)
+
+		months = cint(grant_doc.get("increase_in_asset_life") or 0)
+		days = cint(grant_doc.get("increase_in_asset_life_days") or 0)
+		if not (months or days):
+			return None
+		horizon = active_schedule_horizon(self.asset)
+		if not horizon:
+			return None
+		if sign < 0:
+			fb = frappe.db.get_value(
+				"Asset Finance Book", {"parent": self.asset},
+				["name", "increase_in_asset_life", "life_extension_days"], as_dict=True,
+			)
+			if fb:
+				frappe.db.set_value(
+					"Asset Finance Book", fb.name,
+					{
+						"increase_in_asset_life": max(0, cint(fb.increase_in_asset_life) - months),
+						"life_extension_days": cint(fb.life_extension_days) - days,
+					},
+					update_modified=False,
+				)
+		elif days:
+			# Months are already on core's counter (which
+			# schedule_horizon_from_life now reads); only days need ours.
+			bump_useful_life_periods(self.asset, 0, days)
+		return add_days(add_months(getdate(horizon), sign * months), sign * days)
 
 	def _submit_reversal(self):
 		"""Reversal Repair on_submit — replaces the core forward path."""
@@ -130,6 +178,10 @@ class EnterpriseAssetRepair(AssetRepair):
 				self.asset,
 				as_of_date=getdate(last_posted) if last_posted else nowdate(),
 				rate_change_date=getdate(nowdate()) if last_posted else None,
+				# The life the source repair granted goes back with the
+				# value — otherwise the cost was reversed but the asset
+				# kept the extra months and days (client, 21/08).
+				end_of_life_override=self._extended_horizon(source, sign=-1),
 				reason=_("Reversal Repair {0} of {1}").format(self.name, source.name),
 				triggered_by=self,
 			)

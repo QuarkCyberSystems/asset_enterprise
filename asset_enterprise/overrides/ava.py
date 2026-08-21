@@ -223,7 +223,9 @@ class EnterpriseAVA(AssetValueAdjustment):
 
 		from asset_enterprise.depreciation import bump_useful_life_periods
 
-		bump_useful_life_periods(self.asset, life_delta)
+		# Days go to the finance book's day counter, not the period count,
+		# so a later rebuild-from-life keeps them (client, 21/08).
+		bump_useful_life_periods(self.asset, life_delta, day_delta)
 
 		if getdate(new_end) <= getdate(self.date):
 			# VR-018: shortening below the adjustment date exhausts RUL —

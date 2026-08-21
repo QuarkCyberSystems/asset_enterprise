@@ -28,7 +28,7 @@ the snapshot) per the signed design.
 
 import frappe
 from frappe import _
-from frappe.utils import add_months, flt, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, flt, getdate, nowdate
 
 from asset_enterprise.accounts import get_enterprise_account
 from asset_enterprise.rounding import fa_module_round
@@ -359,32 +359,68 @@ def _resupersede(target_name, posting_date, cap_doc):
 	# adjustment, sheet items 4 and 5).
 	from asset_enterprise.depreciation import regenerate_after_value_change
 
+	from asset_enterprise.depreciation import (
+		active_schedule_horizon,
+		bump_useful_life_periods,
+	)
+
 	end_override = None
-	# Extend the horizon ONLY when months were actually granted. With
+	# Extend the horizon ONLY when life was actually granted. With
 	# "Add Value and Extend Life" and zero months, this collapsed the
 	# asset's life to the capitalization date: the whole remaining value
 	# was crammed into the last two periods and every future row vanished
 	# (client, ACC-ASS-2026-00102 — Extended Life 0).
 	extra = flt(cap_doc.get("extended_life_months") or 0)
-	if cap_doc.get("fully_depreciated_treatment") == "Add Value and Extend Life" and extra > 0:
+	# Days combine with months and shift the end of life without touching
+	# the period count — the AVA's rule (client, 21/08).
+	extra_days = cint(cap_doc.get("extended_life_days") or 0)
+
+	# A reversal RETRACTS whatever the original granted. Its own fields
+	# are empty (the reversal document only carries the target), so the
+	# grant is read back from the source — otherwise the value came off
+	# but the life stayed extended.
+	if cap_doc.get("transaction_type") == "Reversal of Capitalized Maintenance" and cap_doc.get(
+		"reversal_of_capitalization"
+	):
+		source = frappe.db.get_value(
+			"Asset Capitalization",
+			cap_doc.reversal_of_capitalization,
+			["extended_life_months", "extended_life_days", "fully_depreciated_treatment"],
+			as_dict=True,
+		) or frappe._dict()
+		src_months = flt(source.get("extended_life_months") or 0)
+		src_days = cint(source.get("extended_life_days") or 0)
+		if src_months or src_days:
+			horizon = active_schedule_horizon(target_name)
+			if source.get("fully_depreciated_treatment") == "Add Value and Extend Life":
+				# The target had no life left before the merge — hand it
+				# back exhausted rather than to an arithmetic remainder.
+				from asset_enterprise.depreciation import last_posted_schedule_date
+
+				end_override = getdate(last_posted_schedule_date(target_name) or posting_date)
+			elif horizon:
+				end_override = add_days(
+					add_months(getdate(horizon), -int(round(src_months))), -src_days
+				)
+				bump_useful_life_periods(target_name, -src_months, -src_days)
+	elif cap_doc.get("fully_depreciated_treatment") == "Add Value and Extend Life" and (
+		extra > 0 or extra_days > 0
+	):
 		# fully-depreciated target: no life remains — the added value
 		# gets a fresh life anchored at the merge date.
-		end_override = add_months(posting_date, extra)
-	elif extra > 0:
+		end_override = add_days(add_months(posting_date, extra), extra_days)
+	elif extra > 0 or extra_days > 0:
 		# LIVING target (client, 19/08 — an overhaul that prolongs
 		# service life): the months extend the CURRENT end of life,
 		# exactly like a Useful Life Adjustment folded into the merge.
 		# Anchoring at the posting date here is what collapsed
 		# ACC-ASS-2026-00127's remaining 4.5 years into 12 months.
-		from asset_enterprise.depreciation import (
-			active_schedule_horizon,
-			bump_useful_life_periods,
-		)
-
 		horizon = active_schedule_horizon(target_name)
 		if horizon:
-			end_override = add_months(getdate(horizon), int(round(extra)))
-			bump_useful_life_periods(target_name, extra)
+			end_override = add_days(
+				add_months(getdate(horizon), int(round(extra))), extra_days
+			)
+			bump_useful_life_periods(target_name, extra, extra_days)
 	try:
 		regenerate_after_value_change(
 			target_name,

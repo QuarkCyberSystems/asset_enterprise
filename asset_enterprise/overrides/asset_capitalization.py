@@ -122,7 +122,8 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		# living asset); shortening a life goes through the Useful Life
 		# Adjustment, which owns the exhaustion mechanics.
 		months = flt(self.get("extended_life_months") or 0)
-		if months < 0:
+		days = flt(self.get("extended_life_days") or 0)
+		if months < 0 or days < 0:
 			frappe.throw(
 				_(
 					"Extended Life cannot be negative on a Capitalized Maintenance. To "
@@ -146,7 +147,7 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 						"Fully-Depreciated Target Treatment applies only when the target's "
 						"NBV is already down to salvage — {0} still carries NBV {1}. To "
 						"extend this asset's life with the merge, just set Extended Life "
-						"(Months); the current end of life moves by that many months."
+						"(Months) and/or (Days); the current end of life moves by that much."
 					).format(target.name, frappe.format_value(nbv, {"fieldtype": "Currency"}))
 				)
 

@@ -302,13 +302,53 @@ CUSTOM_FIELDS = {
 			"label": "Extended Life (Months)",
 			"precision": "2",
 			"depends_on": "eval:doc.transaction_type==='Capitalized Maintenance' && doc.transaction_sub_type!=='Reclassification / Asset Category Transfer'",
-			"mandatory_depends_on": "eval:doc.fully_depreciated_treatment==='Add Value and Extend Life'",
+			# Days alone are a valid grant, so months stop being mandatory
+			# once days are filled (client, 21/08).
+			"mandatory_depends_on": "eval:doc.fully_depreciated_treatment==='Add Value and Extend Life' && !doc.extended_life_days",
 			"insert_after": "fully_depreciated_treatment",
 			"description": "Extends the target's remaining useful life by this many months. On a fully-depreciated target, the added value depreciates over this life from the merge date.",
+		},
+		{
+			# Same rule as the AVA's Adjusted Life (Days) (client, 21/08 —
+			# "as AVA, could we add days"): days combine with months and
+			# shift the end of life, they do not change the period count.
+			"fieldname": "extended_life_days",
+			"fieldtype": "Int",
+			"label": "Extended Life (Days)",
+			"depends_on": "eval:doc.transaction_type==='Capitalized Maintenance' && doc.transaction_sub_type!=='Reclassification / Asset Category Transfer'",
+			"insert_after": "extended_life_months",
+			"description": "Combines with Extended Life (Months): +18 months +10 days moves the end of life by both.",
+		},
+	],
+	# ------------------------------------------------------ Asset Finance Book
+	"Asset Finance Book": [
+		{
+			# Cumulative day-wise life extensions, mirroring core's
+			# months-wise `increase_in_asset_life`. Without a stored
+			# counter the days would live only in the horizon of the
+			# generation that granted them, and any later rebuild from
+			# life (restore, day-count rebuild) would silently drop them.
+			"fieldname": "life_extension_days",
+			"fieldtype": "Int",
+			"label": "Increase In Asset Life (Days)",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "increase_in_asset_life",
+			"description": "Cumulative day-wise extensions granted by value adjustments, capitalized maintenance and repairs.",
 		},
 	],
 	# ----------------------------------------------------------- Asset Repair
 	"Asset Repair": [
+		{
+			# Core's Increase In Asset Life is months-only; days follow the
+			# AVA rule — they move the end of life, not the period count.
+			"fieldname": "increase_in_asset_life_days",
+			"fieldtype": "Int",
+			"label": "Increase In Asset Life (Days)",
+			"no_copy": 1,
+			"insert_after": "increase_in_asset_life",
+			"description": "Combines with Increase In Asset Life (Months).",
+		},
 		{
 			"fieldname": "transaction_type",
 			"fieldtype": "Select",

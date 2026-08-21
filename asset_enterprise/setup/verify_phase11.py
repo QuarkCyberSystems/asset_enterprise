@@ -920,6 +920,112 @@ def _run():
 			      f"{'OK' if (t20a_ok and t20b_ok) else 'FAIL'}")
 			ok = ok and t20a_ok and t20b_ok
 
+		# T21 (client, 21/08 — "as AVA, could we add days"): a capitalized
+		# REPAIR grants life in months AND days, and both move the end of
+		# life. The months half is a regression in its own right: core
+		# grants them on Asset Finance Book.increase_in_asset_life, which
+		# only core's own schedule builder reads — under supersession that
+		# builder never runs, so the extension was recorded and ignored.
+		r1 = make_test_asset(company, gross=36_000, submit=True)
+		enable_depreciation(
+			r1.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+			depreciation_start_date=nowdate(),
+		)
+		r1_before = getdate(active_schedule_horizon(r1.name))
+		rep = frappe.get_doc({
+			"doctype": "Asset Repair", "asset": r1.name, "company": company,
+			"failure_date": nowdate(), "completion_date": nowdate(),
+			"repair_status": "Completed", "repair_cost": 3_000,
+			"capitalize_repair_cost": 1,
+			"cost_center": frappe.db.get_value("Cost Center", {"company": company, "is_group": 0}, "name"),
+			"increase_in_asset_life": 6, "increase_in_asset_life_days": 10,
+		})
+		rep.flags.ignore_permissions = True
+		rep.insert()
+		rep.submit()
+		r1_after = getdate(active_schedule_horizon(r1.name))
+		r1_want = getdate(add_days(add_months(r1_before, 6), 10))
+		# and the reversal hands the life back with the value
+		rep.reload()
+		rep.cancel()
+		r1_rev = getdate(active_schedule_horizon(r1.name))
+		fb_after = frappe.db.get_value(
+			"Asset Finance Book", {"parent": r1.name},
+			["increase_in_asset_life", "life_extension_days"], as_dict=True,
+		)
+		t21_ok = (
+			r1_after == r1_want
+			and r1_rev == r1_before
+			and cint(fb_after.increase_in_asset_life) == 0
+			and cint(fb_after.life_extension_days) == 0
+		)
+		print(
+			f"t21    repair +6 months +10 days: horizon {r1_before} -> {r1_after} "
+			f"(want {r1_want}); after reversal {r1_rev} (want {r1_before}); "
+			f"counters m={fb_after.increase_in_asset_life} d={fb_after.life_extension_days} "
+			f"{'OK' if t21_ok else 'FAIL'}"
+		)
+		ok = ok and t21_ok
+
+		# T22 (client, 21/08): Extended Life on a Capitalized Maintenance
+		# takes days too, and a reversal retracts BOTH — the reversal
+		# document carries no grant of its own, so it reads the source's.
+		c1 = make_test_asset(company, gross=48_000, submit=True)
+		enable_depreciation(
+			c1.name, total_number_of_depreciations=48, frequency_of_depreciation=1,
+			depreciation_start_date=nowdate(),
+		)
+		c1_before = getdate(active_schedule_horizon(c1.name))
+		from asset_enterprise.setup.verify_tc import (
+			_plain as t22_plain,
+			_service_item as t22_service,
+		)
+
+		cap = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": c1.name, "posting_date": nowdate(), "set_posting_time": 1,
+			"extended_life_months": 18, "extended_life_days": 10,
+			"service_items": [{
+				"item_code": t22_service(),
+				"qty": 1, "rate": 5_000, "amount": 5_000,
+				"expense_account": t22_plain(company, "Expense"),
+				"cost_center": frappe.db.get_value(
+					"Cost Center", {"company": company, "is_group": 0}, "name"),
+			}],
+		})
+		cap.flags.ignore_permissions = True
+		cap.insert()
+		cap.submit()
+		c1_after = getdate(active_schedule_horizon(c1.name))
+		c1_want = getdate(add_days(add_months(c1_before, 18), 10))
+		cap.reload()
+		cap.cancel()
+		c1_rev = getdate(active_schedule_horizon(c1.name))
+		t22_ok = c1_after == c1_want and c1_rev == c1_before
+		print(
+			f"t22    CM +18 months +10 days: horizon {c1_before} -> {c1_after} "
+			f"(want {c1_want}); after reversal {c1_rev} (want {c1_before}) "
+			f"{'OK' if t22_ok else 'FAIL'}"
+		)
+		ok = ok and t22_ok
+
+		# T23: a rebuild FROM LIFE (restore, day-count rebuild) must keep
+		# both grants — they live on the finance book, not only in the
+		# horizon of the generation that granted them.
+		from asset_enterprise.depreciation import schedule_horizon_from_life
+
+		t23_ok = getdate(schedule_horizon_from_life(c1.name)) == c1_before
+		u3_life = getdate(schedule_horizon_from_life(u3.name))
+		t23_ok = t23_ok and u3_life == getdate(add_days(add_months(h3_before, 2), 15))
+		print(
+			f"t23    horizon-from-life keeps grants: CM target {schedule_horizon_from_life(c1.name)} "
+			f"(want {c1_before} after reversal); AVA asset {u3_life} (want {h3_want}) "
+			f"{'OK' if t23_ok else 'FAIL'}"
+		)
+		ok = ok and t23_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

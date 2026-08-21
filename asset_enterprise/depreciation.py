@@ -519,14 +519,23 @@ def schedule_horizon_from_life(asset_name, finance_book=None):
 		filters["finance_book"] = finance_book
 	fb = frappe.db.get_value(
 		"Asset Finance Book", filters,
-		["total_number_of_depreciations", "frequency_of_depreciation", "depreciation_start_date"],
+		[
+			"total_number_of_depreciations", "frequency_of_depreciation",
+			"depreciation_start_date", "increase_in_asset_life", "life_extension_days",
+		],
 		as_dict=True,
 	)
 	if not fb or not fb.total_number_of_depreciations:
 		return None
+	# Life extensions granted after creation belong in the horizon, or a
+	# rebuild-from-life (restore, day-count rebuild) silently revokes
+	# them. Core's own formula adds increase_in_asset_life the same way
+	# (asset.py get_total_days); life_extension_days is our day-wise
+	# counterpart (client, 21/08).
 	months = cint(fb.total_number_of_depreciations) * (cint(fb.frequency_of_depreciation) or 1)
+	months += cint(fb.increase_in_asset_life)
 	start = getdate(asset.available_for_use_date or fb.depreciation_start_date)
-	return add_days(add_months(start, months), -1)
+	return add_days(add_months(start, months), cint(fb.life_extension_days) - 1)
 
 
 def is_rule_built_schedule(asset_name):
@@ -647,25 +656,38 @@ def active_schedule_horizon(asset_name):
 	)[0][0]
 
 
-def bump_useful_life_periods(asset_name, months):
-	"""Move the finance book's period count by ±months — the ONE place
-	both life-changing doors (Useful Life Adjustment and Capitalized
-	Maintenance extension) go through, so the counter can never drift
-	between them."""
+def bump_useful_life_periods(asset_name, months, days=0):
+	"""Move the finance book's life counters by ±months / ±days — the ONE
+	place every life-changing door (Useful Life Adjustment, Capitalized
+	Maintenance extension, capitalized Repair) goes through, so the
+	counters can never drift between them.
+
+	Months move the PERIOD COUNT. Days never do: a period count has no
+	fractional periods, so days are accumulated separately and only
+	shift the end of life (the same rule the AVA established, §4.3 —
+	the daily-rate engine takes any end date and the final row absorbs
+	the extra days)."""
 	fb = frappe.db.get_value(
 		"Asset Finance Book",
 		{"parent": asset_name},
-		["name", "total_number_of_depreciations", "frequency_of_depreciation"],
+		["name", "total_number_of_depreciations", "frequency_of_depreciation", "life_extension_days"],
 		as_dict=True,
 	)
 	if not fb:
 		return
-	periods_delta = cint(round(flt(months) / flt(fb.frequency_of_depreciation or 1)))
-	frappe.db.set_value(
-		"Asset Finance Book", fb.name, "total_number_of_depreciations",
-		max(0, cint(fb.total_number_of_depreciations) + periods_delta),
-		update_modified=False,
-	)
+	if months:
+		periods_delta = cint(round(flt(months) / flt(fb.frequency_of_depreciation or 1)))
+		frappe.db.set_value(
+			"Asset Finance Book", fb.name, "total_number_of_depreciations",
+			max(0, cint(fb.total_number_of_depreciations) + periods_delta),
+			update_modified=False,
+		)
+	if days:
+		frappe.db.set_value(
+			"Asset Finance Book", fb.name, "life_extension_days",
+			cint(fb.life_extension_days) + cint(round(flt(days))),
+			update_modified=False,
+		)
 
 
 def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transaction_type):
