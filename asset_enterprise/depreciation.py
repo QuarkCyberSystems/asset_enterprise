@@ -522,6 +522,7 @@ def schedule_horizon_from_life(asset_name, finance_book=None):
 		[
 			"total_number_of_depreciations", "frequency_of_depreciation",
 			"depreciation_start_date", "increase_in_asset_life", "life_extension_days",
+			"prior_life_days",
 		],
 		as_dict=True,
 	)
@@ -535,7 +536,14 @@ def schedule_horizon_from_life(asset_name, finance_book=None):
 	months = cint(fb.total_number_of_depreciations) * (cint(fb.frequency_of_depreciation) or 1)
 	months += cint(fb.increase_in_asset_life)
 	start = getdate(asset.available_for_use_date or fb.depreciation_start_date)
-	return add_days(add_months(start, months), cint(fb.life_extension_days) - 1)
+	# The period count describes the asset's WHOLE life, so life already
+	# consumed on a predecessor comes OFF the horizon (client, 24/08 —
+	# a reclassified asset must read the new category's 36 months, not a
+	# silently reduced 32).
+	return add_days(
+		add_months(start, months),
+		cint(fb.life_extension_days) - cint(fb.prior_life_days) - 1,
+	)
 
 
 def is_rule_built_schedule(asset_name):
@@ -788,6 +796,8 @@ def enable_depreciation(
 	finance_book=None,
 	depreciation_method="Straight Line",
 	available_for_use_date=None,
+	prior_life_days=0,
+	depreciation_basis_date=None,
 ):
 	"""GAP-011: amendment-free enablement on a submitted asset.
 
@@ -842,12 +852,24 @@ def enable_depreciation(
 		frappe.throw(
 			_("Depreciation Posting Date cannot be before the Available-for-Use Date.")
 		)
-	basis = getdate(
+	# The horizon is always measured from when the asset went into
+	# service; `depreciation_basis_date` only moves where CHARGING starts.
+	# A reclassified asset needs the two apart: it is available for use on
+	# the transfer date (client, 19/08) but its predecessor already
+	# charged that day, so charging resumes the day after (client, 24/08 —
+	# August billed 32 days across the two assets).
+	life_anchor = getdate(
 		available_for_use_date
 		or asset.available_for_use_date
 		or depreciation_start_date
 		or nowdate()
 	)
+	# A first posting EARLIER than the recorded in-service date means the
+	# asset was really in service from then (back-dated enablement, §4.5)
+	# — the whole life is measured from there, not from a later AFU.
+	if first_posting and first_posting < life_anchor:
+		life_anchor = first_posting
+	basis = getdate(depreciation_basis_date) if depreciation_basis_date else life_anchor
 	if first_posting and first_posting < basis:
 		basis = first_posting
 	start = basis
@@ -860,7 +882,17 @@ def enable_depreciation(
 			_("Depreciable base is {0} — NBV must exceed the salvage value.").format(base)
 		)
 
-	end_of_life = add_days(add_months(start, months), -1)
+	# Whole life measured from the in-service anchor, less any life the
+	# predecessor already consumed; charging then covers what is left.
+	end_of_life = add_days(add_months(life_anchor, months), -1 - cint(prior_life_days))
+	if getdate(end_of_life) < getdate(start):
+		frappe.throw(
+			_(
+				"The whole useful life ({0} months from {1}) is already consumed — "
+				"{2} days were depreciated before this asset went into service. "
+				"There is no remaining life to schedule."
+			).format(months, life_anchor, cint(prior_life_days))
+		)
 	total_days = date_diff(end_of_life, start) + 1
 	rows = build_daily_rate_rows(
 		base, start, total_days, asset.company,
@@ -884,6 +916,7 @@ def enable_depreciation(
 			"expected_value_after_useful_life": flt(expected_value_after_useful_life),
 			"value_after_depreciation": flt(nbv),
 			"daily_prorata_based": 1,
+			"prior_life_days": cint(prior_life_days),
 		}
 	)
 	fb_row.flags.ignore_permissions = True

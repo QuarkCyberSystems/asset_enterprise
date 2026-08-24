@@ -28,7 +28,7 @@ the snapshot) per the signed design.
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, add_months, cint, flt, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, date_diff, flt, getdate, nowdate
 
 from asset_enterprise.accounts import get_enterprise_account
 from asset_enterprise.rounding import fa_module_round
@@ -589,15 +589,16 @@ def reclassify(cap_doc):
 	values = recalculate_asset_values(source.name, save=False)
 	gross = flt(values["historical_asset_value"])
 	accum = flt(values["accumulated_depreciation_value"])
-	from asset_enterprise.asset_values import calendar_remaining_life_months
-
-	rul_months = calendar_remaining_life_months(source)  # CH-06 calendar snapshot
-	salvage = flt(
-		frappe.db.get_value(
-			"Asset Finance Book", {"parent": source.name}, "expected_value_after_useful_life"
-		)
-		or 0
+	source_fb = frappe.db.get_value(
+		"Asset Finance Book",
+		{"parent": source.name},
+		[
+			"total_number_of_depreciations", "frequency_of_depreciation",
+			"depreciation_start_date", "expected_value_after_useful_life",
+		],
+		as_dict=True,
 	)
+	salvage = flt(source_fb.expected_value_after_useful_life if source_fb else 0)
 
 	src_accounts = _category_accounts(source)
 	tgt_accounts = _category_accounts(target)
@@ -704,24 +705,104 @@ def reclassify(cap_doc):
 		journal_entry=je.name,
 	)
 
-	# Schedule resets under the new category over the remaining life.
-	if source.calculate_depreciation and rul_months >= 1 and not target.calculate_depreciation:
+	# The new asset's period count describes its WHOLE useful life under
+	# the NEW category (client, 24/08: "the total number of dep should be
+	# 36 as the asset category ... describe the asset whole life"). The
+	# life already used up on the predecessor is not netted off that
+	# count — it is recorded as Life Consumed Before Transfer (Days) and
+	# comes off the horizon instead, so the asset still ends where it
+	# always would have. Before this, the count silently read 32.
+	if source.calculate_depreciation and not target.calculate_depreciation:
 		from asset_enterprise.depreciation import enable_depreciation
 
+		whole_life = _category_life_months(target) or (
+			cint(source_fb.total_number_of_depreciations)
+			* (cint(source_fb.frequency_of_depreciation) or 1)
+			if source_fb
+			else 0
+		)
+		# Days already depreciated, counted from when the asset first went
+		# into service to the day it moves category.
+		source_start = getdate(
+			source.available_for_use_date
+			or (source_fb.depreciation_start_date if source_fb else posting_date)
+		)
+		consumed_days = max(0, date_diff(posting_date, source_start))
+		if whole_life < 1:
+			frappe.log_error(
+				title=f"Reclassification schedule reset skipped: {target.name}",
+				message=(
+					"Neither the target category nor the source finance book states a "
+					"useful life, so no schedule could be built."
+				),
+			)
+			return je.name
 		try:
 			enable_depreciation(
 				target.name,
-				total_number_of_depreciations=int(round(rul_months)),
+				total_number_of_depreciations=whole_life,
 				frequency_of_depreciation=1,
 				depreciation_start_date=add_days_safe(posting_date),
 				expected_value_after_useful_life=salvage,
+				prior_life_days=consumed_days,
+				# The predecessor charged through the transfer date itself
+				# (its final prorated row), so charging resumes the day
+				# after — otherwise that day is billed on both assets.
+				depreciation_basis_date=add_days_safe(posting_date),
 			)
 		except Exception:
 			frappe.log_error(
 				title=f"Reclassification schedule reset failed: {target.name}",
 				message=frappe.get_traceback(),
 			)
+		else:
+			_note_consumed_life(target.name, source, consumed_days, whole_life, accum)
 	return je.name
+
+
+def _category_life_months(asset):
+	"""Total useful life the asset's CATEGORY prescribes, in months."""
+	row = frappe.db.get_value(
+		"Asset Finance Book",
+		{"parent": asset.asset_category, "parenttype": "Asset Category"},
+		["total_number_of_depreciations", "frequency_of_depreciation"],
+		as_dict=True,
+	)
+	if not row or not row.total_number_of_depreciations:
+		return 0
+	return cint(row.total_number_of_depreciations) * (cint(row.frequency_of_depreciation) or 1)
+
+
+def _note_consumed_life(target_name, source, consumed_days, whole_life, accum):
+	"""Say at the top of the new schedule what was already used up
+	(client, 24/08: "you can mention them at the start of the new dep")."""
+	ads = frappe.db.get_value(
+		"Asset Depreciation Schedule",
+		{"asset": target_name, "status": "Active", "docstatus": 1},
+		"name",
+	)
+	if not ads:
+		return
+	note = _(
+		"Reclassified from {0}. Total useful life {1} months under this category, "
+		"of which {2} days were already depreciated on the previous asset "
+		"(from {3}); that charge, {4}, is carried here as Opening Accumulated "
+		"Depreciation. This schedule covers the remaining life only."
+	).format(
+		source.name,
+		whole_life,
+		cint(consumed_days),
+		frappe.format_value(getdate(source.available_for_use_date), {"fieldtype": "Date"})
+		if source.available_for_use_date
+		else "-",
+		frappe.format_value(flt(accum), {"fieldtype": "Currency"}),
+	)
+	existing = frappe.db.get_value("Asset Depreciation Schedule", ads, "notes") or ""
+	frappe.db.set_value(
+		"Asset Depreciation Schedule", ads, "notes",
+		(note + ("\n\n" + existing if existing else "")),
+		update_modified=False,
+	)
 
 
 def add_days_safe(posting_date):

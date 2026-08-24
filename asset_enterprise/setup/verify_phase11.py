@@ -10,7 +10,17 @@ depreciation reversal at merge · F7 SI disposal gate.
 import traceback
 
 import frappe
-from frappe.utils import add_days, add_months, cint, flt, get_first_day, getdate, nowdate
+from frappe.utils import (
+	add_days,
+	add_months,
+	cint,
+	date_diff,
+	flt,
+	get_first_day,
+	get_last_day,
+	getdate,
+	nowdate,
+)
 
 
 def run():
@@ -949,6 +959,88 @@ def _run():
 		print(f"t19c   Target Asset hidden on reclassification: depends_on={dep!r} "
 		      f"{'OK' if t19c_ok else 'FAIL'}")
 		ok = ok and t19c_ok
+
+		# T19d (client, 24/08): the new asset's period count must describe
+		# its WHOLE useful life under the NEW category — "no, describe the
+		# asset whole life". Life already used on the predecessor is
+		# RECORDED (Life Consumed Before Transfer) and taken off the
+		# horizon, never netted off the count, which used to read a bare
+		# 32 with nothing saying where it came from. The target category
+		# here runs 60 months against the source's 36, so a count of 60
+		# can only have come from the target category.
+		t19d_cat = t19_category(company, "T19D Longer Life", suspense=t19_plain(company, "Liability"))
+		cat_doc = frappe.get_doc("Asset Category", t19d_cat)
+		if not cat_doc.get("finance_books"):
+			cat_doc.append("finance_books", {
+				"depreciation_method": "Straight Line",
+				"total_number_of_depreciations": 60, "frequency_of_depreciation": 1})
+			cat_doc.flags.ignore_permissions = True
+			cat_doc.save()
+		if not frappe.db.exists("Item", "T19D Reclass Item"):
+			it = frappe.get_doc({
+				"doctype": "Item", "item_code": "T19D Reclass Item",
+				"item_name": "T19D Reclass Item", "item_group": "Sub Assemblies",
+				"stock_uom": "Nos", "is_fixed_asset": 1, "is_stock_item": 0,
+				"asset_category": t19d_cat})
+			it.flags.ignore_permissions = True
+			it.insert()
+
+		d_src = _mk_posted(18_000)          # 36-month life, in service 4 months ago
+		src_afu = getdate(frappe.db.get_value("Asset", d_src.name, "available_for_use_date"))
+		d_cap = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Reclassification / Asset Category Transfer",
+			"target_item": "T19D Reclass Item", "posting_date": nowdate(),
+			"asset_items": [{"asset": d_src.name}]})
+		d_cap.flags.ignore_permissions = True
+		d_cap.insert()
+		d_cap.submit()
+		d_cap.reload()
+		tgt = d_cap.target_asset
+		fb = frappe.db.get_value(
+			"Asset Finance Book", {"parent": tgt},
+			["total_number_of_depreciations", "prior_life_days"], as_dict=True)
+		consumed = date_diff(nowdate(), src_afu)
+		horizon = getdate(active_schedule_horizon(tgt))
+		whole_life_end = getdate(add_days(add_months(src_afu, 60), -1))
+		restarted_end = getdate(add_days(add_months(getdate(nowdate()), 60), -1))
+		# first charged row must start the day AFTER the transfer: the
+		# source's final prorated row already covers the transfer date, so
+		# billing it on both assets gave August 32 days (client, 24/08).
+		first = frappe.db.sql("""
+			select ds.schedule_date, ds.days_in_period from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			order by ds.idx limit 1""", tgt, as_dict=True)
+		src_last = frappe.db.sql("""
+			select max(ds.schedule_date) d from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.docstatus = 1 and ifnull(ds.journal_entry,'') <> ''
+			""", d_src.name)[0][0]
+		want_days = date_diff(get_last_day(nowdate()), getdate(nowdate()))
+		from asset_enterprise.depreciation import schedule_horizon_from_life
+
+		t19d_ok = (
+			cint(fb.total_number_of_depreciations) == 60
+			and cint(fb.prior_life_days) == consumed
+			# anchored at ORIGINAL service, not restarted at the transfer
+			and horizon < restarted_end
+			and abs(date_diff(horizon, whole_life_end)) <= 2
+			# a rebuild from life lands on the same horizon
+			and abs(date_diff(getdate(schedule_horizon_from_life(tgt)), horizon)) <= 1
+			and first and cint(first[0].days_in_period) == want_days
+			and getdate(src_last) == getdate(nowdate())
+		)
+		print(
+			f"t19d   whole life from target category: periods={fb.total_number_of_depreciations} "
+			f"(want 60, source ran 36) consumed={fb.prior_life_days}d (want {consumed}) "
+			f"horizon={horizon} (want ~{whole_life_end}, NOT {restarted_end}); "
+			f"first row {first[0].schedule_date if first else '-'} "
+			f"{first[0].days_in_period if first else '-'}d (want {want_days}, starts day after "
+            f"source's last {src_last}) {'OK' if t19d_ok else 'FAIL'}"
+		)
+		ok = ok and t19d_ok
 
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct

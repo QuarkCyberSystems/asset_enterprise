@@ -351,6 +351,19 @@ CUSTOM_FIELDS = {
 			"insert_after": "increase_in_asset_life",
 			"description": "Cumulative day-wise extensions granted by value adjustments, capitalized maintenance and repairs.",
 		},
+		{
+			# Client, 24/08: on a reclassification the period count must
+			# describe the asset's WHOLE life (the new category's), so the
+			# life already used up on the predecessor has to be recorded
+			# rather than netted off the count. The horizon subtracts it.
+			"fieldname": "prior_life_days",
+			"fieldtype": "Int",
+			"label": "Life Consumed Before Transfer (Days)",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "life_extension_days",
+			"description": "Days of useful life already depreciated on a predecessor asset before this one went into service. Counts against the total life above.",
+		},
 	],
 	# ----------------------------------------------------------- Asset Repair
 	"Asset Repair": [
