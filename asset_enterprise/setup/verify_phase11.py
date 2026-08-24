@@ -903,10 +903,13 @@ def _run():
 			and flt(new_asset.net_purchase_amount) == 12_000
 			and new_asset.reclassified_from == r_src.name
 			and src_after.docstatus == 2
+			# §3.6: cancelled under the old category — and the Status field
+			# must say so, not "Capitalized" (client, 24/08)
+			and src_after.status == "Cancelled"
 		)
 		print(f"t19    reclass by material: created {t19_cap.target_asset} in {new_asset.asset_category} "
 		      f"AFU={new_asset.available_for_use_date} (want today) gross "
-		      f"{flt(new_asset.net_purchase_amount):,.2f} src cancelled={src_after.docstatus == 2} "
+		      f"{flt(new_asset.net_purchase_amount):,.2f} src cancelled={src_after.docstatus == 2}/{src_after.status} "
 		      f"{'OK' if t19_ok else 'FAIL'}")
 		ok = ok and t19_ok
 

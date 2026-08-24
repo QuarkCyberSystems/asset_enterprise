@@ -406,7 +406,12 @@ def _maybe_warn_below_receipt(doc):
 			)
 
 
-DISPOSED_STATUSES = ("Scrapped", "Sold", "Capitalized")
+# Case A.02 routing: an asset that has left the register cannot take a
+# value adjustment, so its invoice difference is EXPENSED. "Cancelled"
+# belongs here for the same reason the others do — a reclassification
+# source now carries it (client, 24/08) and disposal.py has always
+# listed it.
+DISPOSED_STATUSES = ("Scrapped", "Sold", "Capitalized", "Cancelled")
 
 
 def pi_on_submit(doc, method=None):

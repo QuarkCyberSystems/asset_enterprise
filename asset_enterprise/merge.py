@@ -662,8 +662,14 @@ def reclassify(cap_doc):
 	je.flags.ignore_links = True
 	je.submit()
 
-	# Source leaves the register under the old category.
-	source.db_set("status", "Capitalized", update_modified=False)
+	# Source leaves the register under the old category. §3.6: "The source
+	# Asset gets CANCELLED under the old category account structure" — so
+	# the status has to say Cancelled too. It said "Capitalized", which is
+	# core's word for an asset consumed into a COMPOSITE, and the same
+	# section is explicit that a reclassification "is a category move, not
+	# a merge": the document header read Cancelled while the Status field
+	# claimed a merge that never happened (client, 24/08).
+	source.db_set("status", "Cancelled", update_modified=False)
 	source.db_set("docstatus", 2, update_modified=False)
 
 	# Target carries gross + opening accum; the reclassification JE is
