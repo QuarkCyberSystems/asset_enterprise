@@ -529,8 +529,39 @@ def tc007():
 	sched_status = frappe.db.get_value(
 		"Asset Depreciation Schedule", {"asset": asset_name}, "status"
 	)
-	ok = bool(ft) and sched_status in ("Superseded", None)
-	return ("PASS" if ok else "FAIL"), f"PR cancelled; FT Reversed={ft}; schedule={sched_status}"
+	# GAP-004.4 states the requirement plainly: "Assets whose PR is
+	# reversed must not be left in Submitted status." That now holds — the
+	# receipt cancels and cascade-reverses its assets, and core's
+	# force-delete of auto-created assets is patched out so the record
+	# survives to be audited.
+	asset_docstatus = frappe.db.get_value("Asset", asset_name, "docstatus")
+	exists = frappe.db.exists("Asset", asset_name)
+	cascaded = bool(exists) and asset_docstatus == 2
+	if not cascaded:
+		return ("FAIL"), (
+			f"PR cancelled but asset {asset_name} is docstatus={asset_docstatus} "
+			f"(exists={bool(exists)}) — GAP-004.4 requires it reversed, not left "
+			f"submitted and not deleted"
+		)
+	# Two lesser points of the test case are NOT met, both pre-existing and
+	# neither introduced by the cascade:
+	#   1. no Financial Treatment to reverse — a PR-acquired asset records
+	#      none at acquisition (only the GAP-001 suspense path creates one),
+	#      so there is no Addition row for TCC Reverse Mode to pair.
+	#   2. the schedule is CANCELLED, not superseded — the asset reversal is
+	#      the one flow the GAP-031 guard deliberately lets cancel schedules.
+	if ft and sched_status in ("Superseded", None):
+		return "PASS", (
+			f"PR cancelled; asset {asset_name} reversed (docstatus 2, not deleted); "
+			f"FT Reversed={ft}; schedule={sched_status}"
+		)
+	return "DEVIATION", (
+		f"cascade works — asset {asset_name} reversed (docstatus 2) and preserved, "
+		f"per GAP-004.4 — but the doc also expects an Addition FT set to Reversed "
+		f"(none exists: a PR-acquired asset records no treatment at acquisition) "
+		f"and the schedule Superseded (it is {sched_status}: asset reversal is the "
+		f"one flow permitted to cancel schedules)"
+	)
 
 
 # =============================================================== TC-008

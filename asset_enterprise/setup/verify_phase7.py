@@ -3,7 +3,7 @@
 import traceback
 
 import frappe
-from frappe.utils import flt, nowdate
+from frappe.utils import add_months, flt, getdate, nowdate
 
 
 def run():
@@ -95,22 +95,112 @@ def _run():
 		)
 		ok = ok and pr_ok
 
-		# PR cancel guard: submit one asset, PR cancel must block.
-		a1 = frappe.get_doc("Asset", assets[0])
-		if a1.docstatus == 0:  # the receipt may already have submitted it
-			a1.available_for_use_date = nowdate()
-			a1.flags.ignore_permissions = True
-			a1.save()
-			a1.submit()
+		# GAP-004.4 / TC-007: cancelling a receipt CASCADE-reverses the
+		# assets it created — "Assets whose PR is reversed must not be left
+		# in Submitted status" — and the records survive to be audited
+		# (core force-deletes them; that is patched out).
+		# On its OWN receipt: the one above still has a PI to receive.
+		pr2 = frappe.get_doc(
+			{
+				"doctype": "Purchase Receipt",
+				"company": company,
+				"supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [
+					{
+						"item_code": "AE-SMOKE-ITEM",
+						"qty": 1,
+						"rate": 1000,
+						"asset_location": seed.location,
+					}
+				],
+			}
+		)
+		pr2.flags.ignore_permissions = True
+		pr2.insert()
+		pr2.submit()
+		cascade_assets = frappe.get_all(
+			"Asset", filters={"purchase_receipt": pr2.name}, pluck="name"
+		)
+		for name in cascade_assets:
+			a = frappe.get_doc("Asset", name)
+			if a.docstatus == 0:
+				a.available_for_use_date = nowdate()
+				a.flags.ignore_permissions = True
+				a.save()
+				a.submit()
+		pr2.reload()
+		pr2.cancel()
+		after = {
+			n: frappe.db.get_value("Asset", n, "docstatus") for n in cascade_assets
+		}
+		g = bool(cascade_assets) and all(v == 2 for v in after.values())
+		print(
+			f"prgate PR cancel cascade-reverses its assets: {after} (want all docstatus 2, "
+			f"none deleted) {'OK' if g else 'FAIL'}"
+		)
+		ok = ok and g
+
+		# ...but never while depreciation has posted: the immutable ledger
+		# does not let a receipt cancellation unwind booked depreciation.
+		pr3 = frappe.get_doc(
+			{
+				"doctype": "Purchase Receipt",
+				"company": company,
+				"supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [
+					{
+						"item_code": "AE-SMOKE-ITEM",
+						"qty": 1,
+						"rate": 1000,
+						"asset_location": seed.location,
+					}
+				],
+			}
+		)
+		pr3.flags.ignore_permissions = True
+		pr3.insert()
+		pr3.submit()
+		dep_asset = frappe.get_all(
+			"Asset", filters={"purchase_receipt": pr3.name}, pluck="name"
+		)[0]
+		a3 = frappe.get_doc("Asset", dep_asset)
+		if a3.docstatus == 0:
+			a3.available_for_use_date = nowdate()
+			a3.flags.ignore_permissions = True
+			a3.save()
+			a3.submit()
+		from asset_enterprise.depreciation import _post_one, enable_depreciation
+
+		enable_depreciation(
+			dep_asset, total_number_of_depreciations=12, frequency_of_depreciation=1,
+			depreciation_start_date=str(add_months(nowdate(), -1)),
+			available_for_use_date=str(add_months(nowdate(), -1)),
+		)
+		row = frappe.db.sql(
+			"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+			   ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+			   ds.daily_rate, ds.days_in_period
+			from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status='Active' and ads.docstatus=1
+			  and ifnull(ds.journal_entry,'')='' order by ds.schedule_date limit 1""",
+			dep_asset, as_dict=True,
+		)[0]
+		_post_one(row, getdate(nowdate()))
 		try:
-			pr.reload()
-			pr.cancel()
-			print("prgate FAIL (PR cancelled with submitted asset)")
+			pr3.reload()
+			pr3.cancel()
+			print("prgate2 FAIL (receipt cancelled despite posted depreciation)")
 			ok = False
 		except frappe.ValidationError as e:
-			g = "Reverse those assets" in str(e)
-			print(f"prgate PR cancel blocked while asset submitted: {'OK' if g else 'FAIL'}")
-			ok = ok and g
+			g2 = "posted depreciation" in str(e)
+			print(
+				f"prgate2 receipt refused while depreciation is posted: "
+				f"{'OK' if g2 else 'FAIL: ' + str(e)[:120]}"
+			)
+			ok = ok and g2
 
 		# ------------------------------------------------ PI allocation + AVA
 		pi = frappe.get_doc(

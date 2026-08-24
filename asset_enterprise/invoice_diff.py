@@ -179,8 +179,24 @@ def _validate_pr_over_allocation(row, linked_assets):
 
 
 def pr_before_cancel(doc, method=None):
-	"""A PR whose assets are already submitted cannot be cancelled —
-	reverse the assets first (immutable-ledger ordering)."""
+	"""GAP-004.4 / TC-007: reversing a Purchase Receipt CASCADE-reverses
+	the Assets it created — "Assets whose PR is reversed must not be left
+	in Submitted status".
+
+	This ran the other way round until now: it refused the cancel and told
+	the user to go and reverse each asset by hand, which is the opposite
+	of what the design asks for and left the desk's own cascade dialog to
+	discover the refusal (client, 24/08 — the Cancel appeared to hang).
+
+	before_cancel runs BEFORE frappe's back-link check, so the assets are
+	already reversed by the time that check looks at them.
+
+	The one case that still refuses is posted depreciation: the immutable
+	ledger does not let a receipt cancellation quietly unwind depreciation
+	that has already hit the books. TC-007 assumes exactly that ("no JE
+	posted yet"); anything else has to go through the GA-0001-01 JE
+	reversal chain first.
+	"""
 	if not _enterprise():
 		return
 	submitted = frappe.get_all(
@@ -188,12 +204,45 @@ def pr_before_cancel(doc, method=None):
 		filters={"purchase_receipt": doc.name, "docstatus": 1},
 		pluck="name",
 	)
-	if submitted:
+	if not submitted:
+		return
+
+	blocked = []
+	for name in submitted:
+		posted = frappe.db.sql(
+			"""
+			select count(*) from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.docstatus = 1
+			  and ifnull(ds.journal_entry, '') != ''
+			""",
+			name,
+		)[0][0]
+		if posted:
+			blocked.append((name, posted))
+	if blocked:
 		frappe.throw(
 			_(
-				"Purchase Receipt {0} has submitted Assets ({1}). Reverse those assets "
-				"first (per GA-0001-01 ordering), then cancel the receipt."
-			).format(doc.name, ", ".join(submitted))
+				"Purchase Receipt {0} cannot be reversed: {1} already carries posted "
+				"depreciation. Reverse those depreciation entries first (Reversal "
+				"Journal Entry per GA-0001-01), then reverse the receipt."
+			).format(
+				doc.name,
+				", ".join(f"{n} ({c} {'entry' if c == 1 else 'entries'})" for n, c in blocked),
+			),
+			title=_("Depreciation Already Posted"),
+		)
+
+	for name in submitted:
+		asset = frappe.get_doc("Asset", name)
+		asset.flags.ignore_permissions = True
+		# The receipt is mid-cancel, so its own link back from the asset
+		# must not re-trigger the check we are already inside.
+		asset.flags.ignore_links = True
+		asset.cancel()
+		frappe.msgprint(
+			_("Asset {0} reversed with Purchase Receipt {1}.").format(name, doc.name),
+			alert=True,
 		)
 
 

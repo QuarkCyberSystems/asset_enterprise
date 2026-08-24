@@ -308,7 +308,12 @@ override_doctype_dashboards = {
 # this, the desk's "Cancel All Documents" dialog (fed by the
 # triggered_by dynamic link) offered to cancel the Active schedule
 # together with the AVA (client, 19/08, ACC-AVA-2026-00002).
-auto_cancel_exempted_doctypes = ["Asset Depreciation Schedule"]
+# "Asset" joins the schedule here (client, 24/08): the desk's "Cancel All
+# Documents" cascade must never cancel an asset on its own. Reversal is
+# performed by the owning document's before_cancel — see
+# invoice_diff.pr_before_cancel (GAP-004.4) — so the gates and the TCC
+# reversal always run.
+auto_cancel_exempted_doctypes = ["Asset Depreciation Schedule", "Asset"]
 
 # Ignore links to specified DocTypes when deleting documents
 # -----------------------------------------------------------

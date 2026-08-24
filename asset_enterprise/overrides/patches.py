@@ -49,6 +49,13 @@ WRAPPED_ATTRS = {
 	"get_gl_entries_on_asset_disposal",
 }
 
+# Class-method targets: (module, class, attr, min positional params).
+# verify_patch_targets checks these the same way, resolving through the
+# class instead of the module.
+CLASS_PATCH_TARGETS = [
+	("erpnext.controllers.buying_controller", "BuyingController", "update_fixed_asset", 2),
+]
+
 # (attr, original callable, wrapper callable) — filled by _rebind().
 _WRAPPED = []
 
@@ -129,6 +136,30 @@ def verify_patch_targets():
 			)
 		if attr in WRAPPED_ATTRS and not getattr(fn, "_asset_enterprise_wrapper", False):
 			problems.append(f"not wrapped: {module_path}.{attr} is still core's function")
+
+	for module_path, clsname, attr, min_params in CLASS_PATCH_TARGETS:
+		try:
+			module = frappe.get_module(module_path)
+		except ImportError:
+			problems.append(f"module missing: {module_path}")
+			continue
+		cls = getattr(module, clsname, None)
+		fn = getattr(cls, attr, None) if cls else None
+		if fn is None:
+			problems.append(f"method missing: {module_path}.{clsname}.{attr}")
+			continue
+		params = [
+			p
+			for p in inspect.signature(fn).parameters.values()
+			if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+		]
+		if len(params) < min_params:
+			problems.append(
+				f"signature changed: {module_path}.{clsname}.{attr} has {len(params)} "
+				f"positional params, expected >= {min_params}"
+			)
+		if not getattr(fn, "_asset_enterprise_wrapper", False):
+			problems.append(f"not wrapped: {module_path}.{clsname}.{attr} is still core's method")
 
 	# Existing-and-wrapped at the DEFINING module is not enough: a module
 	# that did `from x import y` before we patched keeps calling core.
@@ -252,6 +283,30 @@ def apply_patches():
 	_rebind("post_depreciation_entries", core_post, post_depreciation_entries)
 	core_ads.reschedule_depreciation = reschedule_depreciation
 	_rebind("reschedule_depreciation", core_resched, reschedule_depreciation)
+
+	# GAP-004.4: cancelling a receipt must REVERSE the assets it created,
+	# never destroy them. Core does the opposite —
+	# buying_controller.update_fixed_asset(delete_asset=True) calls
+	# frappe.delete_doc("Asset", ..., force=1) for every auto-created
+	# asset, wiping the record and its movements whatever its docstatus,
+	# so the reversal our pr_before_cancel had just performed vanished
+	# along with the asset (client, 24/08). Assets already cancelled are
+	# skipped by core's own loop once deletion is off.
+	import erpnext.controllers.buying_controller as core_buying
+
+	core_update_fixed_asset = core_buying.BuyingController.update_fixed_asset
+
+	def update_fixed_asset(self, field, delete_asset=False):
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if delete_asset and enterprise_enabled():
+			delete_asset = False
+		return core_update_fixed_asset(self, field, delete_asset)
+
+	update_fixed_asset._asset_enterprise_wrapper = True
+	# A class attribute — every subclass resolves it at call time, so
+	# there is no already-imported copy to rebind.
+	core_buying.BuyingController.update_fixed_asset = update_fixed_asset
 
 	# GAP-036: a grouping asset is a structural container with no value —
 	# it must not appear as a zero-value line in the Fixed Asset Register.
