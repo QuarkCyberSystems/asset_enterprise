@@ -12,6 +12,12 @@ directly — they call:
         journal_entry=je_name,
     )
 
+Callers may reference either a Journal Entry (`journal_entry=`) or, per
+GA-0006 amendment AM-01, the voucher whose own GL carries the treatment
+(`voucher_type=`/`voucher_no=`) — used by Project Accounting settlement
+runs, which post every leg under the run's voucher rather than
+manufacturing a Journal Entry to hold the reference.
+
 and, for Reverse Mode (§3.7 — reverse the transaction, which generates
 the reversal JE; the original FT is never deleted):
 
@@ -55,6 +61,8 @@ def apply(
 	accum_delta=0,
 	life_delta_months=0,
 	journal_entry=None,
+	voucher_type=None,
+	voucher_no=None,
 	status="Posted",
 ):
 	"""Record one Financial Treatment and refresh derived values.
@@ -81,6 +89,11 @@ def apply(
 			"accum_delta": flt(accum_delta),
 			"life_delta_months": flt(life_delta_months),
 			"journal_entry": journal_entry,
+			# GA-0006 AM-01: callers that post GL under their own voucher
+			# (e.g. Project Settlement Run) reference it here instead of
+			# manufacturing a Journal Entry purely to hold the reference.
+			"voucher_type": voucher_type,
+			"voucher_no": voucher_no,
 			"status": status,
 		}
 	)
@@ -92,7 +105,10 @@ def apply(
 	return ft
 
 
-def reverse(original_ft, reversal_source_doc, posting_date=None, journal_entry=None):
+def reverse(
+	original_ft, reversal_source_doc, posting_date=None, journal_entry=None,
+	voucher_type=None, voucher_no=None,
+):
 	"""Reverse Mode (§3.7): mirror the original FT under the SAME category.
 
 	- original FT -> status Reversed (never deleted; JE stays posted)
@@ -127,6 +143,8 @@ def reverse(original_ft, reversal_source_doc, posting_date=None, journal_entry=N
 			"accum_delta": -flt(original.accum_delta),
 			"life_delta_months": -flt(original.life_delta_months),
 			"journal_entry": journal_entry,
+			"voucher_type": voucher_type or original.get("voucher_type"),
+			"voucher_no": voucher_no or original.get("voucher_no"),
 			"status": "Posted",
 			"reversal_reference": original.name,
 		}

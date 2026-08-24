@@ -23,6 +23,8 @@
   "life_delta_months",
   "links_section",
   "journal_entry",
+  "voucher_type",
+  "voucher_no",
   "column_break_c",
   "status",
   "reversal_reference"
@@ -160,6 +162,22 @@
    "label": "Reversal Reference",
    "options": "Financial Treatment",
    "read_only": 1
+  },
+  {
+   "description": "GA-0006 AM-01: the document whose GL carries this treatment when it is not a Journal Entry (e.g. a Project Settlement Run posting under its own voucher).",
+   "fieldname": "voucher_type",
+   "fieldtype": "Link",
+   "label": "Voucher Type",
+   "options": "DocType",
+   "read_only": 1
+  },
+  {
+   "fieldname": "voucher_no",
+   "fieldtype": "Dynamic Link",
+   "label": "Voucher No",
+   "options": "voucher_type",
+   "read_only": 1,
+   "search_index": 1
   }
  ],
  "in_create": 1,
