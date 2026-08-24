@@ -543,10 +543,26 @@ def tc007():
 			f"(exists={bool(exists)}) — GAP-004.4 requires it reversed, not left "
 			f"submitted and not deleted"
 		)
-	if ft and sched_status in ("Superseded", None):
+	# The requirement is that NO LIVE schedule survives on a reversed
+	# asset. Cancelled satisfies it as fully as Superseded (client ruling,
+	# 24/08): GAP-031 supersedes in order to carry POSTED rows and their
+	# JE links into the next generation, and an asset reversal is refused
+	# outright while any posted depreciation is live
+	# (_block_when_depreciation_posted). What is left is an unposted
+	# working copy with no history in it — the same reasoning TC-046
+	# already records — and superseding it would leave a generation
+	# hanging off an asset that no longer exists, implying a successor
+	# that never comes. The test case's "Schedule superseded" is doc
+	# wording to correct, not a build defect.
+	live_schedule = frappe.db.exists(
+		"Asset Depreciation Schedule",
+		{"asset": asset_name, "status": "Active", "docstatus": 1},
+	)
+	if ft and not live_schedule:
 		return "PASS", (
 			f"PR cancelled; asset {asset_name} reversed (docstatus 2, not deleted); "
-			f"FT Reversed={ft}; schedule={sched_status}"
+			f"acquisition FT Reversed={ft}; schedule={sched_status} and no Active "
+			f"generation left (Cancelled is correct here — nothing was posted)"
 		)
 	# Report what was actually observed — an earlier version of this note
 	# was hardcoded and kept claiming the treatment was missing after it
@@ -554,11 +570,8 @@ def tc007():
 	unmet = []
 	if not ft:
 		unmet.append("no Addition FT set to Reversed")
-	if sched_status not in ("Superseded", None):
-		unmet.append(
-			f"schedule is {sched_status}, not Superseded — asset reversal is the one "
-			f"flow the GAP-031 guard permits to cancel schedules"
-		)
+	if live_schedule:
+		unmet.append(f"an Active schedule survives the reversal ({live_schedule})")
 	return "DEVIATION", (
 		f"cascade works per GAP-004.4 — asset {asset_name} reversed (docstatus 2), "
 		f"preserved, acquisition FT Reversed={ft} — but: " + "; ".join(unmet)
