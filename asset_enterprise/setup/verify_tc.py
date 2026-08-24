@@ -543,24 +543,25 @@ def tc007():
 			f"(exists={bool(exists)}) — GAP-004.4 requires it reversed, not left "
 			f"submitted and not deleted"
 		)
-	# Two lesser points of the test case are NOT met, both pre-existing and
-	# neither introduced by the cascade:
-	#   1. no Financial Treatment to reverse — a PR-acquired asset records
-	#      none at acquisition (only the GAP-001 suspense path creates one),
-	#      so there is no Addition row for TCC Reverse Mode to pair.
-	#   2. the schedule is CANCELLED, not superseded — the asset reversal is
-	#      the one flow the GAP-031 guard deliberately lets cancel schedules.
 	if ft and sched_status in ("Superseded", None):
 		return "PASS", (
 			f"PR cancelled; asset {asset_name} reversed (docstatus 2, not deleted); "
 			f"FT Reversed={ft}; schedule={sched_status}"
 		)
+	# Report what was actually observed — an earlier version of this note
+	# was hardcoded and kept claiming the treatment was missing after it
+	# had been built.
+	unmet = []
+	if not ft:
+		unmet.append("no Addition FT set to Reversed")
+	if sched_status not in ("Superseded", None):
+		unmet.append(
+			f"schedule is {sched_status}, not Superseded — asset reversal is the one "
+			f"flow the GAP-031 guard permits to cancel schedules"
+		)
 	return "DEVIATION", (
-		f"cascade works — asset {asset_name} reversed (docstatus 2) and preserved, "
-		f"per GAP-004.4 — but the doc also expects an Addition FT set to Reversed "
-		f"(none exists: a PR-acquired asset records no treatment at acquisition) "
-		f"and the schedule Superseded (it is {sched_status}: asset reversal is the "
-		f"one flow permitted to cancel schedules)"
+		f"cascade works per GAP-004.4 — asset {asset_name} reversed (docstatus 2), "
+		f"preserved, acquisition FT Reversed={ft} — but: " + "; ".join(unmet)
 	)
 
 

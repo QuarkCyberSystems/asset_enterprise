@@ -275,6 +275,9 @@ class EnterpriseAsset(Asset):
 
 	def on_submit(self):
 		super().on_submit()
+		# §3.2: core's booking GL is absorbed by the TCC like every other
+		# financial event (must follow super(), which posts it).
+		self._record_acquisition_treatment()
 		# VR-005 / TC-006: the receipt row is flagged as soon as a live
 		# asset references it. The PR-submit hook only sees assets that
 		# already existed, so an asset created against the row later
@@ -357,6 +360,90 @@ class EnterpriseAsset(Asset):
 		):
 			return False
 		return asset_type == "Existing Asset" or not asset_type
+
+	def _record_acquisition_treatment(self):
+		"""§3.2 Scope of TCC Absorption: "Asset submit (booking) ->
+		Addition handler".
+
+		A PURCHASED asset books its GL through core's
+		`asset.py:make_gl_entries`, and the design routes that booking
+		through the TCC like every other financial event. Only the
+		opening-balance path (GAP-001) recorded a treatment, so an asset
+		acquired through a Purchase Receipt carried NONE: no acquisition
+		row in its history, and nothing for a receipt reversal to pair
+		(client, 24/08 — surfaced by GAP-004.4 / TC-007).
+
+		The trigger is the PURCHASE DOCUMENT, not core's own booking JE:
+		that JE is only the CWIP -> Fixed Asset transfer, so with CWIP
+		accounting off (as here) it never fires and the acquisition GL
+		sits on the receipt itself. Either way the acquisition happened
+		and the TCC has to carry it, so the treatment points at the
+		purchase document as its voucher.
+
+		Assets that acquire value another way are skipped: an
+		opening-balance asset has GAP-001's treatment, a reclassification
+		target has "Reclassification — In", a composite gets its Addition
+		from the capitalization.
+
+		Derived values already read net_purchase_amount, so this is an
+		audit record + voucher link and its deltas stay zero, the same
+		shape GAP-001 uses.
+		"""
+		if not self._enterprise():
+			return
+		voucher_type, voucher_no = None, None
+		for dt, field in (("Purchase Receipt", "purchase_receipt"),
+		                  ("Purchase Invoice", "purchase_invoice")):
+			if self.get(field):
+				voucher_type, voucher_no = dt, self.get(field)
+				break
+		if not voucher_no:
+			return
+		if self._is_opening_balance_asset() or self.get("reclassified_from"):
+			return
+		if frappe.db.exists(
+			"Financial Treatment",
+			{"asset": self.name, "transaction_category": "Addition", "status": "Posted"},
+		):
+			return
+
+		from asset_enterprise import tcc
+
+		tcc.apply(
+			source_doc=("Asset", self.name),
+			category="Addition",
+			transaction_type="Asset Acquisition",
+			asset=self.name,
+			posting_date=self.get("available_for_use_date") or self.get("purchase_date"),
+			amount=flt(self.net_purchase_amount),
+			# The acquisition GL lives on the purchase document, not on a
+			# Journal Entry, so the treatment points at that voucher.
+			voucher_type=voucher_type,
+			voucher_no=voucher_no,
+		)
+
+	def _reverse_acquisition_treatment(self):
+		"""Pair the acquisition treatment when the asset is reversed.
+		Core reverses the booking GL itself (make_reverse_gl_entries), so
+		this only closes the TCC side."""
+		ft = frappe.db.get_value(
+			"Financial Treatment",
+			{
+				"asset": self.name,
+				"transaction_type": "Asset Acquisition",
+				"status": "Posted",
+			},
+			"name",
+		)
+		if not ft:
+			return
+		from asset_enterprise import tcc
+
+		self.ignore_linked_doctypes = tuple(
+			set(tuple(self.get("ignore_linked_doctypes") or ()))
+			| {"GL Entry", "Journal Entry", "Financial Treatment", "Asset Activity"}
+		)
+		tcc.reverse(ft, ("Asset", self.name))
 
 	def _post_existing_asset_opening(self):
 		"""GAP-001: auto-JE via TCC Addition (Existing-Asset Opening).
@@ -453,6 +540,7 @@ class EnterpriseAsset(Asset):
 		if self._enterprise():
 			self._block_when_depreciation_posted()
 			self._reverse_existing_asset_opening()
+			self._reverse_acquisition_treatment()
 		# The asset reversal is the ONE flow allowed to cancel this
 		# asset's schedules (core does it inside on_cancel); the
 		# schedule guard reads this flag.
