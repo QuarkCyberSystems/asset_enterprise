@@ -257,6 +257,26 @@ def apply_property_setters():
 		)
 
 
+	# Client, 24/08 (ACC-ASC-2026-00035): on a Reclassification the new
+	# asset is CREATED by the transaction from the Target Item, so a
+	# Target Asset picker is not an input at all — and picking one
+	# silently overrode the item that was named. Hide both on that
+	# sub-type; the asset the transaction creates shows up read-only in
+	# "Created Asset (New Category)".
+	reclass_only = (
+		"eval:doc.transaction_sub_type!=='Reclassification / Asset Category Transfer'"
+	)
+	for fieldname in ("target_asset", "target_asset_name"):
+		make_property_setter(
+			"Asset Capitalization",
+			fieldname,
+			"depends_on",
+			reclass_only,
+			"Code",
+			validate_fields_for_doctype=False,
+		)
+
+
 def _asset_status_property_setter():
 	"""A merged-away asset is DISPOSED, not cancelled — core's status list
 	has no such value (client, sheet item 24)."""

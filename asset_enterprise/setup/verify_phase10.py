@@ -275,12 +275,26 @@ def _run():
 		ok = ok and c_ok
 
 		# ------------------------- CH-08: Path 3 cross-period restore
-		r1 = make_test_asset(company, gross=36_500, submit=True)
+		# The scenario needs a MID-previous-month disposal shortly after the
+		# asset went into service: the restore then leaves a catch-up row
+		# spanning more than a full month, with only a small pre-disposal
+		# proration in Accum. Anchoring the in-service date to the DISPOSAL
+		# date keeps both true on every calendar day — pinning it to
+		# nowdate() - 1 month put the purchase AFTER the disposal from the
+		# 23rd onwards, and our own VR-041 gate then refused the scrap: the
+		# suite failed on a calendar rather than on a change.
+		disposal_date = add_days(get_first_day(nowdate()), -10)  # previous month
+		in_service = add_days(disposal_date, -12)
+		r1 = make_test_asset(company, gross=36_500, submit=False)
+		r1.purchase_date = in_service
+		r1.available_for_use_date = in_service
+		r1.flags.ignore_permissions = True
+		r1.save()
+		r1.submit()
 		enable_depreciation(
 			r1.name, total_number_of_depreciations=24, frequency_of_depreciation=1,
 			depreciation_start_date=get_first_day(add_months(nowdate(), 3)),  # future: no due rows
 		)
-		disposal_date = add_days(get_first_day(nowdate()), -10)  # previous month
 		disposal.scrap_asset(r1.name, scrap_date=disposal_date, scrapping_type="Damage")
 		st = frappe.db.get_value("Asset", r1.name, "status")
 		from asset_enterprise.restore import cross_period_restore

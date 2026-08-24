@@ -542,7 +542,10 @@ def reclassify(cap_doc):
 	posting_date = getdate(cap_doc.posting_date or nowdate())
 
 	if cap_doc.get("target_asset"):
+		# Legacy path: a draft asset in the new category, pre-created by
+		# the user, is taken over (v2.14 §3.6).
 		target = frappe.get_doc("Asset", cap_doc.target_asset)
+		cap_doc.db_set("created_asset", target.name, update_modified=False)
 	else:
 		# Target named as a MATERIAL (client, 19/08): the transaction
 		# creates the new-category asset itself, like purchasing. The
@@ -571,6 +574,9 @@ def reclassify(cap_doc):
 		target.insert()
 		cap_doc.db_set("target_asset", target.name, update_modified=False)
 		cap_doc.db_set("target_asset_category", item.asset_category, update_modified=False)
+		# The Target Asset picker is hidden on this sub-type, so the asset
+		# this transaction created is surfaced as an OUTPUT (client, 24/08).
+		cap_doc.db_set("created_asset", target.name, update_modified=False)
 
 	# Standard-disposal proration up to the transfer date.
 	if source.calculate_depreciation:

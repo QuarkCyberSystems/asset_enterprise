@@ -75,7 +75,14 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		# pre-created asset — the transaction creates the asset, like
 		# purchasing, with available-for-use = posting date (client,
 		# 19/08). Everything else needs a target Asset.
-		if reclass and self.get("target_item") and not self.get("target_asset"):
+		if reclass and self.get("target_item"):
+			# The Target Item is the input on this sub-type and the Target
+			# Asset picker is hidden, so a value left behind by a sub-type
+			# switch must not silently win — it did on ACC-ASC-2026-00035,
+			# where the named item was ignored in favour of an unrelated
+			# asset picked earlier (client, 24/08).
+			self.target_asset = None
+			self.target_asset_name = None
 			return self._validate_reclassification_item()
 		if not self.get("target_asset"):
 			if reclass:

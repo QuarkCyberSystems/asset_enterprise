@@ -900,6 +900,56 @@ def _run():
 		      f"{'OK' if t19_ok else 'FAIL'}")
 		ok = ok and t19_ok
 
+		# T19b (client, 24/08 — ACC-ASC-2026-00035): on a Reclassification
+		# the Target Asset picker is HIDDEN, because the transaction
+		# creates the asset from the Target Item. A value left behind by a
+		# sub-type switch must therefore not win: the client named item
+		# "ASSET TESTING RUBA#1" and an unrelated asset picked earlier
+		# took over, silently ignoring the item.
+		r_src2 = _mk_posted(15_000)
+		stale = frappe.get_doc({
+			"doctype": "Asset", "company": company, "item_code": r_src2.item_code,
+			"asset_name": "T19b Stale Picked Target",
+			"asset_category": frappe.db.get_value("Asset", r_src2.name, "asset_category"),
+			"location": r_src2.location, "purchase_amount": 1, "net_purchase_amount": 1,
+			"purchase_date": nowdate(), "available_for_use_date": nowdate(),
+			"calculate_depreciation": 0,
+		})
+		stale.flags.ignore_permissions = True
+		stale.insert()  # a draft left over from an earlier attempt
+		t19b_cap = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Reclassification / Asset Category Transfer",
+			"target_item": "T19 Reclass Item", "target_asset": stale.name,
+			"posting_date": nowdate(), "asset_items": [{"asset": r_src2.name}]})
+		t19b_cap.flags.ignore_permissions = True
+		t19b_cap.insert()
+		t19b_cap.submit()
+		t19b_cap.reload()
+		made = frappe.db.get_value(
+			"Asset", t19b_cap.target_asset, ["item_code", "asset_category"], as_dict=True)
+		t19b_ok = (
+			t19b_cap.target_asset != stale.name
+			and made.item_code == "T19 Reclass Item"
+			and made.asset_category == t19_cat
+			and t19b_cap.get("created_asset") == t19b_cap.target_asset
+			and frappe.db.get_value("Asset", stale.name, "docstatus") == 0  # untouched
+		)
+		print(
+			f"t19b   stale picked target ignored: item won -> {t19b_cap.target_asset} "
+			f"({made.item_code} / {made.asset_category}); stale {stale.name} left as draft; "
+			f"created_asset={t19b_cap.get('created_asset')} {'OK' if t19b_ok else 'FAIL'}"
+		)
+		ok = ok and t19b_ok
+
+		# and the picker itself is hidden on this sub-type (the ask)
+		dep = frappe.get_meta("Asset Capitalization").get_field("target_asset").depends_on or ""
+		t19c_ok = "Reclassification / Asset Category Transfer" in dep
+		print(f"t19c   Target Asset hidden on reclassification: depends_on={dep!r} "
+		      f"{'OK' if t19c_ok else 'FAIL'}")
+		ok = ok and t19c_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow

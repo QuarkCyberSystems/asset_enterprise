@@ -309,6 +309,21 @@ CUSTOM_FIELDS = {
 			"description": "Extends the target's remaining useful life by this many months. On a fully-depreciated target, the added value depreciates over this life from the merge date.",
 		},
 		{
+			# The asset a Reclassification CREATES — an output, not an
+			# input, which is why the Target Asset picker is hidden on
+			# this sub-type (client, 24/08). Keeps the trail to the new
+			# asset visible on the document that made it.
+			"fieldname": "created_asset",
+			"fieldtype": "Link",
+			"label": "New-Category Asset",
+			"options": "Asset",
+			"read_only": 1,
+			"no_copy": 1,
+			"depends_on": "eval:doc.created_asset",
+			"insert_after": "target_asset_name",
+			"description": "The asset now carrying the value in the new category — created by this reclassification from the Target Item.",
+		},
+		{
 			# Same rule as the AVA's Adjusted Life (Days) (client, 21/08 —
 			# "as AVA, could we add days"): days combine with months and
 			# shift the end of life, they do not change the period count.
