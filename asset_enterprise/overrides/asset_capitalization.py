@@ -133,6 +133,42 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			if not flt(row.get("amount")) and flt(row.get("qty")) and flt(row.get("rate")):
 				row.amount = flt(row.qty) * flt(row.rate)
 
+		# Same trap one grid along: core fills a consumed row's value
+		# columns in set_asset_values(), which lives in the core validate
+		# this branch deliberately does not call. In the form the JS fetch
+		# hides it; a document built any other way stored 0.00 against a
+		# 35,000 asset (client, 25/08). Resolved through the modules so the
+		# ledger-derived wrappers apply (GAP-006).
+		import erpnext.assets.doctype.asset.asset as core_asset
+		import erpnext.assets.doctype.asset.depreciation as core_depr
+
+		from asset_enterprise.asset_values import recalculate_asset_values
+
+		for row in self.get("asset_items") or []:
+			if not row.get("asset"):
+				continue
+			book = row.get("finance_book") or self.get("finance_book")
+			# The ledger is the fallback for both. Core's value-at-a-date
+			# path builds a temporary schedule and refuses outright for
+			# some states ("This asset already has 0 depreciation periods
+			# booked"), which must not stop a document being saved — the
+			# merge itself reads the ledger anyway.
+			derived = flt(recalculate_asset_values(row.asset, save=False)["net_book_value"])
+			try:
+				row.current_asset_value = flt(
+					core_asset.get_asset_value_after_depreciation(row.asset, finance_book=book)
+				)
+			except Exception:
+				row.current_asset_value = derived
+			try:
+				row.asset_value = flt(
+					core_depr.get_value_after_depreciation_on_disposal_date(
+						row.asset, self.posting_date, finance_book=book
+					)
+				)
+			except Exception:
+				row.asset_value = derived
+
 		# GAP-017 + living-target extension (client, 19/08): Extended Life
 		# months on a LIVING target extend the current end of life — a
 		# real overhaul scenario — handled in merge._resupersede. The

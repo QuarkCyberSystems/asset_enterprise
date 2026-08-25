@@ -1201,6 +1201,32 @@ def _run():
 		)
 		ok = ok and both_ok
 
+		# t26e: and the values must land on the DOCUMENT, not only in the
+		# form's fetch. Core fills them in set_asset_values(), inside the
+		# core validate the Capitalized Maintenance branch does not call.
+		cm_target = make_test_asset(company, gross=90_000, submit=True)
+		cm_cap = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": cm_target.name, "posting_date": nowdate(),
+			"set_posting_time": 1, "entry_type": "Capitalization",
+			"asset_items": [{"asset": nodate.name}]})
+		cm_cap.flags.ignore_permissions = True
+		cm_cap.flags.ignore_mandatory = True
+		cm_cap.insert()
+		stored = cm_cap.asset_items[0]
+		stored_ok = (
+			abs(flt(stored.asset_value) - derived) < 0.01
+			and abs(flt(stored.current_asset_value) - derived) < 0.01
+		)
+		print(
+			f"t26e   consumed row stored on the document: current={flt(stored.current_asset_value):,.2f} "
+			f"asset={flt(stored.asset_value):,.2f} (want {derived:,.2f} each) "
+			f"{'OK' if stored_ok else 'FAIL'}"
+		)
+		ok = ok and stored_ok
+
 		# whitelisting must survive the wrap — the form calls the dotted path
 		from frappe import is_whitelisted
 
