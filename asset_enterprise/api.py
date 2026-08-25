@@ -175,3 +175,35 @@ def scrap_posting_defaults(asset, scrapping_type=None):
 		"cost_center": get_disposal_cost_center(a.company, scrapping_type) or a.cost_center,
 		"allow_cost_center_override": 1 if allow else 0,
 	}
+
+
+@frappe.whitelist()
+def ava_difference_account(asset, transaction_type=None):
+	"""Difference Account for an Asset Value Adjustment, resolved from the
+	Asset Category through the §3.5 chain.
+
+	The form shows it read-only for the types that own an account
+	(client, 24/08): impairment and revaluation are not the user's to
+	route. Resolution stays server-side; the JS only displays what this
+	returns.
+	"""
+	from asset_enterprise.accounts import get_enterprise_account
+
+	frappe.has_permission("Asset", "read", asset, throw=True)
+	field = {
+		"Initial Impairment": "impairment_loss_account",
+		"Upward Revaluation": "revaluation_surplus_oci_account",
+		"Invoice Adjustment": "asset_invoice_difference_account",
+	}.get(transaction_type)
+	if not field:
+		return {"account": None, "locked": 0}
+	a = frappe.db.get_value("Asset", asset, ["company", "asset_category"], as_dict=True)
+	if not a:
+		return {"account": None, "locked": 0}
+	try:
+		account = get_enterprise_account(field, a.company, a.asset_category)
+	except frappe.ValidationError:
+		# Unconfigured: report the gap on the form rather than blocking it.
+		frappe.clear_last_message()
+		account = None
+	return {"account": account, "locked": 1, "asset_category": a.asset_category}

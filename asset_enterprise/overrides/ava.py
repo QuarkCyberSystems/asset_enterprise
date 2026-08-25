@@ -32,13 +32,23 @@ class EnterpriseAVA(AssetValueAdjustment):
 		# §3.5 / §12.14 / §12.15 (Phase 11b T8): default the difference
 		# account from the account-resolution chain by transaction type;
 		# the user can still override.
-		if self._enterprise() and not self.get("difference_account"):
-			field_by_type = {
+		if self._enterprise():
+			self._refuse_manual_invoice_adjustment()
+			# Client, 24/08: for impairment and revaluation the account is
+			# NOT the user's to pick — it comes from the Asset Category
+			# (§3.5 chain) and the field is read-only. Resolved here even
+			# when something was typed in, so the form and the ledger can
+			# never disagree. Invoice Adjustment keeps fill-if-empty: the
+			# invoice flow supplies its own clearing account (D1).
+			forced = {
 				"Initial Impairment": "impairment_loss_account",
 				"Upward Revaluation": "revaluation_surplus_oci_account",
-				"Invoice Adjustment": "asset_invoice_difference_account",
 			}
-			field = field_by_type.get(self.get("transaction_type"))
+			field = forced.get(self.get("transaction_type"))
+			if not field and not self.get("difference_account"):
+				field = {"Invoice Adjustment": "asset_invoice_difference_account"}.get(
+					self.get("transaction_type")
+				)
 			if field:
 				try:
 					from asset_enterprise.accounts import get_enterprise_account
@@ -57,6 +67,32 @@ class EnterpriseAVA(AssetValueAdjustment):
 			# core auto-filled into current_asset_value.
 			self.new_asset_value = self.current_asset_value
 			self.difference_amount = 0
+
+	def _refuse_manual_invoice_adjustment(self):
+		"""Client, 24/08: "Invoice adjustment in select should not be
+		selected manual by user".
+
+		An Invoice Adjustment is raised BY the Purchase Invoice flow
+		(§12.4/§12.5) with the delta and clearing account it computed;
+		one typed by hand would book an invoice difference no invoice
+		asked for. Its own reversal carries the type across and is
+		allowed."""
+		if (
+			self.get("transaction_type") != "Invoice Adjustment"
+			or not self.is_new()
+			or self.get("reversal_of_ava")
+			or frappe.flags.get("ae_invoice_adjustment")
+		):
+			return
+		frappe.throw(
+			_(
+				"Invoice Adjustment is raised automatically by the Purchase Invoice "
+				"that carries the difference — it cannot be created by hand. To change "
+				"an asset's value directly, use Initial Impairment, Upward Revaluation "
+				"or Value + Life Adjustment."
+			),
+			title=_("Not a Manual Transaction Type"),
+		)
 
 	def _enforce_type_contract(self):
 		"""§3.2/§3.4: each transaction type has ONE meaning — the type

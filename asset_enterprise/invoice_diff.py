@@ -547,8 +547,14 @@ def pi_on_submit(doc, method=None):
 			}
 		)
 		ava.flags.ignore_permissions = True
-		ava.insert()
-		ava.submit()
+		# Marks this as the SYSTEM raising the adjustment; a hand-made one
+		# is refused (client, 24/08).
+		frappe.flags.ae_invoice_adjustment = True
+		try:
+			ava.insert()
+			ava.submit()
+		finally:
+			frappe.flags.ae_invoice_adjustment = False
 		row.db_set("purchase_receipt", frappe.db.get_value("Asset", row.asset, "purchase_receipt"))
 		# VR-005 (Phase 11b): flag the PI item row covering this asset.
 		pr_detail = frappe.db.get_value("Asset", row.asset, "purchase_receipt_item")

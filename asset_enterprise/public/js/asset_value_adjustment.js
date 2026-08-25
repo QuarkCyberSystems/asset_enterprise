@@ -4,8 +4,75 @@
 // link, but visually looked like any ordinary adjustment (client,
 // 19/08). Announce the relationship loudly on BOTH documents.
 
+// The Difference Account is resolved from the Asset Category (§3.5) and
+// locked for the types that own one, and Invoice Adjustment is dropped
+// from the picker — it is raised by the Purchase Invoice, never by hand
+// (client, 24/08).
+const AE_SYSTEM_ACCOUNT_TYPES = [
+	"Initial Impairment",
+	"Upward Revaluation",
+	"Invoice Adjustment",
+];
+
+function ae_apply_difference_account(frm) {
+	const ttype = frm.doc.transaction_type;
+	if (!frm.doc.asset || !AE_SYSTEM_ACCOUNT_TYPES.includes(ttype)) {
+		frm.set_df_property("difference_account", "read_only", 0);
+		frm.set_df_property("difference_account", "description", "");
+		return;
+	}
+	frappe.call({
+		method: "asset_enterprise.api.ava_difference_account",
+		args: { asset: frm.doc.asset, transaction_type: ttype },
+		callback(r) {
+			if (!r.message) return;
+			frm.set_df_property("difference_account", "read_only", 1);
+			if (r.message.account) {
+				frm.set_value("difference_account", r.message.account);
+				frm.set_df_property(
+					"difference_account",
+					"description",
+					__("From Asset Category {0}.", [r.message.asset_category])
+				);
+			} else {
+				frm.set_df_property(
+					"difference_account",
+					"description",
+					__(
+						"Not configured on Asset Category {0} or its Company defaults — set it there.",
+						[r.message.asset_category]
+					)
+				);
+			}
+		},
+	});
+}
+
+function ae_hide_invoice_adjustment(frm) {
+	// Only on a NEW document: an existing Invoice Adjustment (or its
+	// reversal) must keep its own value visible in the select.
+	if (!frm.is_new() || frm.doc.transaction_type === "Invoice Adjustment") return;
+	const df = frm.get_docfield("transaction_type");
+	if (!df || !df.options) return;
+	const kept = df.options
+		.split("\n")
+		.filter((o) => o !== "Invoice Adjustment")
+		.join("\n");
+	frm.set_df_property("transaction_type", "options", kept);
+}
+
 frappe.ui.form.on("Asset Value Adjustment", {
+	asset(frm) {
+		ae_apply_difference_account(frm);
+	},
+
+	transaction_type(frm) {
+		ae_apply_difference_account(frm);
+	},
+
 	refresh(frm) {
+		ae_hide_invoice_adjustment(frm);
+		ae_apply_difference_account(frm);
 		if (frm.doc.reversal_of_ava) {
 			frm.set_intro(
 				__(

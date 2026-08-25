@@ -1045,6 +1045,51 @@ def _run():
 		)
 		ok = ok and t19d_ok
 
+		# T24 (client, 24/08): the Difference Account is resolved from the
+		# Asset Category for the types that own one, and a value typed in
+		# does NOT survive — the form shows it read-only, so the document
+		# and the ledger can never disagree.
+		from asset_enterprise.accounts import get_enterprise_account
+
+		v1 = make_test_asset(company, gross=30_000, submit=True)
+		want = get_enterprise_account(
+			"impairment_loss_account", company,
+			frappe.db.get_value("Asset", v1.name, "asset_category"),
+		)
+		wrong = pick_plain_account(company, "Expense")
+		imp = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": v1.name, "company": company,
+			"date": nowdate(), "transaction_type": "Initial Impairment",
+			"current_asset_value": 30_000, "new_asset_value": 25_000,
+			"difference_account": wrong,   # user tries to route it elsewhere
+		})
+		imp.flags.ignore_permissions = True
+		imp.insert()
+		t24_ok = imp.difference_account == want and want != wrong
+		print(
+			f"t24    impairment account from category: {imp.difference_account} "
+			f"(want {want}, user asked for {wrong}) {'OK' if t24_ok else 'FAIL'}"
+		)
+		ok = ok and t24_ok
+
+		# T25: Invoice Adjustment is raised BY the invoice, never by hand.
+		v2 = make_test_asset(company, gross=30_000, submit=True)
+		try:
+			bad = frappe.get_doc({
+				"doctype": "Asset Value Adjustment", "asset": v2.name, "company": company,
+				"date": nowdate(), "transaction_type": "Invoice Adjustment",
+				"current_asset_value": 30_000, "new_asset_value": 31_000,
+			})
+			bad.flags.ignore_permissions = True
+			bad.insert()
+			print("t25    FAIL (manual Invoice Adjustment accepted)")
+			ok = False
+		except frappe.ValidationError as e:
+			t25_ok = "cannot be created by hand" in str(e)
+			print(f"t25    manual Invoice Adjustment refused: "
+			      f"{'OK' if t25_ok else 'FAIL: ' + str(e)[:120]}")
+			ok = ok and t25_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow
