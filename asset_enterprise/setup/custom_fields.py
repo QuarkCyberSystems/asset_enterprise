@@ -435,6 +435,14 @@ CUSTOM_FIELDS = {
 			"insert_after": "company",
 		},
 		{
+			# C6 §9.1: optional free-text sub-type (e.g. a value-and-life
+			# adjustment's scenario); carried onto the Financial Treatment.
+			"fieldname": "transaction_sub_type",
+			"fieldtype": "Data",
+			"label": "Transaction Sub-Type",
+			"insert_after": "transaction_type",
+		},
+		{
 			# GAP-013: positive extends, negative shortens; prospective recalc.
 			# §3.2/§3.4: life fields belong only to the two life-bearing types.
 			"fieldname": "adjusted_life_months",
@@ -501,6 +509,17 @@ CUSTOM_FIELDS = {
 			"insert_after": "supersedes",
 		},
 		{
+			# C6 §9.1: the forward side of the two-way link — "who
+			# replaced me". Set by supersede_and_regenerate alongside the
+			# backward `supersedes`.
+			"fieldname": "superseded_by",
+			"fieldtype": "Link",
+			"label": "Superseded By",
+			"options": "Asset Depreciation Schedule",
+			"read_only": 1,
+			"insert_after": "superseded_on",
+		},
+		{
 			# which business document caused this generation — makes the
 			# "why does this asset have N superseded schedules" question
 			# self-answering on screen (client, 19/08).
@@ -510,7 +529,7 @@ CUSTOM_FIELDS = {
 			"options": "DocType",
 			"read_only": 1,
 			"hidden": 1,
-			"insert_after": "superseded_on",
+			"insert_after": "superseded_by",
 		},
 		{
 			"fieldname": "triggered_by",

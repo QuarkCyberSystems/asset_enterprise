@@ -69,3 +69,43 @@ def asset_dashboard(data=None):
 		g["items"] = [i for i in g["items"] if i not in listed]
 	out.transactions = existing + [g for g in groups if g["items"]]
 	return out
+
+
+def capitalization_dashboard(data=None):
+	"""Connections on an Asset Capitalization: what it actually created.
+
+	The document posts a Material Issue, journal entries and treatments,
+	and none of them were reachable from it — core ships no dashboard for
+	this doctype (client, 25/08: "there is no links or hints to these
+	documents").
+
+	Display only: links come from the fields themselves, so this changes
+	nothing about cancellation. The Stock Entry back-link DID widen the
+	desk's Cancel-All cascade, but that came from the field added with
+	stock consumption, and is handled by exempting Stock Entry and
+	refusing a direct cancel of the issue.
+	"""
+	out = frappe._dict(data or {})
+	out.fieldname = "asset_capitalization"
+	out.non_standard_fieldnames = dict(out.get("non_standard_fieldnames") or {}, **{
+		# the reversal counter-document points back at its source
+		"Asset Capitalization": "reversal_of_capitalization",
+		"Financial Treatment": "source_name",
+		"Asset Depreciation Schedule": "triggered_by",
+	})
+	out.dynamic_links = dict(out.get("dynamic_links") or {}, **{
+		"source_name": ["Asset Capitalization", "source_doctype"],
+		"triggered_by": ["Asset Capitalization", "triggered_by_doctype"],
+	})
+	groups = [
+		{"label": _("Materials"), "items": ["Stock Entry"]},
+		{"label": _("Financial Impact"), "items": ["Financial Treatment"]},
+		{"label": _("Schedule Generations"), "items": ["Asset Depreciation Schedule"]},
+		{"label": _("Reversal"), "items": ["Asset Capitalization"]},
+	]
+	existing = list(out.get("transactions") or [])
+	listed = {i for g in existing for i in g.get("items", [])}
+	for g in groups:
+		g["items"] = [i for i in g["items"] if i not in listed]
+	out.transactions = existing + [g for g in groups if g["items"]]
+	return out

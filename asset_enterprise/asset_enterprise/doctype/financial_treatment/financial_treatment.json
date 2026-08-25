@@ -11,6 +11,7 @@
   "source_name",
   "transaction_category",
   "transaction_type",
+  "transaction_sub_type",
   "column_break_a",
   "asset",
   "company",
@@ -27,6 +28,9 @@
   "voucher_no",
   "column_break_c",
   "status",
+  "is_reversal",
+  "reverses",
+  "account_set",
   "reversal_reference"
  ],
  "fields": [
@@ -60,6 +64,13 @@
    "fieldname": "transaction_type",
    "fieldtype": "Data",
    "label": "Transaction Type",
+   "read_only": 1
+  },
+  {
+   "description": "Detailed scenario of the transaction (C6 \u00a79.2), carried from the source document's sub-type where it has one.",
+   "fieldname": "transaction_sub_type",
+   "fieldtype": "Data",
+   "label": "Transaction Sub-Type",
    "read_only": 1
   },
   {
@@ -153,6 +164,29 @@
    "in_standard_filter": 1,
    "label": "Status",
    "options": "Pending\nPosted\nReversed\nCancelled",
+   "read_only": 1
+  },
+  {
+   "description": "True when this treatment is the mirror of an earlier one (set by TCC Reverse Mode; C6 \u00a79.2).",
+   "fieldname": "is_reversal",
+   "fieldtype": "Check",
+   "label": "Is Reversal",
+   "read_only": 1
+  },
+  {
+   "description": "The Financial Treatment this one reverses (C6 \u00a79.2). Populated together with reversal_reference.",
+   "fieldname": "reverses",
+   "fieldtype": "Link",
+   "label": "Reverses",
+   "options": "Financial Treatment",
+   "read_only": 1,
+   "depends_on": "eval:doc.is_reversal"
+  },
+  {
+   "description": "Snapshot of the account legs behind this treatment (C6 \u00a79.2) — from the linked Journal Entry, or the voucher's GL when posted under a run voucher.",
+   "fieldname": "account_set",
+   "fieldtype": "JSON",
+   "label": "Account Set",
    "read_only": 1
   },
   {

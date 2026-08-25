@@ -81,6 +81,10 @@ def apply(
 			"source_name": source_name,
 			"transaction_category": category,
 			"transaction_type": transaction_type,
+			# C6 §9.2: carry the source's sub-type onto the treatment.
+			"transaction_sub_type": (
+				source_doc.get("transaction_sub_type") if not isinstance(source_doc, (tuple, list)) else None
+			),
 			"asset": asset,
 			"company": company,
 			"posting_date": posting_date or nowdate(),
@@ -94,6 +98,8 @@ def apply(
 			# manufacturing a Journal Entry purely to hold the reference.
 			"voucher_type": voucher_type,
 			"voucher_no": voucher_no,
+			# C6 §9.2: snapshot of the account legs behind this treatment.
+			"account_set": _account_set(journal_entry, voucher_type, voucher_no),
 			"status": status,
 		}
 	)
@@ -135,6 +141,8 @@ def reverse(
 			"source_name": source_name,
 			"transaction_category": original.transaction_category,
 			"transaction_type": f"Reversal of {original.transaction_type or original.transaction_category}",
+			# C6 §9.2: the mirror carries the original's sub-type.
+			"transaction_sub_type": original.get("transaction_sub_type"),
 			"asset": original.asset,
 			"company": original.company,
 			"posting_date": posting_date or nowdate(),
@@ -145,6 +153,12 @@ def reverse(
 			"journal_entry": journal_entry,
 			"voucher_type": voucher_type or original.get("voucher_type"),
 			"voucher_no": voucher_no or original.get("voucher_no"),
+			# C6 §9.2: the design's reversal flag + link (kept in step
+			# with reversal_reference, which the values fold keys on).
+			"is_reversal": 1,
+			"reverses": original.name,
+			"account_set": _account_set(journal_entry, voucher_type or original.get("voucher_type"),
+				voucher_no or original.get("voucher_no")),
 			"status": "Posted",
 			"reversal_reference": original.name,
 		}
@@ -162,10 +176,44 @@ def reverse(
 def _validate_category(category):
 	if category not in CATEGORIES:
 		frappe.throw(_("Unknown Transaction Category: {0}").format(category))
+	row = frappe.db.get_value("Transaction Category", category, "enabled")
 	if not frappe.db.exists("Transaction Category", category):
 		frappe.throw(
 			_("Transaction Category {0} is not seeded — run asset_enterprise migrate.").format(category)
 		)
+	# C6 §9.2: a disabled category is refused by the controller.
+	if row is not None and not row:
+		frappe.throw(
+			_("Transaction Category {0} is disabled — enable it in the master to use it.").format(
+				category
+			)
+		)
+
+
+def _account_set(journal_entry=None, voucher_type=None, voucher_no=None):
+	"""C6 §9.2: the account legs behind a treatment, for audit.
+
+	From the linked Journal Entry's account rows, or — when the GL was
+	posted under a run voucher (GA-0006 AM-01) — from that voucher's GL
+	rows. Returns a JSON-serialisable list of account names."""
+	if journal_entry:
+		return [
+			r[0]
+			for r in frappe.db.sql(
+				"select account from `tabJournal Entry Account` where parent = %s order by idx",
+				journal_entry,
+			)
+		]
+	if voucher_type and voucher_no:
+		return [
+			r[0]
+			for r in frappe.db.sql(
+				"select distinct account from `tabGL Entry` where voucher_type = %s "
+				"and voucher_no = %s and is_cancelled = 0 order by account",
+				(voucher_type, voucher_no),
+			)
+		]
+	return []
 
 
 def _source_ref(source_doc):

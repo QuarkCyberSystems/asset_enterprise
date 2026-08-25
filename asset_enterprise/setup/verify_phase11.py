@@ -2068,6 +2068,59 @@ def _run():
 		)
 		ok = ok and t30b_ok
 
+		# T30c (client, 25/08: "we are not supposed to even have that pop
+		# up"). The Material Issue a capitalization raises is an artefact
+		# of it. The desk's Cancel-All listed it, so accepting would have
+		# cancelled the issue AND let the reversal post a Material Receipt
+		# — stock back twice; on a routed item the cascade fails part-way
+		# instead. Verified against the desk's own resolver, not ours.
+		from frappe.desk.form.linked_with import get_submitted_linked_docs
+
+		cm2_target = _mk_posted(50_000)
+		cm2 = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": cm2_target.name, "posting_date": nowdate(),
+			"set_posting_time": 1, "entry_type": "Capitalization",
+			"stock_items": [{"item_code": stock_item, "stock_qty": 5, "warehouse": wh,
+			                 "valuation_rate": 100, "amount": 500}]})
+		cm2.flags.ignore_permissions = True
+		cm2.flags.ignore_mandatory = True
+		cm2.insert()
+		cm2.submit()
+		cm2_issue = frappe.db.get_value("Stock Entry",
+			{"asset_capitalization": cm2.name, "docstatus": 1}, "name")
+		offered = get_submitted_linked_docs("Asset Capitalization", cm2.name)
+		offered_types = {d["doctype"] for d in (offered.get("docs") or [])}
+		t30c_ok = "Stock Entry" not in offered_types
+		print(f"t30c   Cancel-All no longer offers the Material Issue: offered={sorted(offered_types) or 'nothing'} "
+		      f"{'OK' if t30c_ok else 'FAIL'}")
+		ok = ok and t30c_ok
+
+		# and it cannot be cancelled on its own either
+		try:
+			frappe.get_doc("Stock Entry", cm2_issue).cancel()
+			print("t30d   FAIL (the Material Issue cancelled on its own)")
+			ok = False
+		except frappe.ValidationError as e:
+			msg = frappe.utils.strip_html(str(e))
+			t30d_ok = "cannot be cancelled on its own" in msg and cm2.name in msg
+			print(f"t30d   direct cancel of the issue refused, naming {cm2.name}: "
+			      f"{'OK' if t30d_ok else 'FAIL: ' + msg[:110]}")
+			ok = ok and t30d_ok
+
+		# the sanctioned route still works end to end
+		cm2.reload()
+		cm2.cancel()
+		t30e_ok = bool(frappe.db.get_value("Stock Entry",
+			{"asset_capitalization": frappe.db.get_value("Asset Capitalization",
+				{"reversal_of_capitalization": cm2.name, "docstatus": 1}, "name"),
+			 "stock_entry_type": "Material Receipt", "docstatus": 1}, "name"))
+		print(f"t30e   reversing the capitalization still returns the materials: "
+		      f"{'OK' if t30e_ok else 'FAIL'}")
+		ok = ok and t30e_ok
+
 		# T31 (client, 25/08 — ACC-ADS-2026-00401): "the schedule is
 		# superseded, the action should be prevented". Posting from a
 		# superseded generation booked a stale amount AND left the Active

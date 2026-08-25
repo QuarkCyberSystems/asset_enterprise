@@ -9,7 +9,9 @@
  "field_order": [
   "category_name",
   "description",
-  "supports_reverse_mode"
+  "enabled",
+  "supports_reverse_mode",
+  "handler_module"
  ],
  "fields": [
   {
@@ -26,10 +28,24 @@
   },
   {
    "default": "1",
+   "description": "A disabled category is refused by the Transaction Category Controller (C6 \u00a79.2).",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "default": "1",
    "description": "Reverse Mode processes reversals through the same category logic (GA-0005-01 \u00a73.7).",
    "fieldname": "supports_reverse_mode",
    "fieldtype": "Check",
    "label": "Supports Reverse Mode"
+  },
+  {
+   "description": "Python module implementing this category's handler (C6 \u00a79.2). All handlers are consolidated in one module.",
+   "fieldname": "handler_module",
+   "fieldtype": "Data",
+   "label": "Handler Module",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 1,

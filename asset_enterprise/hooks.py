@@ -74,6 +74,10 @@ doc_events = {
 		"on_submit": "asset_enterprise.invoice_diff.pr_on_submit",
 		"before_cancel": "asset_enterprise.invoice_diff.pr_before_cancel",
 	},
+	"Stock Entry": {
+		# a capitalization's Material Issue is never cancelled on its own
+		"before_cancel": "asset_enterprise.overrides.stock_entry.block_capitalization_issue_cancel",
+	},
 	"Journal Entry": {
 		# GAP-023 / TC-038: fill the Asset accounting dimension from the
 		# row's own Asset reference so the General Ledger can be filtered
@@ -311,6 +315,9 @@ override_doctype_dashboards = {
 	# Core lists Asset Movement only, so a scrap, its reversal, a
 	# revaluation or a repair left no visible trail on the asset.
 	"Asset": "asset_enterprise.dashboards.asset_dashboard",
+	# core ships none, so the Material Issue and the entries it posted
+	# were unreachable from the document that created them.
+	"Asset Capitalization": "asset_enterprise.dashboards.capitalization_dashboard",
 }
 
 # exempt linked doctypes from being automatically cancelled
@@ -326,7 +333,13 @@ override_doctype_dashboards = {
 # performed by the owning document's before_cancel — see
 # invoice_diff.pr_before_cancel (GAP-004.4) — so the gates and the TCC
 # reversal always run.
-auto_cancel_exempted_doctypes = ["Asset Depreciation Schedule", "Asset"]
+# "Stock Entry" joins them (client, 25/08: "we are not supposed to even
+# have that pop up"): the Material Issue a Capitalized Maintenance
+# raises is an artefact of that document. The desk offered to cancel
+# it in the Cancel-All cascade, which would have returned the stock
+# once by cancellation and again through the reversal's Material
+# Receipt — and on a routed item the cascade fails part-way instead.
+auto_cancel_exempted_doctypes = ["Asset Depreciation Schedule", "Asset", "Stock Entry"]
 
 # Ignore links to specified DocTypes when deleting documents
 # -----------------------------------------------------------
