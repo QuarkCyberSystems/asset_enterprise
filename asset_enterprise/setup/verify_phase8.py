@@ -3,7 +3,7 @@
 import traceback
 
 import frappe
-from frappe.utils import add_months, cint, flt, getdate, nowdate
+from frappe.utils import add_months, cint, flt, get_first_day, get_last_day, getdate, nowdate
 
 
 def run():
@@ -178,43 +178,110 @@ def _run():
 		)
 		ok = ok and combo_ok
 
-		# GAP-021: the transfer month splits BY COST CENTRE — days before
-		# the transfer stay on the PRIOR cc, days from the transfer on the
-		# new one. Counting tagged rows alone let a mistag through: both
-		# halves carried the new CC (client, 20/08, ACC-ASM-2026-01092 —
-		# the pre-transfer portion posted to the wrong cost centre).
-		halves = frappe.db.sql(
-			"""
-			select ds.schedule_date, ds.cost_center, ds.days_in_period
-			from `tabDepreciation Schedule` ds
-			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
-			  and ds.cost_center is not null
-			order by ds.schedule_date, ds.idx
-			""",
-			a1.name, as_dict=True,
-		)
-		new_half = [h for h in halves if h.cost_center == cc2]
-		old_half = [h for h in halves if h.cost_center == prior_cc]
+		# GAP-021: the transfer period is split at POSTING time into ONE
+		# entry with a debit per cost centre — the design's shape:
+		#   DR Depreciation Expense (Old CC) / DR (New CC) / CR Accum.
+		# The schedule itself is NOT split: a row-level split produced two
+		# entries with two accum credits and outlived a cancelled
+		# movement (client, TC-035).
+		from asset_enterprise.depreciation import cost_centre_on, cost_centre_split
+
 		day = getdate(nowdate()).day
-		mid_month = day > 1
-		g21_ok = bool(new_half) and (not mid_month or (
-			bool(old_half) and cint(old_half[0].days_in_period) == day - 1
-		))
+		period_start = get_first_day(nowdate())
+		period_end = get_last_day(nowdate())
+		split = cost_centre_split(a1.name, period_start, period_end, 3100.0, company)
+		g21_ok = (
+			# before the transfer date the OLD centre holds it
+			cost_centre_on(a1.name, period_start) == prior_cc
+			and cost_centre_on(a1.name, period_end) == cc2
+			and (len(split) == 2 if day > 1 else len(split) == 1)
+			and {cc for cc, _amt in split} <= {prior_cc, cc2}
+			and abs(sum(amt for _cc, amt in split) - 3100.0) < 0.01
+		)
 		print(
-			f"gap021 transfer-month CC split: old-cc rows "
-			f"{[(str(h.schedule_date), h.days_in_period) for h in old_half]} / new-cc rows "
-			f"{[(str(h.schedule_date), h.days_in_period) for h in new_half]} "
-			f"(want pre-transfer days on {prior_cc}) {'OK' if g21_ok else 'FAIL'}"
+			f"gap021 period split at posting: {[(cc, round(amt, 2)) for cc, amt in split]} "
+			f"(want {prior_cc} then {cc2}, summing 3100.00) {'OK' if g21_ok else 'FAIL'}"
 		)
 		ok = ok and g21_ok
+
+		# schedule rows stay untouched — one row per period, no CC tags
+		tagged = frappe.db.sql(
+			"""select count(*) from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status='Active' and ads.docstatus=1
+			     and ifnull(ds.cost_center,'') != ''""",
+			a1.name,
+		)[0][0]
+		print(f"gap021b schedule left unsplit and untagged: {tagged} tagged rows (want 0) "
+		      f"{'OK' if tagged == 0 else 'FAIL'}")
+		ok = ok and tagged == 0
+
+		# gap021c (client, TC-035, 20/08): a period that ended BEFORE a
+		# transfer must be expensed to the OLD centre however late it is
+		# posted. This is the one that kept failing: attribution used to
+		# come from the asset's cost_center field, read at posting time,
+		# so June and July went to the centre the asset moved to in
+		# August (ACC-JV-2026-00893/00894 on ACC-ASS-2026-00154).
+		from asset_enterprise.depreciation import _post_one, enable_depreciation
+
+		late = make_test_asset(company, gross=36_000, submit=True)
+		frappe.db.set_value("Asset", late.name, "cost_center", prior_cc, update_modified=False)
+		enable_depreciation(
+			late.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+			available_for_use_date=str(get_first_day(add_months(nowdate(), -2))),
+			depreciation_start_date=str(get_first_day(add_months(nowdate(), -2))),
+		)
+		mv2 = frappe.get_doc({
+			"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+			"transaction_date": frappe.utils.now(),
+			"assets": [{"asset": late.name, "target_cost_center": cc2}]})
+		mv2.flags.ignore_permissions = True
+		mv2.insert()
+		mv2.submit()
+		old_row = frappe.db.sql(
+			"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+			   ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+			   ds.daily_rate, ds.days_in_period
+			from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status='Active' and ads.docstatus=1
+			  and ifnull(ds.journal_entry,'')='' and ds.schedule_date < %s
+			order by ds.schedule_date limit 1""",
+			(late.name, get_first_day(nowdate())), as_dict=True,
+		)[0]
+		_post_one(old_row, getdate(nowdate()))
+		je = frappe.db.get_value("Depreciation Schedule", old_row.row_name, "journal_entry")
+		legs = frappe.get_all(
+			"Journal Entry Account", filters={"parent": je, "debit": (">", 0)},
+			fields=["account", "debit", "cost_center"])
+		g21c_ok = bool(legs) and all(l.cost_center == prior_cc for l in legs)
+		print(
+			f"gap021c pre-transfer period posted AFTER the transfer: JE {je} debits "
+			f"{[(l.cost_center, l.debit) for l in legs]} (want all on {prior_cc}, "
+			f"asset now sits in {cc2}) {'OK' if g21c_ok else 'FAIL'}"
+		)
+		ok = ok and g21c_ok
 
 		# GAP-028: cancel restores prior CC.
 		mv.reload()
 		mv.cancel()
 		restored = frappe.db.get_value("Asset", a1.name, "cost_center")
-		print(f"gap028 CC restored on cancel: {restored} == {prior_cc} {'OK' if restored == prior_cc else 'FAIL'}")
-		ok = ok and restored == prior_cc
+		# and the ATTRIBUTION reverts with it — a cancelled movement is
+		# excluded from the history, so future periods route to the prior
+		# centre again. The old row-split left them on the new one.
+		after_cancel = cost_centre_split(
+			a1.name, get_first_day(nowdate()), get_last_day(nowdate()), 3100.0, company
+		)
+		g28_ok = (
+			restored == prior_cc
+			and len(after_cancel) == 1
+			and after_cancel[0][0] == prior_cc
+		)
+		print(
+			f"gap028 CC restored on cancel: {restored} == {prior_cc}; attribution back to "
+			f"{[(cc, round(amt, 2)) for cc, amt in after_cancel]} {'OK' if g28_ok else 'FAIL'}"
+		)
+		ok = ok and g28_ok
 
 		# --------------------------------------------------------- reports
 		from asset_enterprise.asset_enterprise.report.asset_daily_reconciliation.asset_daily_reconciliation import (

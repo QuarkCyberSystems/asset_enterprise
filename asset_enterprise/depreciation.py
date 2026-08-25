@@ -1179,55 +1179,115 @@ def _split_row_by_fiscal_year(row, posting_date, company):
 	return prior_amount, fa_module_round(amount - prior_amount, company)
 
 
-def cost_center_segments(asset, row):
-	"""GAP-021 / TC-035: a cost-centre change part-way through a period
-	splits that period's debit between the two centres by days. The
-	primitive existed but nothing called it, so the whole period landed
-	on whichever centre the asset happened to carry at posting time."""
-	end = getdate(row.schedule_date)
-	days = cint(row.days_in_period) or (date_diff(end, end) + 1)
-	start = add_days(end, -(days - 1))
+def cost_centre_timeline(asset_name, fallback=None):
+	"""Who held this asset, and from when — built from its MOVEMENTS.
+
+	Returns [(from_date | None, cost_centre), ...] oldest first; the first
+	entry's date is None, meaning "since the beginning".
+
+	This is the single source of truth for cost-centre attribution. The
+	asset's own `cost_center` field is the CURRENT holder and nothing
+	more: it is overwritten by every transfer, so reading it while
+	posting attributes history to wherever the asset happens to sit now.
+	That is how periods entirely BEFORE a transfer came to be expensed to
+	the new centre whenever they posted late (client, TC-035, 20/08).
+
+	Cancelled movements are excluded, so reversing a transfer restores
+	the attribution by itself — GAP-021: "restores prior CC for future
+	depreciation only".
+	"""
 	moves = frappe.db.sql(
 		"""select am.transaction_date, ami.target_cost_center, ami.source_cost_center
 		   from `tabAsset Movement Item` ami
 		   join `tabAsset Movement` am on am.name = ami.parent
 		   where ami.asset = %s and am.docstatus = 1
 		     and ifnull(ami.target_cost_center, '') != ''
-		     and am.transaction_date > %s and am.transaction_date <= %s
-		   order by am.transaction_date""",
-		(row.asset, start, end),
+		   order by am.transaction_date, am.creation""",
+		asset_name,
 		as_dict=True,
 	)
-	fallback = row.cost_center or asset.cost_center
+	if fallback is None:
+		fallback = frappe.db.get_value("Asset", asset_name, "cost_center")
 	if not moves:
-		return [(fallback, flt(row.depreciation_amount))]
-
-	company = asset.company
-	boundaries = []
-	current_cc = moves[0].source_cost_center or fallback
-	cursor = start
+		return [(None, fallback)]
+	# The centre the asset started in is the FIRST transfer's source; the
+	# asset's own field cannot supply it once a transfer has happened.
+	origin = moves[0].source_cost_center or fallback
+	timeline = [(None, origin)]
 	for move in moves:
-		change = getdate(move.transaction_date)
-		segment_days = date_diff(change, cursor)
-		if segment_days > 0:
-			boundaries.append((current_cc, segment_days))
-		current_cc = move.target_cost_center
-		cursor = change
+		timeline.append((getdate(move.transaction_date), move.target_cost_center))
+	return timeline
+
+
+def cost_centre_on(asset_name, on_date, fallback=None):
+	"""The cost centre that held the asset on `on_date`."""
+	held = None
+	for start, cc in cost_centre_timeline(asset_name, fallback=fallback):
+		if start is None or getdate(start) <= getdate(on_date):
+			held = cc
+		else:
+			break
+	return held
+
+
+def cost_centre_split(asset_name, start_date, end_date, amount, company, fallback=None):
+	"""Split `amount` across the centres that held the asset between
+	`start_date` and `end_date`, by days.
+
+	GAP-021 posts ONE entry per period with a debit per centre:
+	    DR Depreciation Expense (Old CC)  [days before transfer / total]
+	    DR Depreciation Expense (New CC)  [days after transfer / total]
+	    CR Accumulated Depreciation       [full period amount]
+	"""
+	start, end = getdate(start_date), getdate(end_date)
+	total_days = date_diff(end, start) + 1
+	if total_days <= 0:
+		return []
+
+	timeline = cost_centre_timeline(asset_name, fallback=fallback)
+	# Boundaries inside the period, plus the centre in force when it began.
+	boundaries = []
+	current = cost_centre_on(asset_name, start, fallback=fallback)
+	cursor = start
+	for change, cc in timeline:
+		if change is None or getdate(change) <= start or getdate(change) > end:
+			continue
+		days = date_diff(getdate(change), cursor)
+		if days > 0:
+			boundaries.append((current, days))
+		current = cc
+		cursor = getdate(change)
 	remaining = date_diff(end, cursor) + 1
 	if remaining > 0:
-		boundaries.append((current_cc, remaining))
+		boundaries.append((current, remaining))
 
-	total_days = sum(d for _cc, d in boundaries) or days
-	amount = flt(row.depreciation_amount)
 	out, allocated = [], 0.0
 	for idx, (cc, seg_days) in enumerate(boundaries):
 		if idx == len(boundaries) - 1:
-			part = fa_module_round(amount - allocated, company)
+			part = fa_module_round(flt(amount) - allocated, company)
 		else:
-			part = fa_module_round(amount * seg_days / total_days, company)
+			part = fa_module_round(flt(amount) * seg_days / total_days, company)
 		allocated = flt(allocated + part)
 		out.append((cc, part))
 	return [(cc, part) for cc, part in out if flt(part)]
+
+
+def cost_center_segments(asset, row):
+	"""GAP-021 / TC-035: the period's debit split across the centres that
+	held the asset DURING it — never the one it happens to carry now."""
+	end = getdate(row.schedule_date)
+	days = cint(row.days_in_period) or 1
+	start = add_days(end, -(days - 1))
+	return cost_centre_split(
+		row.asset,
+		start,
+		end,
+		flt(row.depreciation_amount),
+		asset.company,
+		# A row explicitly tagged by an older build still wins, so nothing
+		# already posted is re-attributed underneath the ledger.
+		fallback=row.cost_center or asset.cost_center,
+	)
 
 
 def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount, segments, cost_center):

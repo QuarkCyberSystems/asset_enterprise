@@ -120,7 +120,16 @@ def merge_sources_into_composite(cap_doc):
 			frappe.throw(_("Source Asset {0} has negative NBV.").format(source.name))
 
 		src_accounts = _category_accounts(source)
-		cc = row.get("cost_center") or source.get("cost_center")
+		# The centre that held the SOURCE on the merge date — not wherever
+		# it sits now (a merge booked after a later transfer belongs to
+		# the centre that actually had it).
+		from asset_enterprise.depreciation import cost_centre_on
+
+		cc = (
+			row.get("cost_center")
+			or cost_centre_on(source.name, posting_date)
+			or source.get("cost_center")
+		)
 
 		# Disposal leg (source).
 		if accum:
@@ -602,7 +611,9 @@ def reclassify(cap_doc):
 
 	src_accounts = _category_accounts(source)
 	tgt_accounts = _category_accounts(target)
-	cc = source.get("cost_center")
+	from asset_enterprise.depreciation import cost_centre_on
+
+	cc = cost_centre_on(source.name, posting_date) or source.get("cost_center")
 
 	accounts = []
 	if accum:

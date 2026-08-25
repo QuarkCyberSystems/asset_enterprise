@@ -468,6 +468,7 @@ def pi_on_submit(doc, method=None):
 		return
 
 	from asset_enterprise.accounts import get_enterprise_account
+	from asset_enterprise.depreciation import cost_centre_on
 
 	transfer_legs = []  # Phase 11c D1: delta moves OUT of ARBNB at PI time
 
@@ -543,7 +544,8 @@ def pi_on_submit(doc, method=None):
 				"current_asset_value": current,
 				"new_asset_value": fa_module_round(current + price_delta, doc.company),
 				"difference_account": clearing,
-				"cost_center": frappe.db.get_value("Asset", row.asset, "cost_center"),
+				"cost_center": cost_centre_on(row.asset, doc.posting_date)
+				or frappe.db.get_value("Asset", row.asset, "cost_center"),
 			}
 		)
 		ava.flags.ignore_permissions = True
