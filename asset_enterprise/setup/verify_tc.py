@@ -2862,6 +2862,107 @@ def tc047e():
 	)
 
 
+# ============================================================== TC-047f
+@tc("TC-047f", "Capitalized Repair — future schedule rebuilt from the corrected base")
+def tc047f():
+	# Blast radius of the 2026-08-25 client issue: the double-counted NBV
+	# was spread into the FUTURE schedule rows, not just the display
+	# (ACC-ASS-2026-00214 had 32,333.36 unposted; it should be 17,333.36).
+	# Invariant: the Active schedule's unposted total always equals the
+	# derived NBV minus salvage — the very thing the bug violated.
+	from frappe.utils import get_first_day
+
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import _post_one, enable_depreciation
+
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	expense = _plain(company, "Expense")
+	cc = frappe.db.get_value(
+		"Cost Center", {"company": company, "is_group": 0}, "name"
+	) or frappe.db.get_value("Company", company, "cost_center")
+	asset = _plain_asset(company, cat, "TC-047f Repair Schedule", 2_000)
+	asset.submit()
+	enable_depreciation(
+		asset.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+		depreciation_start_date=get_first_day(add_months(nowdate(), -12)),
+	)
+	row = frappe.db.sql(
+		"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+		   ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+		   ds.daily_rate, ds.days_in_period
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		  and ifnull(ds.journal_entry, '') = ''
+		order by ds.schedule_date limit 1""",
+		asset.name,
+		as_dict=True,
+	)[0]
+	_post_one(row, getdate(nowdate()))
+
+	svc = "TC-REPAIR-SERVICE"
+	if not frappe.db.exists("Item", svc):
+		frappe.get_doc({
+			"doctype": "Item", "item_code": svc, "item_name": "TC Repair Service",
+			"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+			"is_stock_item": 0, "is_fixed_asset": 0, "is_purchase_item": 1,
+			"stock_uom": "Nos",
+		}).insert(ignore_permissions=True)
+	pi = frappe.get_doc({
+		"doctype": "Purchase Invoice",
+		"company": company,
+		"supplier": _supplier(),
+		"posting_date": nowdate(),
+		"set_posting_time": 1,
+		"items": [{
+			"item_code": svc, "qty": 1, "rate": 16_000,
+			"expense_account": expense, "cost_center": cc,
+		}],
+	})
+	pi.flags.ignore_permissions = True
+	pi.insert()
+	pi.submit()
+	repair = frappe.get_doc({
+		"doctype": "Asset Repair",
+		"asset": asset.name,
+		"company": company,
+		"failure_date": nowdate(),
+		"repair_status": "Completed",
+		"completion_date": nowdate(),
+		"capitalize_repair_cost": 1,
+		"cost_center": cc,
+		"capital_work_in_progress_account": clearing,
+		"invoices": [{"purchase_invoice": pi.name, "expense_account": expense, "repair_cost": 16_000}],
+	})
+	repair.flags.ignore_permissions = True
+	repair.insert()
+	repair.submit()
+
+	values = recalculate_asset_values(asset.name, save=False)
+	salvage = flt(frappe.db.get_value(
+		"Asset Finance Book", {"parent": asset.name}, "expected_value_after_useful_life") or 0
+	)
+	expected = flt(values["net_book_value"]) - salvage
+	sched_unposted = flt(
+		frappe.db.sql(
+			"""select coalesce(sum(ds.depreciation_amount), 0)
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			     and ifnull(ds.journal_entry, '') = ''""",
+			asset.name,
+		)[0][0]
+	)
+	ok = abs(sched_unposted - expected) < 0.01
+	return (
+		("PASS" if ok else "FAIL"),
+		f"Active schedule unposted {sched_unposted:,.2f} vs derived NBV {expected:,.2f} "
+		f"(HAV {values['historical_asset_value']:,.2f})",
+	)
+
+
 # ============================================================== TC-048
 @tc("TC-048", "Composite Partial Scrap by Amount")
 def tc048():

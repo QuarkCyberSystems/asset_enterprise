@@ -727,10 +727,56 @@ def find_unlinked_repair_treatments(company=None, asset=None):
 	)
 
 
+def _rebuild_schedule_after_voucher_fix(asset_name):
+	"""The double-counted NBV was already spread into the FUTURE schedule
+	rows by the post-repair regeneration — the blast radius beyond the
+	display (client, 2026-08-25: ACC-ASS-2026-00214 had 32,333.36 unposted
+	across 24 rows; it should be 17,333.36). Rebuild future rows from the
+	corrected derived base; posted rows are preserved (supersession,
+	IA-05). Returns True when a rebuild was needed."""
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
+
+	if not frappe.db.exists(
+		"Asset Depreciation Schedule",
+		{"asset": asset_name, "status": "Active", "docstatus": 1},
+	):
+		return False
+	values = recalculate_asset_values(asset_name, save=False)
+	salvage = flt(
+		frappe.db.get_value("Asset Finance Book", {"parent": asset_name},
+			"expected_value_after_useful_life") or 0
+	)
+	expected = flt(values["net_book_value"]) - salvage
+	unposted = flt(
+		frappe.db.sql(
+			"""select coalesce(sum(ds.depreciation_amount), 0)
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			     and ifnull(ds.journal_entry, '') = ''""",
+			asset_name,
+		)[0][0]
+	)
+	if expected <= 0 or abs(unposted - expected) < 0.01:
+		return False
+	last_posted = last_posted_schedule_date(asset_name)
+	if not last_posted:
+		return False
+	supersede_and_regenerate(
+		asset_name,
+		as_of_date=getdate(last_posted),
+		reason=_("Rebuilt after repair-voucher backfill — future rows were "
+			"spread over a double-counted NBV (client 2026-08-25)"),
+	)
+	return True
+
+
 def link_repair_voucher_references(company=None, asset=None, dry_run=1):
 	"""Report (dry_run=1) or set (dry_run=0) the missing voucher link on
 	Capitalized Repair treatments, then recalculate the affected assets
-	so their ledger-derived HAV drops the double-count.
+	so their ledger-derived HAV drops the double-count, and rebuild the
+	future schedule rows that were spread over the corrupted NBV.
 
 	    bench --site <site> execute \\
 	        asset_enterprise.repair.link_repair_voucher_references \\
@@ -744,9 +790,10 @@ def link_repair_voucher_references(company=None, asset=None, dry_run=1):
 	stuck = find_unlinked_repair_treatments(company=company, asset=asset)
 	print(f"{len(stuck)} Capitalized Repair treatment(s) without a voucher link:")
 	for row in stuck:
+		needs = _rebuild_schedule_after_voucher_fix(row.asset)
 		print(
 			f"  FT {row.name}  asset {row.asset}  repair {row.source_name}  "
-			f"amount {flt(row.amount):,.2f}"
+			f"amount {flt(row.amount):,.2f}  schedule-rebuild-needed={needs}"
 		)
 		if dry_run:
 			continue
@@ -756,6 +803,8 @@ def link_repair_voucher_references(company=None, asset=None, dry_run=1):
 			update_modified=False,
 		)
 		recalculate_asset_values(row.asset, save=True)
+		if needs:
+			_rebuild_schedule_after_voucher_fix(row.asset)
 	if not dry_run:
 		frappe.db.commit()
 	return stuck
