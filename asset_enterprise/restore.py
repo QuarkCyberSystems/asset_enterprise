@@ -172,16 +172,46 @@ def restore_partial_scrap(asset_name, financial_treatment, cross_period=0):
 	# Say so on the scrap record itself, or it keeps reading as live —
 	# the same record-versus-ledger mismatch that bit the movement fix.
 	scrap = frappe.db.get_value(
-		"Scrap Transaction", {"journal_entry": ft.journal_entry, "docstatus": 1}, "name"
+		"Scrap Transaction",
+		{"journal_entry": ft.journal_entry, "docstatus": 1},
+		["name", "composite_component"],
+		as_dict=True,
 	)
+	component_note = ""
 	if scrap:
+		# A COMPONENT scrap also consumed a Merge Log row (CH-09,
+		# disposal.py marks it "Scrapped"). Reversing the money without
+		# reversing that leaves the composite showing a component it still
+		# owns as gone — and blocks scrapping it again, because the picker
+		# only offers Active rows (client, 25/08: "should take the
+		# component scrap in consideration").
+		if scrap.composite_component:
+			row = frappe.db.get_value(
+				"Composite Merge Log Entry",
+				{
+					"parent": asset_name,
+					"parenttype": "Asset",
+					"merged_source_asset": scrap.composite_component,
+					"status": "Scrapped",
+				},
+				"name",
+			)
+			if row:
+				frappe.db.set_value(
+					"Composite Merge Log Entry", row, "status", "Active",
+					update_modified=False,
+				)
+				component_note = _(" Component {0} is back on the Merge Log as Active.").format(
+					scrap.composite_component
+				)
 		frappe.db.set_value(
-			"Scrap Transaction", scrap, "reversal_journal_entry", mirror, update_modified=False
+			"Scrap Transaction", scrap.name, "reversal_journal_entry", mirror,
+			update_modified=False,
 		)
-		frappe.get_doc("Scrap Transaction", scrap).add_comment(
+		frappe.get_doc("Scrap Transaction", scrap.name).add_comment(
 			"Comment",
-			_("Reversed via {0}{1}. The original entry stays posted.").format(
-				mirror, _(" (cross-period)") if cint(cross_period) else ""
+			_("Reversed via {0}{1}. The original entry stays posted.{2}").format(
+				mirror, _(" (cross-period)") if cint(cross_period) else "", component_note
 			),
 		)
 
@@ -189,8 +219,8 @@ def restore_partial_scrap(asset_name, financial_treatment, cross_period=0):
 
 	add_snapshot_activity(
 		asset_name,
-		_("Partial scrap reversed via {0}{1}; the original entry stays posted.").format(
-			mirror, _(" — cross-period") if cint(cross_period) else ""
+		_("Partial scrap reversed via {0}{1}; the original entry stays posted.{2}").format(
+			mirror, _(" — cross-period") if cint(cross_period) else "", component_note
 		),
 		transaction_type="Restore (Partial Scrap)",
 		journal_entry=mirror,

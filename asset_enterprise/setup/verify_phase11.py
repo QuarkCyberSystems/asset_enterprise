@@ -1349,6 +1349,63 @@ def _run():
 		      f"{'OK' if t28d_ok else 'FAIL'}")
 		ok = ok and t28d_ok
 
+		# T28e (client, 25/08): "should take the component scrap in
+		# consideration". A COMPONENT scrap consumes a Merge Log row —
+		# disposal marks it "Scrapped". Reversing only the money left the
+		# composite showing a component it still owns as gone, and blocked
+		# scrapping it again: the picker offers Active rows only.
+		comp_src = _mk_posted(20_000)
+		composite = _mk_posted(80_000)
+		frappe.get_doc({
+			"doctype": "Composite Merge Log Entry", "parenttype": "Asset",
+			"parent": composite.name, "parentfield": "merge_log", "idx": 1,
+			"merged_source_asset": comp_src.name,
+			"merged_source_asset_name": "AE Smoke Component",
+			"merged_date": nowdate(), "historical_value_at_merge": 10_000,
+			"accumulated_depreciation_at_merge": 3_000,
+			"net_book_value_at_merge": 7_000, "status": "Active",
+		}).db_insert()
+
+		comp_scrap = frappe.get_doc({
+			"doctype": "Scrap Transaction", "asset": composite.name, "company": company,
+			"transaction_date": nowdate(), "scrap_type": "Partial Scrap",
+			"scrapping_type": "Damage", "composite_component": comp_src.name,
+			"mode": "By Value", "scrap_value": 7_000})
+		comp_scrap.flags.ignore_permissions = True
+		comp_scrap.insert()
+		comp_scrap.submit()
+
+		def row_status():
+			return frappe.db.get_value(
+				"Composite Merge Log Entry",
+				{"parent": composite.name, "merged_source_asset": comp_src.name}, "status")
+
+		after_scrap_status = row_status()
+		ft_comp = reversible_partial_scraps(composite.name)[0]["name"]
+		restore_partial_scrap(composite.name, ft_comp)
+		after_reverse_status = row_status()
+		t28e_ok = after_scrap_status == "Scrapped" and after_reverse_status == "Active"
+		print(
+			f"t28e   component scrap reversed: Merge Log row {after_scrap_status} -> "
+			f"{after_reverse_status} (want Scrapped -> Active) {'OK' if t28e_ok else 'FAIL'}"
+		)
+		ok = ok and t28e_ok
+
+		# and the component can be scrapped again, which the stuck row blocked
+		try:
+			from asset_enterprise.disposal import partial_scrap_asset as _ps
+
+			_ps(composite.name, scrap_value=7_000, scrapping_type="Damage",
+			    scrap_date=nowdate(), composite_component=comp_src.name)
+			again_ok = True
+			again_msg = "accepted"
+		except frappe.ValidationError as e:
+			again_ok = False
+			again_msg = frappe.utils.strip_html(str(e))[:80]
+		print(f"t28f   component scrappable again after the reversal: {again_msg} "
+		      f"{'OK' if again_ok else 'FAIL'}")
+		ok = ok and again_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow
