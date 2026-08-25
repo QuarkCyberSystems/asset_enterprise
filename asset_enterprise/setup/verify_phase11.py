@@ -1164,6 +1164,41 @@ def _run():
 			guard_ok = True
 		except TypeError:
 			guard_ok = False
+		# GAP-006: and the VALUE offered for approval must be the ledger's,
+		# not core's zeroed value_after_depreciation counter. A
+		# non-depreciating asset never has that counter maintained, so the
+		# grid showed 0.00 for a 35,000 asset.
+		derived = flt(recalculate_asset_values(nodate.name, save=False)["net_book_value"])
+		# Zero the counter first: if it happens to agree with the ledger the
+		# assertion proves nothing about WHICH one was read. This is the
+		# state a real non-depreciating asset is in — nothing maintains it.
+		frappe.db.set_value(
+			"Asset", nodate.name, "value_after_depreciation", 0, update_modified=False)
+		frappe.db.sql(
+			"update `tabAsset Finance Book` set value_after_depreciation = 0 where parent = %s",
+			nodate.name)
+		counter = flt(frappe.db.get_value("Asset", nodate.name, "value_after_depreciation"))
+		value = get_value_after_depreciation_on_disposal_date(nodate.name, nowdate())
+		value_ok = abs(flt(value) - derived) < 0.01 and derived > 0 and counter == 0
+		print(
+			f"t26b   consumed value from the ledger: {flt(value):,.2f} (derived NBV "
+			f"{derived:,.2f}; core counter reads {counter:,.2f}) "
+			f"{'OK' if value_ok else 'FAIL'}"
+		)
+		ok = ok and value_ok
+
+		# whitelisting must survive the wrap — the form calls the dotted path
+		from frappe import is_whitelisted
+
+		try:
+			is_whitelisted(get_value_after_depreciation_on_disposal_date)
+			wl_ok = True
+		except Exception:
+			wl_ok = False
+		print(f"t26c   endpoint still whitelisted after wrapping: {wl_ok} "
+		      f"{'OK' if wl_ok else 'FAIL'}")
+		ok = ok and wl_ok
+
 		print(
 			f"t26    no available-for-use date on a consumed asset: {msg}; "
 			f"backdated disposal on it: {back_msg}; "

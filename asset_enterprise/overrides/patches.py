@@ -14,6 +14,9 @@ override_whitelisted_methods and are wrapped here (see build plan §2.3):
    -> Scrape Type account resolution chain (Phase 6)
 4. erpnext.assets.doctype.asset.depreciation.validate_disposal_date
    -> tolerate the optional available-for-use date (GAP-002)
+5. erpnext.assets.doctype.asset.depreciation
+   .get_value_after_depreciation_on_disposal_date
+   -> derive the value from the ledger, not the counter (GAP-006)
 
 Phase 0 ships verification only: on app boot we assert every target
 still exists with a compatible signature, so a bench update that moves
@@ -25,7 +28,7 @@ import inspect
 import sys
 
 import frappe
-from frappe.utils import getdate
+from frappe.utils import flt, getdate
 
 # (dotted module, attribute, minimum positional params we rely on)
 PATCH_TARGETS = [
@@ -38,6 +41,11 @@ PATCH_TARGETS = [
 	("erpnext.assets.doctype.asset.depreciation", "make_depreciation_entry", 1),
 	("erpnext.assets.doctype.asset.depreciation", "get_gl_entries_on_asset_disposal", 1),
 	("erpnext.assets.doctype.asset.depreciation", "validate_disposal_date", 3),
+	(
+		"erpnext.assets.doctype.asset.depreciation",
+		"get_value_after_depreciation_on_disposal_date",
+		2,
+	),
 	# §2.2 override_whitelisted_methods targets — verified here too so a
 	# rename surfaces at boot, not at first user click.
 	("erpnext.assets.doctype.asset.depreciation", "restore_asset", 1),
@@ -52,6 +60,7 @@ WRAPPED_ATTRS = {
 	"make_depreciation_entry",
 	"get_gl_entries_on_asset_disposal",
 	"validate_disposal_date",
+	"get_value_after_depreciation_on_disposal_date",
 }
 
 # Class-method targets: (module, class, attr, min positional params).
@@ -319,6 +328,64 @@ def apply_patches():
 	validate_disposal_date._asset_enterprise_wrapper = True
 	core_depr.validate_disposal_date = validate_disposal_date
 	_rebind("validate_disposal_date", core_validate_disposal_date, validate_disposal_date)
+
+	# GAP-006: asset values are DERIVED from the ledger; the core
+	# `value_after_depreciation` counter is bookkeeping we keep in step,
+	# never the source of truth. Core returns that counter outright for an
+	# asset that does not depreciate, and for a Composite Component:
+	#
+	#     if not asset_doc.calculate_depreciation:
+	#         return flt(asset_doc.value_after_depreciation)
+	#
+	# Nothing maintains the counter on such an asset, so it stays 0 — the
+	# Consumed Assets grid offered a 35,000 asset as 0.00 for approval
+	# (client, 25/08, ACC-ASS-2026-00192). Where core reads the counter we
+	# answer from the ledger instead; where it computes a value AT a date
+	# from a temporary schedule, that is date-specific work and stands.
+	core_value_on_disposal = core_depr.get_value_after_depreciation_on_disposal_date
+
+	@frappe.whitelist()
+	def get_value_after_depreciation_on_disposal_date(
+		asset, disposal_date, finance_book=None
+	):
+		"""MUST stay whitelisted — the capitalization form calls core's
+		dotted path and resolves the attribute to THIS function."""
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if not enterprise_enabled():
+			return core_value_on_disposal(asset, disposal_date, finance_book)
+
+		asset_doc = frappe.get_doc("Asset", asset)
+		counter_branch = (
+			asset_doc.asset_type == "Composite Component"
+			or not asset_doc.calculate_depreciation
+		)
+		if not counter_branch:
+			return core_value_on_disposal(asset, disposal_date, finance_book)
+
+		# core validates before returning; keep that, through the wrapped
+		# guard so a missing date is tolerated (patch #4).
+		core_depr.validate_disposal_date(
+			asset_doc.purchase_date
+			if asset_doc.asset_type == "Composite Component"
+			else asset_doc.available_for_use_date,
+			getdate(disposal_date),
+			"purchase" if asset_doc.asset_type == "Composite Component" else "available for use",
+		)
+
+		from asset_enterprise.asset_values import recalculate_asset_values
+
+		return flt(recalculate_asset_values(asset, save=False)["net_book_value"])
+
+	get_value_after_depreciation_on_disposal_date._asset_enterprise_wrapper = True
+	core_depr.get_value_after_depreciation_on_disposal_date = (
+		get_value_after_depreciation_on_disposal_date
+	)
+	_rebind(
+		"get_value_after_depreciation_on_disposal_date",
+		core_value_on_disposal,
+		get_value_after_depreciation_on_disposal_date,
+	)
 
 	# GAP-004.4: cancelling a receipt must REVERSE the assets it created,
 	# never destroy them. Core does the opposite —
