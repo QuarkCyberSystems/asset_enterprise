@@ -26,8 +26,8 @@ function ae_apply_difference_account(frm) {
 		args: { asset: frm.doc.asset, transaction_type: ttype },
 		callback(r) {
 			if (!r.message) return;
-			frm.set_df_property("difference_account", "read_only", 1);
 			if (r.message.account) {
+				frm.set_df_property("difference_account", "read_only", 1);
 				frm.set_value("difference_account", r.message.account);
 				frm.set_df_property(
 					"difference_account",
@@ -35,11 +35,15 @@ function ae_apply_difference_account(frm) {
 					__("From Asset Category {0}.", [r.message.asset_category])
 				);
 			} else {
+				// Lock it only when we can actually supply it. The field is
+				// mandatory, so a locked EMPTY one would leave the user
+				// unable to save at all — worse than choosing by hand.
+				frm.set_df_property("difference_account", "read_only", 0);
 				frm.set_df_property(
 					"difference_account",
 					"description",
 					__(
-						"Not configured on Asset Category {0} or its Company defaults — set it there.",
+						"Set this account on Asset Category {0} (or the Company defaults) and it will fill in automatically.",
 						[r.message.asset_category]
 					)
 				);
