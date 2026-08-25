@@ -906,6 +906,110 @@ def _run():
 		)
 		ok = ok and f9_ok
 
+		# ---------- F10: C6 — §9 schema fields present and populated
+		# FT: transaction_sub_type / is_reversal / reverses / account_set.
+		# TC: enabled (enforced) + handler_module. ADS: superseded_by.
+		# AVA: transaction_sub_type.
+		from asset_enterprise import tcc as tcc_mod
+		from asset_enterprise.depreciation import supersede_and_regenerate
+
+		# (1) Transaction Category seeds carry enabled + handler_module.
+		tc_ok = True
+		for cat in ("Addition", "Disposal", "Impairment", "Revaluation",
+					"Useful Life Adjustment", "Depreciation"):
+			row = frappe.db.get_value(
+				"Transaction Category", cat, ["enabled", "handler_module"], as_dict=True
+			)
+			tc_ok = tc_ok and bool(row) and row.enabled == 1 and row.handler_module == "asset_enterprise.tcc"
+
+		# (2) a disabled category is refused by the TCC (restored after).
+		frappe.db.set_value("Transaction Category", "Revaluation", "enabled", 0, update_modified=False)
+		disabled_ok = False
+		try:
+			tcc_mod.apply(source_doc=("Asset", "NOPE"), category="Revaluation", asset="NOPE")
+		except frappe.ValidationError as e:
+			disabled_ok = "disabled" in str(e)
+		frappe.db.set_value("Transaction Category", "Revaluation", "enabled", 1, update_modified=False)
+
+		# (3) forward FT: account_set snapshot, is_reversal falsy, the
+		# source's transaction_sub_type carried onto the treatment.
+		a10 = make_test_asset(company, gross=1_000_000, submit=True)
+		ava10 = frappe.get_doc({
+			"doctype": "Asset Value Adjustment",
+			"company": company,
+			"asset": a10.name,
+			"date": add_days(nowdate(), -3),
+			"transaction_type": "Upward Revaluation",
+			"transaction_sub_type": "F10 Sub",
+			"current_asset_value": 1_000_000,
+			"new_asset_value": 1_200_000,
+			"difference_amount": 200_000,
+			"difference_account": pick_plain_account(company, "Asset"),
+		})
+		ava10.flags.ignore_permissions = True
+		ava10.insert()
+		ava10.submit()
+		fwd_ft = frappe.db.get_value(
+			"Financial Treatment",
+			{"source_doctype": "Asset Value Adjustment", "source_name": ava10.name, "status": "Posted"},
+			["name", "account_set", "is_reversal", "transaction_sub_type"], as_dict=True,
+		)
+		fwd_ok = (
+			bool(fwd_ft)
+			and bool(fwd_ft.account_set)  # JSON list of account legs
+			and not fwd_ft.is_reversal
+			and fwd_ft.transaction_sub_type == "F10 Sub"
+		)
+
+		# (4) mirror FT: is_reversal=1, reverses -> original, account_set,
+		# sub-type carried from the original.
+		cancel_ava_with_reversal(ava10.name, posting_date=nowdate())
+		mirror_ft = frappe.db.get_value(
+			"Financial Treatment",
+			{"asset": a10.name, "is_reversal": 1, "status": "Posted"},
+			["name", "reverses", "account_set", "transaction_sub_type"], as_dict=True,
+		)
+		mirror_ok = (
+			bool(mirror_ft)
+			and mirror_ft.reverses == fwd_ft.name
+			and bool(mirror_ft.account_set)
+			and mirror_ft.transaction_sub_type == "F10 Sub"
+		)
+
+		# (5) supersession two-way link: old.superseded_by = new, and
+		# new.supersedes = old (backward side).
+		s10 = make_test_asset(company, gross=10_000, submit=True)
+		enable_depreciation(
+			s10.name, total_number_of_depreciations=24, frequency_of_depreciation=1,
+			depreciation_start_date=get_first_day(add_months(nowdate(), -1)),
+		)
+		row_s = first_unposted_row(s10.name)
+		_post_one(row_s, getdate(nowdate()))
+		supersede_and_regenerate(s10.name, as_of_date=nowdate(), reason="F10 probe")
+		sched_old = frappe.db.get_value(
+			"Asset Depreciation Schedule",
+			{"asset": s10.name, "status": "Superseded", "docstatus": 1}, "name",
+		)
+		sched_new = frappe.db.get_value(
+			"Asset Depreciation Schedule",
+			{"asset": s10.name, "status": "Active", "docstatus": 1}, "name",
+		)
+		sb_ok = (
+			bool(sched_old)
+			and bool(sched_new)
+			and frappe.db.get_value("Asset Depreciation Schedule", sched_old, "superseded_by") == sched_new
+			and frappe.db.get_value("Asset Depreciation Schedule", sched_new, "supersedes") == sched_old
+		)
+
+		f10_ok = tc_ok and disabled_ok and fwd_ok and mirror_ok and sb_ok
+		print(
+			f"f10    C6 schema: tc-seeds={tc_ok} disabled-refused={disabled_ok} "
+			f"forward-FT(account_set/sub-type)={fwd_ok} mirror-FT(is_reversal/reverses)={mirror_ok} "
+			f"superseded-by-link={sb_ok} "
+			f"{'OK' if f10_ok else 'FAIL'}"
+		)
+		ok = ok and f10_ok
+
 		# ================= Phase 11b guard/enrichment checks =================
 
 		# T3/T4 (VR-010 / VR-025): movement guards.

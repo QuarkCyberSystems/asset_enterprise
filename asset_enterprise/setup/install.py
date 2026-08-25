@@ -380,9 +380,21 @@ def seed_masters():
 					"doctype": "Transaction Category",
 					"category_name": name,
 					"description": description,
+					"enabled": 1,
 					"supports_reverse_mode": 1,
+					# C6 §9.2: all six category handlers live in one module.
+					"handler_module": "asset_enterprise.tcc",
 				}
 			).insert(ignore_permissions=True)
+		else:
+			# C6: backfill the design fields on pre-existing rows (runs on
+			# every migrate via sync_customizations).
+			frappe.db.set_value(
+				"Transaction Category",
+				name,
+				{"enabled": 1, "handler_module": "asset_enterprise.tcc"},
+				update_modified=False,
+			)
 
 	for name in SCRAPPING_TYPES:
 		if not frappe.db.exists("Scrapping Type", name):

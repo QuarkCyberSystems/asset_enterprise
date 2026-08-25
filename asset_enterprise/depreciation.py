@@ -519,6 +519,11 @@ def supersede_and_regenerate(
 			)
 		return new
 
+	# C6 §9.1: the forward side of the two-way supersession link — the
+	# superseded schedule answers "who replaced me?" (backward side:
+	# new.supersedes = old, set above).
+	old.db_set("superseded_by", new.name, update_modified=False)
+
 	if reason:
 		old.add_comment("Comment", _("Superseded by {0}: {1}").format(new.name, reason))
 

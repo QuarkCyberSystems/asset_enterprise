@@ -195,17 +195,18 @@ def _account_set(journal_entry=None, voucher_type=None, voucher_no=None):
 
 	From the linked Journal Entry's account rows, or — when the GL was
 	posted under a run voucher (GA-0006 AM-01) — from that voucher's GL
-	rows. Returns a JSON-serialisable list of account names."""
+	rows. Frappe's JSON field stores an object, not a bare list, so the
+	accounts ride inside a dict."""
 	if journal_entry:
-		return [
+		accounts = [
 			r[0]
 			for r in frappe.db.sql(
 				"select account from `tabJournal Entry Account` where parent = %s order by idx",
 				journal_entry,
 			)
 		]
-	if voucher_type and voucher_no:
-		return [
+	elif voucher_type and voucher_no:
+		accounts = [
 			r[0]
 			for r in frappe.db.sql(
 				"select distinct account from `tabGL Entry` where voucher_type = %s "
@@ -213,7 +214,9 @@ def _account_set(journal_entry=None, voucher_type=None, voucher_no=None):
 				(voucher_type, voucher_no),
 			)
 		]
-	return []
+	else:
+		accounts = []
+	return {"accounts": accounts}
 
 
 def _source_ref(source_doc):
