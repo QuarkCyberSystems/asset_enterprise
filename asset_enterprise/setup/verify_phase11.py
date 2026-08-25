@@ -1187,6 +1187,20 @@ def _run():
 		)
 		ok = ok and value_ok
 
+		# ...and BOTH columns of the consumed row, not just one. The form
+		# fills Asset Value and Current Asset Value from two different core
+		# functions that take the same counter shortcut; fixing one left
+		# the row reading 35,000 next to 0.00 (client, 25/08).
+		import erpnext.assets.doctype.asset.asset as _core_asset
+
+		current_val = flt(_core_asset.get_asset_value_after_depreciation(nodate.name))
+		both_ok = abs(current_val - derived) < 0.01
+		print(
+			f"t26d   Current Asset Value column too: {current_val:,.2f} "
+			f"(derived {derived:,.2f}, counter {counter:,.2f}) {'OK' if both_ok else 'FAIL'}"
+		)
+		ok = ok and both_ok
+
 		# whitelisting must survive the wrap — the form calls the dotted path
 		from frappe import is_whitelisted
 

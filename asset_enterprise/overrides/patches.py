@@ -16,7 +16,8 @@ override_whitelisted_methods and are wrapped here (see build plan §2.3):
    -> tolerate the optional available-for-use date (GAP-002)
 5. erpnext.assets.doctype.asset.depreciation
    .get_value_after_depreciation_on_disposal_date
-   -> derive the value from the ledger, not the counter (GAP-006)
+6. erpnext.assets.doctype.asset.asset.get_asset_value_after_depreciation
+   -> both derive the value from the ledger, not the counter (GAP-006)
 
 Phase 0 ships verification only: on app boot we assert every target
 still exists with a compatible signature, so a bench update that moves
@@ -46,6 +47,7 @@ PATCH_TARGETS = [
 		"get_value_after_depreciation_on_disposal_date",
 		2,
 	),
+	("erpnext.assets.doctype.asset.asset", "get_asset_value_after_depreciation", 1),
 	# §2.2 override_whitelisted_methods targets — verified here too so a
 	# rename surfaces at boot, not at first user click.
 	("erpnext.assets.doctype.asset.depreciation", "restore_asset", 1),
@@ -61,6 +63,7 @@ WRAPPED_ATTRS = {
 	"get_gl_entries_on_asset_disposal",
 	"validate_disposal_date",
 	"get_value_after_depreciation_on_disposal_date",
+	"get_asset_value_after_depreciation",
 }
 
 # Class-method targets: (module, class, attr, min positional params).
@@ -385,6 +388,46 @@ def apply_patches():
 		"get_value_after_depreciation_on_disposal_date",
 		core_value_on_disposal,
 		get_value_after_depreciation_on_disposal_date,
+	)
+
+	# The SAME counter read, one function along. The capitalization form
+	# fills two columns per consumed row — Asset Value from the function
+	# above, Current Asset Value from this one — and both take the
+	# `value_after_depreciation` shortcut for an asset that does not
+	# depreciate:
+	#
+	#     if not asset.calculate_depreciation:
+	#         return flt(asset.value_after_depreciation)
+	#
+	# Fixing only the first left the row half right: 35,000 in one column
+	# and 0.00 in the other (client, 25/08). set_asset_values() writes
+	# both onto the submitted document, so this is stored, not cosmetic.
+	import erpnext.assets.doctype.asset.asset as core_asset
+
+	core_asset_value_after_depr = core_asset.get_asset_value_after_depreciation
+
+	@frappe.whitelist()
+	def get_asset_value_after_depreciation(asset_name, finance_book=None):
+		"""MUST stay whitelisted — core exposes it and forms call it."""
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if not enterprise_enabled():
+			return core_asset_value_after_depr(asset_name, finance_book)
+
+		asset_doc = frappe.get_doc("Asset", asset_name)
+		if asset_doc.calculate_depreciation:
+			return core_asset_value_after_depr(asset_name, finance_book)
+
+		from asset_enterprise.asset_values import recalculate_asset_values
+
+		return flt(recalculate_asset_values(asset_name, save=False)["net_book_value"])
+
+	get_asset_value_after_depreciation._asset_enterprise_wrapper = True
+	core_asset.get_asset_value_after_depreciation = get_asset_value_after_depreciation
+	_rebind(
+		"get_asset_value_after_depreciation",
+		core_asset_value_after_depr,
+		get_asset_value_after_depreciation,
 	)
 
 	# GAP-004.4: cancelling a receipt must REVERSE the assets it created,
