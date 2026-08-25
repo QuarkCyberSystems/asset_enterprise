@@ -78,12 +78,33 @@ def merge_sources_into_composite(cap_doc):
 		# GAP-015 step 1 (Phase 11 F6): a full-period depreciation JE
 		# already posted PAST the merge date is reversed via mirror JE
 		# (original stays posted); the row drops out of the accum fold.
-		_reverse_straddling_depreciation(source.name, posting_date, cap_doc)
+		straddled = _reverse_straddling_depreciation(source.name, posting_date, cap_doc)
 
 		# Mid-period proration (GAP-015) via existing engine.
 		if source.calculate_depreciation:
 			try:
-				depreciate_asset(source, posting_date, _("Merge into {0}").format(target.name))
+				if straddled:
+					# GAP-015 step 2 (§12.21): regenerate to the merge
+					# date so the days from the period start to the merge
+					# are re-expensed in ONE prorated row —
+					# first_posting_date = merge date makes the truncated
+					# stub span exactly basis -> merge (A6: without the
+					# coalescing, sub-period month-ends between the basis
+					# and the merge each posted their own JE; totals were
+					# right but the design specifies one entry). A failure
+					# here must abort the merge — proceeding at the
+					# un-prorated value would silently recreate the A6
+					# defect, so straddle errors propagate.
+					from asset_enterprise.depreciation import supersede_and_regenerate
+
+					supersede_and_regenerate(
+						source.name,
+						disposal_date=posting_date,
+						first_posting_date=posting_date,
+						reason=_("Merge into {0} (straddling proration)").format(target.name),
+					)
+				else:
+					depreciate_asset(source, posting_date, _("Merge into {0}").format(target.name))
 				source.reload()
 				# core only RESHAPES the schedule to the merge date; the
 				# prorated row still has to be posted, or the composite
@@ -100,6 +121,8 @@ def merge_sources_into_composite(cap_doc):
 					post_schedule_entries(active, posting_date)
 					source.reload()
 			except Exception:
+				if straddled:
+					raise
 				frappe.log_error(
 					title=f"asset_enterprise: merge proration failed for {source.name}",
 					message=frappe.get_traceback(),
@@ -269,7 +292,9 @@ def merge_sources_into_composite(cap_doc):
 def _reverse_straddling_depreciation(asset_name, merge_date, cap_doc):
 	"""Mirror-reverse posted depreciation rows dated after the merge
 	date. The row keeps its JE (immutable) and gains
-	`reversal_journal_entry`; its row-backed FT pairs off."""
+	`reversal_journal_entry`; its row-backed FT pairs off.
+
+	Returns the number of rows reversed (0 = no straddle)."""
 	from asset_enterprise import tcc
 	from asset_enterprise.restore import _mirror_je
 
@@ -310,6 +335,7 @@ def _reverse_straddling_depreciation(asset_name, merge_date, cap_doc):
 		if ft:
 			tcc.reverse(ft, cap_doc, posting_date=getdate(cap_doc.posting_date or nowdate()),
 				journal_entry=mirror)
+	return len(rows)
 
 
 def _apply_fully_depreciated_treatment(cap_doc, target, total_nbv, posting_date):

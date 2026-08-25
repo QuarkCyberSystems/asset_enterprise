@@ -258,7 +258,15 @@ def truncate_rows_at_disposal(rows, period_basis, disposal_date, company):
 
 def last_posted_schedule_date(asset_name, finance_book=None):
 	"""Latest schedule date on the Active generation that actually booked
-	a JE — the period boundary every regeneration resumes from."""
+	a JE and has NOT been reversed — the period boundary every
+	regeneration resumes from.
+
+	A row with `reversal_journal_entry` still carries its (immutable)
+	JE, but its financial effect is netted by the mirror — counting it
+	here re-anchors regeneration at a period that no longer exists (the
+	A6 straddle defect: a merge-time reversal of the only posted row left
+	the anchor AFTER the merge date and the prorated re-post emitted
+	nothing)."""
 	conditions = ""
 	params = [asset_name]
 	if finance_book:
@@ -269,7 +277,8 @@ def last_posted_schedule_date(asset_name, finance_book=None):
 		select max(ds.schedule_date) from `tabDepreciation Schedule` ds
 		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
 		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
-		  and ifnull(ds.journal_entry, '') != ''{conditions}
+		  and ifnull(ds.journal_entry, '') != ''
+		  and ifnull(ds.reversal_journal_entry, '') = ''{conditions}
 		""",
 		params,
 	)[0][0]
@@ -338,8 +347,35 @@ def supersede_and_regenerate(
 		if last_posted:
 			as_of_date = getdate(last_posted)
 		else:
-			afu = frappe.db.get_value("Asset", asset_name, "available_for_use_date")
-			as_of_date = add_days(getdate(afu), -1) if afu else None
+			# No EFFECTIVE posted row (e.g. a merge-time straddle reversal
+			# removed the only posting — A6). Resume from the day before
+			# the schedule's own start basis: the first row's
+			# `days_in_period` carries it (schedule_date - (days - 1)),
+			# which is where charging actually began. available_for_use_date
+			# is NOT that: GAP-011 enablement can start charging later
+			# (depreciation_start_date), and a reclassification earlier —
+			# using AFU re-anchors the stub and rate on the wrong day.
+			basis_row = frappe.db.sql(
+				"""
+				select ds.schedule_date, ifnull(ds.days_in_period, 0) as days_in_period
+				from `tabDepreciation Schedule` ds
+				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+				where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+				order by ds.schedule_date, ds.idx
+				limit 1
+				""",
+				asset_name,
+				as_dict=True,
+			)
+			basis_date = None
+			if basis_row and basis_row[0].days_in_period > 0:
+				basis_date = add_days(
+					getdate(basis_row[0].schedule_date), -(basis_row[0].days_in_period - 1)
+				)
+			as_of_date = add_days(getdate(basis_date), -1) if basis_date else None
+			if not as_of_date:
+				afu = frappe.db.get_value("Asset", asset_name, "available_for_use_date")
+				as_of_date = add_days(getdate(afu), -1) if afu else None
 	as_of_date = getdate(as_of_date or nowdate())
 
 	filters = {"asset": asset_name, "status": "Active", "docstatus": 1}

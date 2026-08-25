@@ -352,12 +352,125 @@ def _run():
 			join `tabAsset Depreciation Schedule` ads on ds.parent=ads.name
 			where ads.asset=%s and ifnull(ds.reversal_journal_entry,'') != ''""",
 			g1.name)[0][0]
-		f6_ok = reversed_row >= 1 and accum_before > 0
+
+		# A6 / GAP-015 step 2 (§12.21): the straddle must re-expense
+		# period start -> merge date in ONE prorated row dated the merge
+		# date, at the SAME daily rate the reversed row used; the Merge
+		# Log snapshots the post-proration accum/NBV and the composite
+		# absorbs that NBV. (The source's DERIVED accum reads 0 after the
+		# merge — the disposal leg legitimately cleared it.)
+		from asset_enterprise.rounding import fa_module_round
+
+		prorated = frappe.db.sql(
+			"""select ds.schedule_date, ds.depreciation_amount, ds.days_in_period
+			from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			  and ifnull(ds.journal_entry, '') != ''
+			  and ds.schedule_date = %s""",
+			(g1.name, merge_date),
+			as_dict=True,
+		)
+		basis = add_days(getdate(row6.schedule_date), -(cint(row6.days_in_period) - 1))
+		want_days = date_diff(merge_date, add_days(basis, -1))
+		want_amount = fa_module_round(flt(row6.daily_rate) * want_days, company)
+		nbv_after = flt(36_500 - want_amount)  # post-proration NBV absorbed
+		mlog = frappe.db.get_value(
+			"Composite Merge Log Entry",
+			{"parent": gt.name, "merged_source_asset": g1.name},
+			["accumulated_depreciation_at_merge", "net_book_value_at_merge"],
+			as_dict=True,
+		)
+		tgt_hav = flt(recalculate_asset_values(gt.name, save=False)["historical_asset_value"])
+		f6_ok = (
+			reversed_row >= 1
+			and accum_before > 0
+			and len(prorated) == 1
+			and flt(prorated[0].depreciation_amount) == want_amount
+			and cint(prorated[0].days_in_period) == want_days
+			and mlog
+			and flt(mlog.accumulated_depreciation_at_merge) == want_amount
+			and flt(mlog.net_book_value_at_merge) == nbv_after
+			and tgt_hav == flt(60_000 + nbv_after)
+		)
 		print(
 			f"f6     straddling row reversed at merge: flagged-rows={reversed_row} "
-			f"(accum before merge {accum_before}) {'OK' if f6_ok else 'FAIL'}"
+			f"prorated-rows={len(prorated)} "
+			f"days={cint(prorated[0].days_in_period) if prorated else 0}/{want_days} "
+			f"amount={flt(prorated[0].depreciation_amount) if prorated else 0:,.2f}/{want_amount:,.2f} "
+			f"merge-log accum={flt(mlog.accumulated_depreciation_at_merge) if mlog else 0:,.2f} "
+			f"NBV={flt(mlog.net_book_value_at_merge) if mlog else 0:,.2f}/{nbv_after:,.2f} "
+			f"target-HAV {tgt_hav:,.2f} (want {60_000 + nbv_after:,.2f}) "
+			f"{'OK' if f6_ok else 'FAIL'}"
 		)
 		ok = ok and f6_ok
+
+		# F6b: the CATCH-UP straddle — the reversed row spans several
+		# months (basis -> EOM of a later posting month, §4.5). The
+		# prorated re-post must STILL be ONE row covering basis -> merge
+		# date (first_posting_date coalescing in the merge flow), not one
+		# JE per sub-period month-end.
+		g2 = make_test_asset(company, gross=8_500_000, submit=True)
+		enable_depreciation(
+			g2.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+			depreciation_start_date=nowdate(),
+			available_for_use_date=add_months(nowdate(), -3),
+		)
+		row6b = first_unposted_row(g2.name)  # catch-up row: basis -> EOM of this month
+		_post_one(row6b, getdate(nowdate()))
+		gt2 = make_test_asset(company, gross=60_000, submit=True)
+		cap6b = frappe.get_doc({
+			"doctype": "Asset Capitalization",
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": gt2.name, "company": company,
+			"posting_date": merge_date, "posting_time": frappe.utils.nowtime(),
+			"entry_type": "Capitalization",
+			"asset_items": [{"asset": g2.name}],
+		})
+		cap6b.flags.ignore_permissions = True
+		cap6b.flags.ignore_mandatory = True
+		cap6b.insert()
+		cap6b.submit()
+		prorated_b = frappe.db.sql(
+			"""select ds.schedule_date, ds.depreciation_amount, ds.days_in_period
+			from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			  and ifnull(ds.journal_entry, '') != ''
+			  and ds.schedule_date = %s""",
+			(g2.name, merge_date),
+			as_dict=True,
+		)
+		basis_b = add_days(getdate(row6b.schedule_date), -(cint(row6b.days_in_period) - 1))
+		want_days_b = date_diff(merge_date, add_days(basis_b, -1))
+		want_amount_b = fa_module_round(flt(row6b.daily_rate) * want_days_b, company)
+		nbv_after_b = flt(8_500_000 - want_amount_b)
+		mlog_b = frappe.db.get_value(
+			"Composite Merge Log Entry",
+			{"parent": gt2.name, "merged_source_asset": g2.name},
+			["accumulated_depreciation_at_merge", "net_book_value_at_merge"],
+			as_dict=True,
+		)
+		tgt_hav_b = flt(recalculate_asset_values(gt2.name, save=False)["historical_asset_value"])
+		f6b_ok = (
+			len(prorated_b) == 1
+			and flt(prorated_b[0].depreciation_amount) == want_amount_b
+			and cint(prorated_b[0].days_in_period) == want_days_b
+			and mlog_b
+			and flt(mlog_b.accumulated_depreciation_at_merge) == want_amount_b
+			and flt(mlog_b.net_book_value_at_merge) == nbv_after_b
+			and tgt_hav_b == flt(60_000 + nbv_after_b)
+		)
+		print(
+			f"f6b    catch-up straddle coalesced: prorated-rows={len(prorated_b)} "
+			f"days={cint(prorated_b[0].days_in_period) if prorated_b else 0}/{want_days_b} "
+			f"amount={flt(prorated_b[0].depreciation_amount) if prorated_b else 0:,.2f}/{want_amount_b:,.2f} "
+			f"merge-log NBV={flt(mlog_b.net_book_value_at_merge) if mlog_b else 0:,.2f}/{nbv_after_b:,.2f} "
+			f"target-HAV {tgt_hav_b:,.2f} (want {60_000 + nbv_after_b:,.2f}) "
+			f"{'OK' if f6b_ok else 'FAIL'}"
+		)
+		ok = ok and f6b_ok
 
 		# ----------------------------------------- F7: SI disposal gate
 		frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 1)
