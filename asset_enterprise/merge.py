@@ -468,6 +468,134 @@ def _resupersede(target_name, posting_date, cap_doc):
 		pass  # composite without an Active schedule — value-only
 
 
+def consume_stock_items(cap_doc):
+	"""§3.4 "Add item/service/asset": capitalize CONSUMED MATERIALS onto
+	the target, through a Material Issue.
+
+	Core's own capitalization consumes stock by writing Stock Ledger
+	Entries directly. That cannot be used here: Badia values stock with
+	the periodic engine (GA-0003), which routes DOCUMENTS — Stock Entry,
+	Purchase Receipt, Delivery Note and the rest — and does not route
+	Asset Capitalization. A kernel-valued item consumed that way would
+	never be valued, and would be missing from the periodic
+	reconciliation.
+
+	So this follows Asset Repair (GAP-033), whose stock IS routed:
+
+	    1. Material Issue Stock Entry  -> DR expense / CR stock
+	    2. Capitalization              -> DR Fixed Asset / CR that same
+	                                      expense account
+
+	The expense account nets to zero, exactly as the service path does
+	under §12.3. Returns (stock_entry, journal_entry).
+	"""
+	from asset_enterprise import tcc
+
+	rows = [r for r in (cap_doc.get("stock_items") or []) if flt(r.get("qty"))]
+	if not rows:
+		return None, None
+
+	target = frappe.get_doc("Asset", cap_doc.target_asset)
+	company = target.company
+	posting_date = getdate(cap_doc.posting_date or nowdate())
+
+	se = frappe.get_doc(
+		{
+			"doctype": "Stock Entry",
+			"stock_entry_type": "Material Issue",
+			"company": company,
+			"posting_date": posting_date,
+			"set_posting_time": 1,
+			"asset_capitalization": cap_doc.name,
+			"items": [
+				{
+					"item_code": r.item_code,
+					"qty": flt(r.qty),
+					"s_warehouse": r.warehouse,
+					"basic_rate": flt(r.get("valuation_rate")) or None,
+					"cost_center": r.get("cost_center") or target.get("cost_center"),
+				}
+				for r in rows
+			],
+		}
+	)
+	se.flags.ignore_permissions = True
+	se.insert()
+	se.submit()
+
+	# Read the accounts back off the issue, the way Asset Repair does —
+	# the Stock Entry decides them, and crediting anything else would
+	# leave the expense stranded.
+	default_expense = frappe.get_cached_value("Company", company, "default_expense_account")
+	legs, total = [], 0.0
+	for row in frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": se.name},
+		fields=["expense_account", "amount"],
+	):
+		amount = fa_module_round(flt(row.amount), company)
+		if not amount:
+			continue
+		account = row.expense_account or default_expense
+		if not account:
+			frappe.throw(
+				_(
+					"Material Issue {0} has no expense account and the company has no "
+					"default — set one before capitalizing materials."
+				).format(se.name)
+			)
+		legs.append(
+			{
+				"account": account,
+				"credit_in_account_currency": amount,
+				"cost_center": target.get("cost_center"),
+			}
+		)
+		total = flt(total + amount)
+
+	if not total:
+		return se.name, None
+
+	tgt_accounts = _category_accounts(target)
+	legs.insert(
+		0,
+		{
+			"account": tgt_accounts.fixed_asset_account,
+			"debit_in_account_currency": total,
+			"cost_center": target.get("cost_center"),
+			"reference_type": "Asset",
+			"reference_name": target.name,
+		},
+	)
+	je = frappe.get_doc(
+		{
+			"doctype": "Journal Entry",
+			"voucher_type": "Journal Entry",
+			"company": company,
+			"posting_date": posting_date,
+			"user_remark": _("Materials capitalized via {0} (issued on {1})").format(
+				cap_doc.name, se.name
+			),
+			"accounts": legs,
+		}
+	)
+	je.flags.ignore_permissions = True
+	je.submit()
+
+	tcc.apply(
+		source_doc=cap_doc,
+		category="Addition",
+		transaction_type="Capitalized Maintenance — Materials",
+		asset=target.name,
+		posting_date=posting_date,
+		amount=total,
+		hav_delta=total,
+		journal_entry=je.name,
+	)
+	_resupersede(target.name, posting_date, cap_doc)
+	return se.name, je.name
+
+
 def capitalize_service_costs(cap_doc):
 	"""§12.3 / TC-027 / TC-046: capitalize SERVICE costs onto a SUBMITTED
 	target asset (Capitalized Maintenance, no asset merge involved).
@@ -854,6 +982,55 @@ def add_days_safe(posting_date):
 	return add_days(posting_date, 1)
 
 
+def _return_consumed_materials(source_cap, reversal_doc, posting_date):
+	"""Put back what a Capitalized Maintenance issued (Material Receipt).
+
+	Valuation follows each Item's own method at receipt time — for a
+	kernel item that is the current periodic rate (GA-0003), exactly as
+	TC-047c describes for the repair reversal.
+	"""
+	issue = frappe.db.get_value(
+		"Stock Entry",
+		{"asset_capitalization": source_cap.name, "docstatus": 1,
+		 "stock_entry_type": "Material Issue"},
+		"name",
+	)
+	if not issue:
+		return None
+	rows = frappe.get_all(
+		"Stock Entry Detail",
+		filters={"parent": issue},
+		fields=["item_code", "qty", "s_warehouse", "basic_rate", "cost_center"],
+	)
+	rows = [r for r in rows if flt(r.qty)]
+	if not rows:
+		return None
+	se = frappe.get_doc(
+		{
+			"doctype": "Stock Entry",
+			"stock_entry_type": "Material Receipt",
+			"company": source_cap.company,
+			"posting_date": posting_date,
+			"set_posting_time": 1,
+			"asset_capitalization": reversal_doc.name,
+			"items": [
+				{
+					"item_code": r.item_code,
+					"qty": flt(r.qty),
+					"t_warehouse": r.s_warehouse,
+					"basic_rate": flt(r.basic_rate) or None,
+					"cost_center": r.cost_center,
+				}
+				for r in rows
+			],
+		}
+	)
+	se.flags.ignore_permissions = True
+	se.insert()
+	se.submit()
+	return se.name
+
+
 def reverse_merge(reversal_doc):
 	"""Reversal of Capitalized Maintenance: mirror both legs, pair FTs,
 	flag Merge Log rows Reversed. Sources stay cancelled (manual
@@ -862,6 +1039,15 @@ def reverse_merge(reversal_doc):
 
 	source_cap = frappe.get_doc("Asset Capitalization", reversal_doc.reversal_of_capitalization)
 	posting_date = getdate(reversal_doc.posting_date or nowdate())
+
+	# Materials come BACK, or the money is reversed and the stock stays
+	# gone — the same shape as the component-scrap hole. Asset Repair's
+	# reversal already does this (C101 / TC-047c); mirror it.
+	returned = _return_consumed_materials(source_cap, reversal_doc, posting_date)
+	if returned:
+		reversal_doc.add_comment(
+			"Comment", _("Consumed materials returned via Stock Entry {0}.").format(returned)
+		)
 
 	# Mirror EVERY JE the capitalization posted — a Capitalized
 	# Maintenance may carry a merge JE and/or a service-capitalization

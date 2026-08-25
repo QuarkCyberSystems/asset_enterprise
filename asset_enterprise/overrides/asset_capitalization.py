@@ -119,13 +119,14 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 					target.name, target.status
 				)
 			)
-		if self.get("stock_items"):
-			frappe.throw(
-				_(
-					"Capitalized Maintenance does not consume stock. Use Asset Repair "
-					"(Capitalized Repair) for stock items, or Standard Capitalization."
-				)
-			)
+		# Stock rows are IN SCOPE: §3.4 describes this transaction as
+		# "Add item/service/asset", and nothing in GAP-014 excludes stock.
+		# The refusal that stood here was invented, exactly as the one that
+		# used to reject service rows was (client, 25/08). Consumption goes
+		# through a Material Issue in merge.consume_stock_items() — core's
+		# own capitalization writes raw Stock Ledger Entries, which the
+		# periodic-valuation engine does not route, so a kernel-valued item
+		# consumed that way would never be valued.
 		# Core computes the service row's amount in client script only, so
 		# a row created any other way (API, import, test) reached submit
 		# with amount 0 and capitalized nothing at all.
@@ -208,11 +209,14 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 
 		# §12.3 / TC-027 / TC-046: service costs may be capitalized onto a
 		# submitted asset; asset rows merge components. At least one.
-		if not self.get("asset_items") and not self.get("service_items"):
+		if not any(
+			self.get(table) for table in ("asset_items", "service_items", "stock_items")
+		):
 			frappe.throw(
 				_(
-					"Capitalized Maintenance requires at least one source Asset row "
-					"(component merge) or Service row (cost capitalization)."
+					"Capitalized Maintenance requires at least one row: a source Asset "
+					"(component merge), a Service (cost capitalization), or a Stock item "
+					"(materials consumed)."
 				)
 			)
 
@@ -299,6 +303,16 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			if self.get("asset_items"):
 				je = merge.merge_sources_into_composite(self)
 				self.add_comment("Comment", _("Merge posted via Journal Entry {0}.").format(je))
+			# §3.4 "Add item/service/asset": materials go out through a
+			# Material Issue and are capitalized onto the target.
+			se, stock_je = merge.consume_stock_items(self)
+			if se:
+				self.add_comment(
+					"Comment",
+					_("Materials issued on {0}{1}.").format(
+						se, _(" and capitalized via {0}").format(stock_je) if stock_je else ""
+					),
+				)
 			# §12.3 / TC-027 / TC-046: service costs capitalized onto the
 			# submitted target (may accompany a component merge).
 			svc_je = merge.capitalize_service_costs(self)
@@ -370,6 +384,12 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			"Financial Treatment",
 			"Asset Activity",
 			"Journal Entry",
+			# the Material Issue that consumed the stock links back here,
+			# and the reversal's Material Receipt links to the reversal —
+			# neither may block the counter-document being raised (the same
+			# exemption Asset Repair carries for its own stock entries)
+			"Stock Entry",
+			"Stock Ledger Entry",
 		)
 		reversal = frappe.get_doc(
 			{

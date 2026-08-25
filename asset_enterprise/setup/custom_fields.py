@@ -365,6 +365,24 @@ CUSTOM_FIELDS = {
 			"description": "Days of useful life already depreciated on a predecessor asset before this one went into service. Counts against the total life above.",
 		},
 	],
+	# ------------------------------------------------------------ Stock Entry
+	"Stock Entry": [
+		{
+			# Core gives Stock Entry an `asset_repair` link but none for a
+			# capitalization. A Capitalized Maintenance consumes stock the
+			# same way a repair does — through a Material Issue — so the
+			# issue has to say which capitalization it belongs to, and the
+			# reversal has to find it again (client, 25/08).
+			"fieldname": "asset_capitalization",
+			"fieldtype": "Link",
+			"label": "Asset Capitalization",
+			"options": "Asset Capitalization",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "asset_repair",
+			"description": "The capitalization that consumed these materials.",
+		},
+	],
 	# ----------------------------------------------------------- Asset Repair
 	"Asset Repair": [
 		{

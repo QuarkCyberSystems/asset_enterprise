@@ -1564,6 +1564,86 @@ def _run():
 		      f"before and after {'OK' if t29c_ok else 'FAIL'}")
 		ok = ok and t29c_ok
 
+		# T30 (client, 25/08): a Capitalized Maintenance may consume STOCK.
+		# §3.4 calls this transaction "Add item/service/asset" and nothing
+		# in GAP-014 excludes materials — the refusal that stood here was
+		# invented, like the one that used to reject service rows.
+		# Consumption goes through a Material Issue, NOT core's raw stock
+		# ledger writes: the periodic-valuation engine routes documents,
+		# and Asset Capitalization is not one of them.
+		from asset_enterprise.setup.verify_tc import _plain as t30_plain
+
+		stock_item = "AE-SMOKE-STOCK-ITEM"
+		if not frappe.db.exists("Item", stock_item):
+			frappe.get_doc({
+				"doctype": "Item", "item_code": stock_item, "item_name": stock_item,
+				"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+				"is_stock_item": 1, "is_fixed_asset": 0}).insert(ignore_permissions=True)
+		wh = frappe.db.get_value("Warehouse", {"company": company, "is_group": 0}, "name")
+		receipt = frappe.get_doc({
+			"doctype": "Stock Entry", "stock_entry_type": "Material Receipt",
+			"company": company, "items": [{"item_code": stock_item, "qty": 40,
+			                               "t_warehouse": wh, "basic_rate": 100}]})
+		receipt.flags.ignore_permissions = True
+		receipt.insert()
+		receipt.submit()
+
+		def on_hand():
+			return flt(frappe.db.get_value(
+				"Bin", {"item_code": stock_item, "warehouse": wh}, "actual_qty"))
+
+		t30_target = _mk_posted(90_000)
+		hav_before = flt(recalculate_asset_values(t30_target.name, save=False)["historical_asset_value"])
+		qty_before = on_hand()
+		cap30 = frappe.get_doc({
+			"doctype": "Asset Capitalization", "company": company,
+			"transaction_type": "Capitalized Maintenance",
+			"transaction_sub_type": "Standard Maintenance",
+			"target_asset": t30_target.name, "posting_date": nowdate(),
+			"set_posting_time": 1, "entry_type": "Capitalization",
+			"stock_items": [{"item_code": stock_item, "qty": 25, "warehouse": wh,
+			                 "valuation_rate": 100, "basic_rate": 100, "amount": 2_500}]})
+		cap30.flags.ignore_permissions = True
+		cap30.flags.ignore_mandatory = True
+		cap30.insert()
+		cap30.submit()
+		hav_after = flt(recalculate_asset_values(t30_target.name, save=False)["historical_asset_value"])
+		issue = frappe.db.get_value("Stock Entry",
+			{"asset_capitalization": cap30.name, "stock_entry_type": "Material Issue",
+			 "docstatus": 1}, "name")
+		t30_ok = (
+			bool(issue)
+			and abs(on_hand() - (qty_before - 25)) < 0.01
+			and abs((hav_after - hav_before) - 2_500) < 0.01
+		)
+		print(
+			f"t30    CM consumed stock: issue {issue}; on hand {qty_before:,.0f} -> "
+			f"{on_hand():,.0f} (want -25); HAV +{hav_after - hav_before:,.2f} (want 2,500.00) "
+			f"{'OK' if t30_ok else 'FAIL'}"
+		)
+		ok = ok and t30_ok
+
+		# reversing must put the materials BACK, not just the money
+		cap30.reload()
+		cap30.cancel()
+		reversal = frappe.db.get_value("Asset Capitalization",
+			{"reversal_of_capitalization": cap30.name, "docstatus": 1}, "name")
+		hav_reversed = flt(recalculate_asset_values(t30_target.name, save=False)["historical_asset_value"])
+		back = frappe.db.get_value("Stock Entry",
+			{"asset_capitalization": reversal, "stock_entry_type": "Material Receipt",
+			 "docstatus": 1}, "name")
+		t30b_ok = (
+			bool(back)
+			and abs(on_hand() - qty_before) < 0.01
+			and abs(hav_reversed - hav_before) < 0.01
+		)
+		print(
+			f"t30b   reversal returned them: {back}; on hand back to {on_hand():,.0f} "
+			f"(want {qty_before:,.0f}); HAV back to {hav_reversed:,.2f} (want {hav_before:,.2f}) "
+			f"{'OK' if t30b_ok else 'FAIL'}"
+		)
+		ok = ok and t30b_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow
