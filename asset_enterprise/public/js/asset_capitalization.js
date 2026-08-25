@@ -14,6 +14,11 @@ frappe.ui.form.on("Asset Capitalization", {
 	},
 	refresh(frm) {
 		set_target_asset_query(frm);
+		window.ae_hide_system_only_option(
+			frm,
+			"transaction_type",
+			"Reversal of Capitalized Maintenance"
+		);
 	},
 	transaction_type(frm) {
 		frm.set_value("target_asset", null);

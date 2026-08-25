@@ -52,19 +52,6 @@ function ae_apply_difference_account(frm) {
 	});
 }
 
-function ae_hide_invoice_adjustment(frm) {
-	// Only on a NEW document: an existing Invoice Adjustment (or its
-	// reversal) must keep its own value visible in the select.
-	if (!frm.is_new() || frm.doc.transaction_type === "Invoice Adjustment") return;
-	const df = frm.get_docfield("transaction_type");
-	if (!df || !df.options) return;
-	const kept = df.options
-		.split("\n")
-		.filter((o) => o !== "Invoice Adjustment")
-		.join("\n");
-	frm.set_df_property("transaction_type", "options", kept);
-}
-
 frappe.ui.form.on("Asset Value Adjustment", {
 	asset(frm) {
 		ae_apply_difference_account(frm);
@@ -75,7 +62,7 @@ frappe.ui.form.on("Asset Value Adjustment", {
 	},
 
 	refresh(frm) {
-		ae_hide_invoice_adjustment(frm);
+		window.ae_hide_system_only_option(frm, "transaction_type", "Invoice Adjustment");
 		ae_apply_difference_account(frm);
 		if (frm.doc.reversal_of_ava) {
 			frm.set_intro(

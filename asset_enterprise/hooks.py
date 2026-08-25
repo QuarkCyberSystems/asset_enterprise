@@ -29,6 +29,8 @@ override_whitelisted_methods = {
 }
 
 # GA-0005-01 v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
+app_include_js = "/assets/asset_enterprise/js/system_only_option.js"
+
 doctype_js = {
 	"Asset": "public/js/asset.js",
 	# GAP-014 / VR-037: re-scope the Target Asset picker per
@@ -48,6 +50,8 @@ doctype_js = {
 	# A cost-centre transfer posts nothing itself; its effect lands in
 	# later depreciation entries. Spell that out before submit.
 	"Asset Movement": "public/js/asset_movement.js",
+	# A Reversal Repair is raised by cancelling a capitalized repair.
+	"Asset Repair": "public/js/asset_repair.js",
 }
 
 # §4.8: an asset carries the live schedule plus one frozen copy per

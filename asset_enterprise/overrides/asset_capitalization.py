@@ -65,7 +65,19 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			self._validate_cm()
 		elif ttype == "Reversal of Capitalized Maintenance":
 			if not self.get("reversal_of_capitalization"):
-				frappe.throw(_("Reversal Of Capitalization is required."))
+				# Raised BY cancelling a Capitalized Maintenance, which sets
+				# the back-link before inserting. The field is read-only, so
+				# a document reaching here without one was typed by hand
+				# (client, 25/08). The old message named the missing field
+				# and invited the user to fill in something they cannot.
+				frappe.throw(
+					_(
+						"A Reversal of Capitalized Maintenance is raised automatically when "
+						"the original capitalization is cancelled — it cannot be created by "
+						"hand. Open the capitalization you want to undo and cancel it."
+					),
+					title=_("Not a Manual Transaction Type"),
+				)
 
 	def _validate_cm(self):
 		reclass = (

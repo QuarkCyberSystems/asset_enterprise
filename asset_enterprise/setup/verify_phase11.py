@@ -1207,6 +1207,43 @@ def _run():
 		)
 		ok = ok and t26_ok and back_ok and guard_ok
 
+		# T27 (client, 25/08): a reversal is raised BY cancelling the
+		# original — never chosen from the picker. Same rule as the
+		# Invoice Adjustment (t25); the read-only back-link is what
+		# separates a system reversal from a hand-typed one.
+		try:
+			bad_cap = frappe.get_doc({
+				"doctype": "Asset Capitalization", "company": company,
+				"transaction_type": "Reversal of Capitalized Maintenance",
+				"posting_date": nowdate(), "entry_type": "Capitalization"})
+			bad_cap.flags.ignore_permissions = True
+			bad_cap.flags.ignore_mandatory = True
+			bad_cap.insert()
+			print("t27    FAIL (manual Reversal of Capitalized Maintenance accepted)")
+			ok = False
+		except frappe.ValidationError as e:
+			t27_ok = "cannot be created by hand" in str(e)
+			print(f"t27    manual capitalization reversal refused: "
+			      f"{'OK' if t27_ok else 'FAIL: ' + str(e)[:110]}")
+			ok = ok and t27_ok
+
+		r27 = make_test_asset(company, gross=20_000, submit=True)
+		try:
+			bad_rep = frappe.get_doc({
+				"doctype": "Asset Repair", "asset": r27.name, "company": company,
+				"failure_date": nowdate(), "completion_date": nowdate(),
+				"repair_status": "Completed", "transaction_type": "Reversal"})
+			bad_rep.flags.ignore_permissions = True
+			bad_rep.flags.ignore_mandatory = True
+			bad_rep.insert()
+			print("t27b   FAIL (manual Reversal Repair accepted)")
+			ok = False
+		except frappe.ValidationError as e:
+			t27b_ok = "cannot be created by hand" in str(e)
+			print(f"t27b   manual Reversal Repair refused: "
+			      f"{'OK' if t27b_ok else 'FAIL: ' + str(e)[:110]}")
+			ok = ok and t27b_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow

@@ -106,6 +106,27 @@ class EnterpriseAssetRepair(AssetRepair):
 			bump_useful_life_periods(self.asset, 0, days)
 		return add_days(add_months(getdate(horizon), sign * months), sign * days)
 
+	def validate(self):
+		super().validate()
+		# Same rule as the capitalization reversal (client, 25/08): a
+		# Reversal Repair is created when a capitalized repair is
+		# cancelled, which sets the read-only back-link before inserting.
+		# Without one, this was chosen by hand.
+		if (
+			self._enterprise()
+			and self.get("transaction_type") == "Reversal"
+			and self.is_new()
+			and not self.get("reversal_of_repair")
+		):
+			frappe.throw(
+				_(
+					"A Reversal Repair is raised automatically when a capitalized Asset "
+					"Repair is cancelled — it cannot be created by hand. Open the repair "
+					"you want to undo and cancel it."
+				),
+				title=_("Not a Manual Transaction Type"),
+			)
+
 	def _submit_reversal(self):
 		"""Reversal Repair on_submit — replaces the core forward path."""
 		source_name = self.get("reversal_of_repair")
