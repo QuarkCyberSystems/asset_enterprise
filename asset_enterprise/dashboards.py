@@ -26,3 +26,46 @@ def ava_dashboard(data=None):
 		{"label": _("Reversal"), "items": ["Asset Value Adjustment"]},
 	]
 	return out
+
+
+def asset_dashboard(data=None):
+	"""Connections on the Asset: every FA document that touched it.
+
+	Core lists Asset Movement alone, so an asset whose value moved —
+	scrapped, reversed, revalued, repaired, merged — showed nothing on
+	screen explaining it. The trail existed in Financial Treatment and
+	Asset Activity, but only if you knew to go looking (client, 25/08:
+	"where do i find this trail?").
+
+	Display only. Links come from the Link fields themselves
+	(frappe.desk.form.linked_with reads the schema, never a dashboard),
+	so this changes nothing about cancellation cascades or link checks —
+	those already see these doctypes, and the Asset / Asset Depreciation
+	Schedule guards already handle them.
+
+	Deliberately NOT everything that carries an `asset` field: the Asset
+	accounting dimension (Phase 11c D5) put one on every GL-bearing
+	doctype, and a Sales Invoice merely tagged with the dimension is not
+	a document about this asset.
+	"""
+	out = frappe._dict(data or {})
+	out.fieldname = "asset"
+	# Asset Capitalization reaches the asset as the merge TARGET; the
+	# consumed side is a child table core already resolves.
+	non_standard = dict(out.get("non_standard_fieldnames") or {})
+	non_standard["Asset Capitalization"] = "target_asset"
+	out.non_standard_fieldnames = non_standard
+
+	groups = [
+		{"label": _("Scrapping"), "items": ["Scrap Transaction"]},
+		{"label": _("Value Changes"), "items": ["Asset Value Adjustment", "Asset Repair"]},
+		{"label": _("Capitalization"), "items": ["Asset Capitalization"]},
+		{"label": _("Depreciation"), "items": ["Asset Depreciation Schedule"]},
+		{"label": _("Financial Impact"), "items": ["Financial Treatment"]},
+	]
+	existing = list(out.get("transactions") or [])
+	listed = {i for g in existing for i in g.get("items", [])}
+	for g in groups:
+		g["items"] = [i for i in g["items"] if i not in listed]
+	out.transactions = existing + [g for g in groups if g["items"]]
+	return out

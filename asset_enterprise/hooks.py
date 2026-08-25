@@ -305,6 +305,9 @@ after_install = "asset_enterprise.setup.install.after_install"
 # one-to-one links stay as hard fields on the form.
 override_doctype_dashboards = {
 	"Asset Value Adjustment": "asset_enterprise.dashboards.ava_dashboard",
+	# Core lists Asset Movement only, so a scrap, its reversal, a
+	# revaluation or a repair left no visible trail on the asset.
+	"Asset": "asset_enterprise.dashboards.asset_dashboard",
 }
 
 # exempt linked doctypes from being automatically cancelled

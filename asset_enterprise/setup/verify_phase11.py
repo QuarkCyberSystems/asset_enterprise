@@ -1406,6 +1406,51 @@ def _run():
 		      f"{'OK' if again_ok else 'FAIL'}")
 		ok = ok and again_ok
 
+		# T29 (client, 25/08 — "where do i find this trail?"): every FA
+		# document that touched the asset is reachable from its
+		# Connections tab. Core lists Asset Movement alone, so a scrap and
+		# its reversal left nothing on screen explaining the value moving.
+		from frappe.desk.form.linked_with import get_linked_doctypes
+
+		from asset_enterprise.dashboards import asset_dashboard
+
+		dash = asset_dashboard(frappe._dict({"transactions": [
+			{"label": "Movement", "items": ["Asset Movement"]}]}))
+		listed = {i for g in dash["transactions"] for i in g["items"]}
+		want = {"Scrap Transaction", "Financial Treatment", "Asset Value Adjustment",
+		        "Asset Repair", "Asset Capitalization", "Asset Depreciation Schedule"}
+		t29_ok = want <= listed and "Asset Movement" in listed
+		print(f"t29    Asset Connections lists the FA trail: {sorted(listed)} "
+		      f"{'OK' if t29_ok else 'FAIL'}")
+		ok = ok and t29_ok
+
+		# every listed doctype must actually resolve to a link field, or
+		# the Connections tab errors on load
+		fieldname = dash.get("fieldname")
+		non_standard = dash.get("non_standard_fieldnames") or {}
+		bad = []
+		for dt in listed:
+			fn = non_standard.get(dt, fieldname)
+			meta = frappe.get_meta(dt)
+			if dt == "Asset Movement":
+				continue  # core resolves this through its child table
+			if not any(f.fieldtype == "Link" and f.options == "Asset" and f.fieldname == fn
+			           for f in meta.fields):
+				bad.append(f"{dt}.{fn}")
+		print(f"t29b   every listed doctype resolves to a real link field: "
+		      f"{'OK' if not bad else 'FAIL: ' + ', '.join(bad)}")
+		ok = ok and not bad
+
+		# the dashboard must not widen what cancellation sees — links are
+		# schema-driven; frappe.desk.form.linked_with never reads a dashboard
+		before = set(get_linked_doctypes("Asset").keys())
+		asset_dashboard(frappe._dict({}))
+		after = set(get_linked_doctypes("Asset").keys())
+		t29c_ok = before == after
+		print(f"t29c   link graph unchanged by the dashboard: {len(before)} doctypes "
+		      f"before and after {'OK' if t29c_ok else 'FAIL'}")
+		ok = ok and t29c_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow
