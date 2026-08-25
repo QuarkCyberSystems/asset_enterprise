@@ -214,6 +214,80 @@ def _run():
 			print(f"f3     manual depreciation blocks cancel: {'OK' if g else 'FAIL: ' + str(e)}")
 			ok = ok and g
 
+		# ------ F3b: TC-042c — reversed manual JE, then asset cancel. The
+		# gate passes (GA-0001-01 reversal), and core's destructive
+		# delete_depreciation_entries must NOT re-cancel the original or
+		# run the VR-031 db_set (B5: retired under v1).
+		m2 = make_test_asset(company, gross=10_000, submit=True)  # calc off
+		je2 = frappe.get_doc({
+			"doctype": "Journal Entry", "voucher_type": "Depreciation Entry",
+			"company": company, "posting_date": nowdate(),
+			"accounts": [
+				{"account": aca.depreciation_expense_account, "debit_in_account_currency": 500,
+				 "reference_type": "Asset", "reference_name": m2.name,
+				 "cost_center": frappe.db.get_value("Company", company, "cost_center")},
+				{"account": aca.accumulated_depreciation_account, "credit_in_account_currency": 500,
+				 "reference_type": "Asset", "reference_name": m2.name},
+			],
+		})
+		je2.flags.ignore_permissions = True
+		je2.submit()
+		rev2 = frappe.get_doc({
+			# core requires Depreciation Entry whenever rows reference an
+			# Asset (validate_depr_account_and_depr_entry_voucher_type)
+			"doctype": "Journal Entry", "voucher_type": "Depreciation Entry",
+			"company": company, "posting_date": nowdate(),
+			"reversal_of": je2.name,
+			"user_remark": "GA-0001-01 reversal of manual depreciation (F3b)",
+			"accounts": [
+				{"account": aca.accumulated_depreciation_account, "debit_in_account_currency": 500,
+				 "reference_type": "Asset", "reference_name": m2.name},
+				{"account": aca.depreciation_expense_account, "credit_in_account_currency": 500,
+				 "reference_type": "Asset", "reference_name": m2.name},
+			],
+		})
+		rev2.flags.ignore_permissions = True
+		rev2.submit()
+		frappe.db.set_value("Asset", m2.name, "value_after_depreciation", 12_345,
+			update_modified=False)  # sentinel: the VR-031 db_set would clobber it
+		m2.reload()
+		m2.cancel()
+		orig_je_doc = frappe.db.get_value("Journal Entry", je2.name, "docstatus")
+		orig_gl_live = frappe.db.count("GL Entry", {"voucher_no": je2.name, "is_cancelled": 0})
+		rev_ok = (
+			frappe.db.get_value("Asset", m2.name, "docstatus") == 2
+			and orig_je_doc == 1
+			and orig_gl_live == 2  # both legs still posted — nothing unposted
+			and frappe.db.get_value("Journal Entry", rev2.name, "docstatus") == 1
+			and frappe.db.get_value("Asset", m2.name, "value_after_depreciation") == 12_345
+		)
+		print(
+			f"f3b    TC-042c manual-JE reversed then asset cancel: original "
+			f"docstatus={orig_je_doc} gl-live-rows={orig_gl_live} sentinel-kept="
+			f"{frappe.db.get_value('Asset', m2.name, 'value_after_depreciation') == 12_345} "
+			f"{'OK' if rev_ok else 'FAIL'}"
+		)
+		ok = ok and rev_ok
+
+		# F3c: never-depreciated calc=0 asset — cancel succeeds and the
+		# VR-031 db_set never runs (same sentinel).
+		m3 = make_test_asset(company, gross=8_000, submit=True)
+		frappe.db.set_value("Asset", m3.name, "value_after_depreciation", 54_321,
+			update_modified=False)
+		m3.reload()
+		m3.cancel()
+		f3c_ok = (
+			frappe.db.get_value("Asset", m3.name, "docstatus") == 2
+			and frappe.db.get_value("Asset", m3.name, "value_after_depreciation") == 54_321
+		)
+		print(
+			f"f3c    never-depreciated asset cancel: docstatus="
+			f"{frappe.db.get_value('Asset', m3.name, 'docstatus')} sentinel-kept="
+			f"{frappe.db.get_value('Asset', m3.name, 'value_after_depreciation') == 54_321} "
+			f"{'OK' if f3c_ok else 'FAIL'}"
+		)
+		ok = ok and f3c_ok
+
 		# ------------------- F4: opening JE reversed on clean asset cancel
 		c1 = make_test_asset(company, gross=8_000, submit=True)  # opening JE fires
 		ft = frappe.db.get_value(

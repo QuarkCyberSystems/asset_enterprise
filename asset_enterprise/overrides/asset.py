@@ -645,6 +645,29 @@ class EnterpriseAsset(Asset):
 			frappe.db.exists("Journal Entry", {"reversal_of": je_name, "docstatus": 1})
 		)
 
+	def delete_depreciation_entries(self):
+		"""GAP-027 / VR-031 (B5): retired under v1 — there is nothing to
+		delete.
+
+		The user reverses each depreciation JE via GA-0001-01 BEFORE
+		cancelling the asset — the block-and-error gate enforces the
+		ordering. Core's implementation then re-finds those ORIGINALS
+		(schedule rows still carry journal_entry; manual JEs are still
+		matched by get_manual_depreciation_entries — a reversal posts a
+		counter-JE, it never unposts the original, so their GL stays
+		is_cancelled=0) and .cancel()s them, unposting their GL while the
+		GA-0001-01 reversal JEs stay posted; the manual branch also runs
+		the VR-031-forbidden db_set("value_after_depreciation", ...).
+
+		The gate already guarantees no LIVE depreciation exists when
+		on_cancel proceeds, so both core branches are either empty or
+		forbidden — a no-op is the design's "retired and never reached
+		under v1" (GAP-027), and the destructive db_set is removed
+		(VR-031)."""
+		if not self._enterprise():
+			return super().delete_depreciation_entries()
+		return None
+
 	def _enterprise(self):
 		from asset_enterprise.depreciation import enterprise_enabled
 

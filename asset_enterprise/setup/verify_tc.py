@@ -2807,13 +2807,76 @@ def tc048():
 # ============================================================== TC-042c
 @tc("TC-042c", "Asset Reversal after Manual Depreciation Reversal")
 def tc042c():
+	# B5 (2026-08-25): formerly a MANUAL stub — it needed the GA-0001-01
+	# Journal Entry `reversal_of` field, which the bench did not carry
+	# when the row was written. The field is present now and the sequence
+	# is exactly verify_phase11 F3b: reverse each manual JE via a
+	# GA-0001-01 counter-JE, then cancel the asset — the gate passes, and
+	# core's destructive delete_depreciation_entries must NOT re-cancel
+	# the originals or run the VR-031 db_set (retired under v1).
 	if not frappe.get_meta("Journal Entry").has_field("reversal_of"):
 		return (
 			"MANUAL",
 			"needs the GA-0001-01 Journal Entry `reversal_of` field, which this bench does "
 			"not carry — exercise on the UAT server where GA-0001-01 is installed",
 		)
-	return "MANUAL", "GA-0001-01 reversal chain — drive from the UAT server"
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	aca = frappe.db.get_value(
+		"Asset Category Account",
+		{"parent": cat, "company_name": company},
+		["depreciation_expense_account", "accumulated_depreciation_account"], as_dict=True,
+	)
+	asset = _plain_asset(company, cat, "TC-042c Manual Reversed", 500_000)
+	asset.submit()
+	je = frappe.get_doc({
+		"doctype": "Journal Entry", "voucher_type": "Depreciation Entry",
+		"company": company, "posting_date": nowdate(),
+		"accounts": [
+			{"account": aca.depreciation_expense_account, "debit_in_account_currency": 500,
+			 "reference_type": "Asset", "reference_name": asset.name,
+			 "cost_center": frappe.db.get_value("Company", company, "cost_center")},
+			{"account": aca.accumulated_depreciation_account, "credit_in_account_currency": 500,
+			 "reference_type": "Asset", "reference_name": asset.name},
+		],
+	})
+	je.flags.ignore_permissions = True
+	je.submit()
+	rev = frappe.get_doc({
+		"doctype": "Journal Entry", "voucher_type": "Depreciation Entry",
+		"company": company, "posting_date": nowdate(),
+		"reversal_of": je.name,
+		"user_remark": "GA-0001-01 reversal (TC-042c)",
+		"accounts": [
+			{"account": aca.accumulated_depreciation_account, "debit_in_account_currency": 500,
+			 "reference_type": "Asset", "reference_name": asset.name},
+			{"account": aca.depreciation_expense_account, "credit_in_account_currency": 500,
+			 "reference_type": "Asset", "reference_name": asset.name},
+		],
+	})
+	rev.flags.ignore_permissions = True
+	rev.submit()
+	# VR-031 sentinel: the forbidden db_set would clobber this.
+	frappe.db.set_value("Asset", asset.name, "value_after_depreciation", 99_999,
+		update_modified=False)
+	asset.reload()
+	asset.cancel()
+	orig_doc = frappe.db.get_value("Journal Entry", je.name, "docstatus")
+	orig_gl_live = frappe.db.count("GL Entry", {"voucher_no": je.name, "is_cancelled": 0})
+	sentinel_kept = (
+		frappe.db.get_value("Asset", asset.name, "value_after_depreciation") == 99_999
+	)
+	ok = (
+		frappe.db.get_value("Asset", asset.name, "docstatus") == 2
+		and orig_doc == 1
+		and orig_gl_live == 2
+		and sentinel_kept
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"asset docstatus 2; original manual JE {je.name} docstatus={orig_doc} "
+		f"GL-live-rows={orig_gl_live}; VR-031 sentinel kept={sentinel_kept}",
+	)
 
 
 # ============================================================== TC-043
