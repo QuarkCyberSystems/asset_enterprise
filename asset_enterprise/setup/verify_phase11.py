@@ -2489,6 +2489,122 @@ def _run():
 		)
 		ok = ok and t33_ok
 
+		# T34: VR-018 where the client hit it — a partial scrap reversed
+		# on an asset whose life has already ended. The regeneration has
+		# no rows to charge the restored value through, so it must post
+		# one immediate depreciation entry instead of leaving the amount
+		# as net book value for ever (ACC-ASS-2026-00217: 3.05 stranded).
+		from asset_enterprise import disposal, restore as restore_mod
+
+		def post_all_rows(asset_name, limit=None):
+			rows = frappe.db.sql(
+				"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+				   ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+				   ds.daily_rate, ds.days_in_period
+				from `tabDepreciation Schedule` ds
+				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+				where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+				  and ifnull(ds.journal_entry, '') = '' order by ds.schedule_date""",
+				asset_name, as_dict=True,
+			)
+			for r in rows[:limit] if limit else rows:
+				_post_one(r, getdate(nowdate()))
+
+		e1 = make_test_asset(company, gross=2_000, submit=True)
+		enable_depreciation(
+			e1.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+			depreciation_start_date=get_first_day(add_months(nowdate(), -6)),
+		)
+		# Scrap MID-LIFE, which is what leaves a residual: the scrap takes
+		# more cost than accumulated depreciation, and the difference is
+		# booked as a disposal loss. Her asset then depreciated to zero on
+		# the reduced base, so reversing the scrap handed back exactly that
+		# difference with no life left to charge it through.
+		post_all_rows(e1.name, limit=3)
+		disposal.partial_scrap_asset(e1.name, scrap_value=200, scrap_date=nowdate())
+		post_all_rows(e1.name)          # asset now has nothing left to post
+		exhausted = flt(recalculate_asset_values(e1.name, save=False)["net_book_value"])
+		scrap_ft = frappe.get_all(
+			"Financial Treatment",
+			filters={"asset": e1.name, "transaction_category": "Disposal", "status": "Posted"},
+			order_by="creation desc", limit=1, pluck="name",
+		)[0]
+		# What the reversal hands back that cannot be depreciated is the
+		# scrap's LOSS portion — cost removed less accumulated depreciation
+		# removed. That exact figure must be the immediate charge.
+		scrap_row = frappe.db.get_value(
+			"Financial Treatment", scrap_ft, ["hav_delta", "accum_delta"], as_dict=True
+		)
+		stranded = flt(abs(flt(scrap_row.hav_delta)) - abs(flt(scrap_row.accum_delta)), 2)
+		je_before = frappe.db.count("Journal Entry", {"voucher_type": "Depreciation Entry"})
+		restore_mod.restore_partial_scrap(e1.name, scrap_ft)
+		vals = recalculate_asset_values(e1.name, save=False)
+		je_after = frappe.db.count("Journal Entry", {"voucher_type": "Depreciation Entry"})
+		status_now = frappe.db.get_value("Asset", e1.name, "status")
+		charged = flt(frappe.db.sql(
+			"""select coalesce(sum(jea.debit), 0) from `tabJournal Entry Account` jea
+			   join `tabJournal Entry` je on je.name = jea.parent
+			   where je.voucher_type = 'Depreciation Entry' and je.docstatus = 1
+			     and jea.reference_type = 'Asset' and jea.reference_name = %s
+			     and je.user_remark like %s""",
+			(e1.name, "%remaining useful life exhausted%"))[0][0], 2)
+		t34_ok = (
+			je_after == je_before + 1                       # exactly one entry
+			and abs(charged - stranded) < 0.01              # for exactly the stranded amount
+			and abs(flt(vals["net_book_value"])) < 0.01     # nothing left behind
+			and status_now == "Fully Depreciated"
+		)
+		print(
+			f"t34    restored value charged at once: nothing left to post at NBV "
+			f"{exhausted:,.2f}; reversal hands back {stranded:,.2f}, charged {charged:,.2f}; "
+			f"NBV after {flt(vals['net_book_value']):,.2f} (want 0.00); depreciation JEs "
+			f"+{je_after - je_before} (want +1); status {status_now} {'OK' if t34_ok else 'FAIL'}"
+		)
+		ok = ok and t34_ok
+
+		# T35: the rule is about value with nowhere to go, NOT about the
+		# asset's age — a transaction that EXTENDS life leaves rows to
+		# charge through, and must NOT be short-circuited into a one-shot
+		# entry.
+		e2 = make_test_asset(company, gross=2_000, submit=True)
+		enable_depreciation(
+			e2.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+			depreciation_start_date=get_first_day(add_months(nowdate(), -24)),
+		)
+		post_all_rows(e2.name)
+		from asset_enterprise import tcc as tcc_e2
+		from asset_enterprise.depreciation import (
+			bump_useful_life_periods,
+			regenerate_after_value_change,
+			schedule_horizon_from_life,
+		)
+
+		bump_useful_life_periods(e2.name, 12)
+		je_before2 = frappe.db.count("Journal Entry", {"voucher_type": "Depreciation Entry"})
+		tcc_e2.apply(
+			source_doc=("Asset", e2.name), category="Addition",
+			transaction_type="t35 value with extended life", asset=e2.name,
+			posting_date=nowdate(), amount=1_200, hav_delta=1_200,
+		)
+		regenerate_after_value_change(
+			e2.name, nowdate(), "t35 extension",
+			end_of_life_override=schedule_horizon_from_life(e2.name),
+		)
+		je_after2 = frappe.db.count("Journal Entry", {"voucher_type": "Depreciation Entry"})
+		unposted2 = flt(frappe.db.sql(
+			"""select coalesce(sum(ds.depreciation_amount), 0)
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			     and ifnull(ds.journal_entry, '') = ''""", e2.name)[0][0])
+		t35_ok = je_after2 == je_before2 and abs(unposted2 - 1_200) < 1.0
+		print(
+			f"t35    extended life depreciates normally: depreciation JEs "
+			f"+{je_after2 - je_before2} (want +0); schedule to post {unposted2:,.2f} "
+			f"(want 1,200) {'OK' if t35_ok else 'FAIL'}"
+		)
+		ok = ok and t35_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

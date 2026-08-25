@@ -680,7 +680,7 @@ def regenerate_after_value_change(
 		as_of = getdate(last_posted)
 		rate_change = getdate(adjustment_date or nowdate())
 	try:
-		return supersede_and_regenerate(
+		schedule = supersede_and_regenerate(
 			asset_name,
 			as_of_date=as_of,
 			reason=reason,
@@ -690,6 +690,17 @@ def regenerate_after_value_change(
 		)
 	except frappe.ValidationError:
 		return None  # no Active schedule (non-depreciating asset)
+
+	# VR-018: if the value change landed on an asset with no life left,
+	# the regeneration just produced nothing to charge it through —
+	# expense the remainder now rather than strand it as NBV for ever.
+	charge_stranded_value(
+		asset_name,
+		getdate(adjustment_date or nowdate()),
+		triggered_by if triggered_by is not None else ("Asset", asset_name),
+		transaction_type=_("Immediate Depreciation — No Remaining Useful Life"),
+	)
+	return schedule
 
 
 def active_schedule_horizon(asset_name):
@@ -781,7 +792,13 @@ def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transact
 				{
 					"account": aca.depreciation_expense_account,
 					"debit_in_account_currency": base,
-					"cost_center": asset.get("cost_center"),
+					# Attribution follows the movement history at the posting
+					# date, never the asset's mutable cost_center field — the
+					# same rule every other depreciation posting obeys since
+					# the 24/08 redesign (client, TC-035).
+					"cost_center": cost_centre_on(
+						asset.name, posting_date, fallback=asset.get("cost_center")
+					),
 					"reference_type": "Asset",
 					"reference_name": asset.name,
 				},
@@ -820,6 +837,56 @@ def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transact
 			je.name, update_modified=False,
 		)
 	return je.name
+
+
+# Statuses where value legitimately stops depreciating — the asset has
+# left the register and GAP-012 Case A.02 expenses anything that follows.
+_LIFE_OVER_STATUSES = ("Scrapped", "Sold", "Disposed", "Capitalized", "Cancelled")
+
+
+def charge_stranded_value(asset_name, posting_date, source_doc, transaction_type):
+	"""VR-018 applied wherever value lands on an asset with no life left.
+
+	The design states the rule under one trigger — a useful-life
+	adjustment that drives RUL to zero (VR-018 / TC-026) — but the rule
+	is about the VALUE, not the trigger. An amount restored or added to
+	an asset whose schedule has nothing left to post can never be
+	charged: the regeneration correctly produces no rows, and the amount
+	sits as net book value for ever.
+
+	Ruba, 25/08, ACC-ASS-2026-00217: a partial scrap reversed after the
+	asset's life had ended (36 months from 2023-06-30, so the horizon
+	closed 2026-05-31) left 3.05 stranded — "this asset is fully
+	depreciated, we reverse the partial scrap, the system should make a
+	journal entry similar to dep with the value".
+
+	Fires only when the asset is live, depreciating, has NO unposted row
+	left, and still carries value above salvage. A transaction that
+	EXTENDS life leaves rows behind, so this is naturally false for it —
+	that is why the check is "nothing left to post" rather than a date
+	comparison.
+	"""
+	asset = frappe.db.get_value(
+		"Asset", asset_name, ["docstatus", "status", "calculate_depreciation"], as_dict=True
+	)
+	if not asset or asset.docstatus != 1 or not asset.calculate_depreciation:
+		return None
+	if asset.status in _LIFE_OVER_STATUSES:
+		return None
+
+	live = frappe.db.get_value(
+		"Asset Depreciation Schedule",
+		{"asset": asset_name, "status": "Active", "docstatus": 1},
+		"name",
+	)
+	if not live:
+		return None
+	if frappe.db.count("Depreciation Schedule", {"parent": live, "journal_entry": ("in", ("", None))}):
+		return None  # the value still has periods to be charged through
+
+	# depreciate_remaining_base_now returns None when NBV is already at
+	# or below salvage, so the "is there anything left" test lives there.
+	return depreciate_remaining_base_now(asset_name, posting_date, source_doc, transaction_type)
 
 
 # --------------------------------------------------------------------------

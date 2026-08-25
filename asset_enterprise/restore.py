@@ -26,6 +26,23 @@ from frappe import _
 from frappe.utils import cint, flt, get_first_day, get_last_day, getdate, nowdate
 
 
+
+def _charge_if_life_exhausted(asset_name, mirror):
+	"""A restore puts value back; if the asset's life is already over the
+	regeneration has nothing to charge it through, so VR-018 applies —
+	expense the remainder on the restore date instead of leaving it as
+	net book value for ever (client, 25/08, ACC-ASS-2026-00217).
+	"""
+	from asset_enterprise.depreciation import charge_stranded_value
+
+	return charge_stranded_value(
+		asset_name,
+		getdate(nowdate()),
+		("Asset", asset_name),
+		transaction_type=_("Immediate Depreciation — Value Restored After End of Life"),
+	)
+
+
 @frappe.whitelist()
 def restore_asset(asset_name):
 	"""Whitelisted replacement for core restore_asset (build plan §2.2)."""
@@ -90,6 +107,7 @@ def restore_asset(asset_name):
 		)
 	except frappe.ValidationError:
 		pass
+	_charge_if_life_exhausted(asset.name, mirror)
 
 	from asset_enterprise.tcc import add_snapshot_activity
 
@@ -168,6 +186,7 @@ def restore_partial_scrap(asset_name, financial_treatment, cross_period=0):
 		)
 	except frappe.ValidationError:
 		pass
+	_charge_if_life_exhausted(asset_name, mirror)
 
 	# Say so on the scrap record itself, or it keeps reading as live —
 	# the same record-versus-ledger mismatch that bit the movement fix.
@@ -306,6 +325,7 @@ def cross_period_restore(asset_name, restore_date=None):
 		)
 	except frappe.ValidationError:
 		pass
+	_charge_if_life_exhausted(asset.name, mirror)
 
 	from asset_enterprise.tcc import add_snapshot_activity
 
