@@ -107,6 +107,21 @@ class EnterpriseAssetRepair(AssetRepair):
 		return add_days(add_months(getdate(horizon), sign * months), sign * days)
 
 	def validate(self):
+		# GAP-036 / N1: capitalizing a repair posts value onto the asset
+		# (DR Fixed Asset / CR Clearing) — a grouping container holds none.
+		if (
+			self.get("capitalize_repair_cost")
+			and self.get("asset")
+			and frappe.db.get_value("Asset", self.asset, "is_group_node")
+		):
+			frappe.throw(
+				_(
+					"{0} is a Grouping Asset and holds no value — a capitalized repair "
+					"would post value onto a container. Capitalize the repair on the "
+					"physical asset instead (GAP-036)."
+				).format(self.asset),
+				title=_("Grouping Asset Has No Value"),
+			)
 		super().validate()
 		# Same rule as the capitalization reversal (client, 25/08): a
 		# Reversal Repair is created when a capitalized repair is

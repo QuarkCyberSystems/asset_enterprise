@@ -32,6 +32,37 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 	def validate(self):
 		ttype = self.get("transaction_type") or "Standard Capitalization"
 
+		# GAP-036 / N1: a grouping asset holds no value and consumes none —
+		# it can be neither a Capitalized Maintenance TARGET (it would
+		# absorb NBV through the addition leg) nor a merge / reclass
+		# SOURCE (it would be disposed into a composite). Reversals are
+		# exempt: they unwind history, and a group node could never have
+		# been a valid source or target once the guard exists.
+		if ttype == "Capitalized Maintenance":
+			if self.get("target_asset") and frappe.db.get_value(
+				"Asset", self.target_asset, "is_group_node"
+			):
+				frappe.throw(
+					_(
+						"{0} is a Grouping Asset and holds no value — it cannot be the "
+						"target of Capitalized Maintenance. Capitalize onto the physical "
+						"asset instead (GAP-036)."
+					).format(self.target_asset),
+					title=_("Grouping Asset Has No Value"),
+				)
+			for row in self.get("asset_items") or []:
+				if row.get("asset") and frappe.db.get_value(
+					"Asset", row.asset, "is_group_node"
+				):
+					frappe.throw(
+						_(
+							"{0} is a Grouping Asset and holds no value — it cannot be "
+							"merged or reclassified. Move the physical assets grouped "
+							"under it instead (GAP-036)."
+						).format(row.asset),
+						title=_("Grouping Asset Has No Value"),
+					)
+
 		# GAP-010 / VR-011: sources leaving via capitalization must be
 		# fully invoiced first (reversals exempt — sources already left).
 		if (

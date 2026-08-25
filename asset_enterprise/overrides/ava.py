@@ -29,6 +29,17 @@ class EnterpriseAVA(AssetValueAdjustment):
 
 	def validate(self):
 		self._enforce_type_contract()
+		# GAP-036 / N1: a grouping asset holds no value — an AVA against
+		# it would post value (Revaluation) or loss (Impairment) onto a
+		# container. The value belongs to the physical assets underneath.
+		if self.get("asset") and frappe.db.get_value("Asset", self.asset, "is_group_node"):
+			frappe.throw(
+				_(
+					"{0} is a Grouping Asset and holds no value — adjust the physical "
+					"assets grouped under it instead (GAP-036)."
+				).format(self.asset),
+				title=_("Grouping Asset Has No Value"),
+			)
 		# §3.5 / §12.14 / §12.15 (Phase 11b T8): default the difference
 		# account from the account-resolution chain by transaction type;
 		# the user can still override.

@@ -493,6 +493,141 @@ def _run():
 			ok = ok and g
 		frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
 
+		# ---------- F8: GAP-036 grouping asset — zero financial footprint
+		# (N1: the container must be unreachable by every value-touching
+		# transaction — AVA, capitalized repair, Capitalized Maintenance
+		# as TARGET or SOURCE — and the built-in create/scrap rules hold.)
+		gn = frappe.get_doc({
+			"doctype": "Asset",
+			"company": company,
+			"item_code": "AE-SMOKE-ITEM",
+			"asset_name": "AE Smoke Group Node",
+			"asset_category": "AE Smoke Category",
+			"location": frappe.db.get_value("Location", {}, "name"),
+			"purchase_date": nowdate(),
+			"purchase_amount": 0,
+			"net_purchase_amount": 0,
+			"available_for_use_date": nowdate(),
+			"calculate_depreciation": 0,
+			"is_group_node": 1,
+		})
+		gn.flags.ignore_permissions = True
+		gn.insert()
+		gn.submit()
+
+		def _group_refused(fn):
+			try:
+				fn()
+			except frappe.ValidationError as e:
+				return "Grouping Asset" in str(e)
+			return False
+
+		# 1. A non-zero value on a group node is rejected at Asset validate.
+		gn_bad = frappe.get_doc({
+			"doctype": "Asset",
+			"company": company,
+			"item_code": "AE-SMOKE-ITEM",
+			"asset_name": "AE Smoke Bad Group Node",
+			"asset_category": "AE Smoke Category",
+			"location": frappe.db.get_value("Location", {}, "name"),
+			"purchase_amount": 5_000,
+			"net_purchase_amount": 5_000,
+			"available_for_use_date": nowdate(),
+			"calculate_depreciation": 0,
+			"is_group_node": 1,
+		})
+		gn_bad.flags.ignore_permissions = True
+		f8_val = _group_refused(lambda: gn_bad.insert())
+
+		# 2. Never depreciates: no finance book, no schedule.
+		f8_nodep = (
+			not frappe.db.exists("Asset Finance Book", {"parent": gn.name})
+			and not frappe.db.exists("Asset Depreciation Schedule", {"asset": gn.name})
+		)
+
+		# 3. Cannot be disposed (existing disposal.py guard).
+		from asset_enterprise.disposal import scrap_asset
+
+		f8_scrap = _group_refused(lambda: scrap_asset(gn.name))
+
+		# 4. AVA on the node refused (N1 guard 1).
+		ava_g = frappe.get_doc({
+			"doctype": "Asset Value Adjustment",
+			"company": company,
+			"asset": gn.name,
+			"date": nowdate(),
+			"transaction_type": "Upward Revaluation",
+			"current_asset_value": 0,
+			"new_asset_value": 100_000,
+			"difference_amount": 100_000,
+			"difference_account": pick_plain_account(company, "Asset"),
+		})
+		ava_g.flags.ignore_permissions = True
+		f8_ava = _group_refused(lambda: ava_g.insert())
+
+		# 5. Capitalized repair on the node refused (N1 guard 2).
+		rep_g = frappe.get_doc({
+			"doctype": "Asset Repair",
+			"company": company,
+			"asset": gn.name,
+			"failure_date": nowdate(),
+			"capitalize_repair_cost": 1,
+			"repair_cost": 10_000,
+			"repair_status": "Completed",
+		})
+		rep_g.flags.ignore_permissions = True
+		f8_repair = _group_refused(lambda: rep_g.insert())
+
+		# 6. Capitalized Maintenance with the node as TARGET refused
+		#    (N1 guard 3a).
+		cap_g_t = frappe.get_doc({
+			"doctype": "Asset Capitalization",
+			"transaction_type": "Capitalized Maintenance",
+			"target_asset": gn.name,
+			"company": company,
+			"posting_date": nowdate(),
+			"posting_time": frappe.utils.nowtime(),
+			"entry_type": "Capitalization",
+		})
+		cap_g_t.flags.ignore_permissions = True
+		cap_g_t.flags.ignore_mandatory = True
+		f8_cap_t = _group_refused(lambda: cap_g_t.insert())
+
+		# 7. Capitalized Maintenance with the node as merge/reclass SOURCE
+		#    refused (N1 guard 3b) — even before the target is validated.
+		cap_g_s = frappe.get_doc({
+			"doctype": "Asset Capitalization",
+			"transaction_type": "Capitalized Maintenance",
+			"company": company,
+			"posting_date": nowdate(),
+			"posting_time": frappe.utils.nowtime(),
+			"entry_type": "Capitalization",
+			"asset_items": [{"asset": gn.name}],
+		})
+		cap_g_s.flags.ignore_permissions = True
+		cap_g_s.flags.ignore_mandatory = True
+		f8_cap_s = _group_refused(lambda: cap_g_s.insert())
+
+		# 8. Posts nothing: no GL and no Financial Treatment against the
+		#    node after every refusal above.
+		f8_nogl = (
+			frappe.db.count("GL Entry", {"against_voucher": gn.name}) == 0
+			and not frappe.db.exists("Financial Treatment", {"asset": gn.name})
+		)
+
+		f8_ok = (
+			f8_val and f8_nodep and f8_scrap and f8_ava
+			and f8_repair and f8_cap_t and f8_cap_s and f8_nogl
+		)
+		print(
+			f"f8     grouping asset zero-footprint: value-rejected={f8_val} "
+			f"no-depr={f8_nodep} scrap-refused={f8_scrap} ava-refused={f8_ava} "
+			f"repair-refused={f8_repair} cap-target-refused={f8_cap_t} "
+			f"cap-source-refused={f8_cap_s} zero-GL={f8_nogl} "
+			f"{'OK' if f8_ok else 'FAIL'}"
+		)
+		ok = ok and f8_ok
+
 		# ================= Phase 11b guard/enrichment checks =================
 
 		# T3/T4 (VR-010 / VR-025): movement guards.
