@@ -12,6 +12,8 @@ override_whitelisted_methods and are wrapped here (see build plan §2.3):
 3. erpnext.assets.doctype.asset.depreciation
    .get_gl_entries_on_asset_disposal
    -> Scrape Type account resolution chain (Phase 6)
+4. erpnext.assets.doctype.asset.depreciation.validate_disposal_date
+   -> tolerate the optional available-for-use date (GAP-002)
 
 Phase 0 ships verification only: on app boot we assert every target
 still exists with a compatible signature, so a bench update that moves
@@ -23,6 +25,7 @@ import inspect
 import sys
 
 import frappe
+from frappe.utils import getdate
 
 # (dotted module, attribute, minimum positional params we rely on)
 PATCH_TARGETS = [
@@ -34,6 +37,7 @@ PATCH_TARGETS = [
 	),
 	("erpnext.assets.doctype.asset.depreciation", "make_depreciation_entry", 1),
 	("erpnext.assets.doctype.asset.depreciation", "get_gl_entries_on_asset_disposal", 1),
+	("erpnext.assets.doctype.asset.depreciation", "validate_disposal_date", 3),
 	# §2.2 override_whitelisted_methods targets — verified here too so a
 	# rename surfaces at boot, not at first user click.
 	("erpnext.assets.doctype.asset.depreciation", "restore_asset", 1),
@@ -47,6 +51,7 @@ WRAPPED_ATTRS = {
 	"reschedule_depreciation",
 	"make_depreciation_entry",
 	"get_gl_entries_on_asset_disposal",
+	"validate_disposal_date",
 }
 
 # Class-method targets: (module, class, attr, min positional params).
@@ -283,6 +288,37 @@ def apply_patches():
 	_rebind("post_depreciation_entries", core_post, post_depreciation_entries)
 	core_ads.reschedule_depreciation = reschedule_depreciation
 	_rebind("reschedule_depreciation", core_resched, reschedule_depreciation)
+
+	# GAP-002 / TC-003: an asset that does not depreciate may be submitted
+	# with NO available-for-use date — a passing test case of the signed
+	# design. Core's disposal-date guard compares that field RAW against a
+	# getdate()'d disposal date:
+	#
+	#     validate_disposal_date(asset_doc.available_for_use_date, ...)
+	#     if reference_date > disposal_date:
+	#
+	# so a missing date raises TypeError: '>' not supported between
+	# instances of 'NoneType' and 'datetime.date' before the guard can
+	# decide anything. It surfaced as a Server Error the moment such an
+	# asset was picked in a capitalization's Consumed Assets grid, which
+	# calls get_value_after_depreciation_on_disposal_date (client, 25/08,
+	# ACC-ASS-2026-00192). Nothing to compare means nothing to refuse.
+	core_validate_disposal_date = core_depr.validate_disposal_date
+
+	def validate_disposal_date(reference_date, disposal_date, label):
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if not enterprise_enabled():
+			return core_validate_disposal_date(reference_date, disposal_date, label)
+		if not reference_date:
+			return
+		return core_validate_disposal_date(
+			getdate(reference_date), getdate(disposal_date), label
+		)
+
+	validate_disposal_date._asset_enterprise_wrapper = True
+	core_depr.validate_disposal_date = validate_disposal_date
+	_rebind("validate_disposal_date", core_validate_disposal_date, validate_disposal_date)
 
 	# GAP-004.4: cancelling a receipt must REVERSE the assets it created,
 	# never destroy them. Core does the opposite —

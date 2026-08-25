@@ -1117,6 +1117,61 @@ def _run():
 			      f"{'OK' if t25_ok else 'FAIL: ' + str(e)[:120]}")
 			ok = ok and t25_ok
 
+		# T26 (client, 25/08 — ACC-ASS-2026-00192): an asset that does not
+		# depreciate may be submitted with NO available-for-use date
+		# (GAP-002 / TC-003). Core's disposal-date guard compared that
+		# field raw against a getdate()'d date, so picking such an asset in
+		# a capitalization's Consumed Assets grid raised
+		# "TypeError: '>' not supported between 'NoneType' and
+		# 'datetime.date'" as a Server Error.
+		from erpnext.assets.doctype.asset.depreciation import (
+			get_value_after_depreciation_on_disposal_date,
+		)
+
+		nodate = make_test_asset(company, gross=35_000, submit=False, with_depreciation=False)
+		nodate.available_for_use_date = None
+		nodate.flags.ignore_permissions = True
+		nodate.save()
+		nodate.submit()
+		frappe.db.set_value(
+			"Asset", nodate.name, "available_for_use_date", None, update_modified=False)
+		try:
+			value = get_value_after_depreciation_on_disposal_date(nodate.name, nowdate())
+			t26_ok = value is not None
+			msg = f"returned {value}"
+		except TypeError as e:
+			t26_ok = False
+			msg = f"TypeError: {e}"
+		# ...and a BACKDATED disposal on that asset must be accepted too.
+		# Coercing the missing date with getdate() alone would read it as
+		# TODAY and refuse everything before today — no crash, but the
+		# wrong answer. Nothing to compare means nothing to refuse.
+		try:
+			back = get_value_after_depreciation_on_disposal_date(
+				nodate.name, str(add_months(nowdate(), -6)))
+			back_ok = back is not None
+			back_msg = f"returned {back}"
+		except Exception as e:
+			back_ok = False
+			back_msg = f"{type(e).__name__}: {frappe.utils.strip_html(str(e))[:70]}"
+		# and the guard still REFUSES a genuine backdated disposal
+		dated = make_test_asset(company, gross=35_000, submit=True)
+		try:
+			get_value_after_depreciation_on_disposal_date(
+				dated.name, str(add_months(nowdate(), -24)))
+			guard_ok = False
+		except frappe.ValidationError:
+			guard_ok = True
+		except TypeError:
+			guard_ok = False
+		print(
+			f"t26    no available-for-use date on a consumed asset: {msg}; "
+			f"backdated disposal on it: {back_msg}; "
+			f"guard still refuses a disposal before a REAL date: {guard_ok} "
+			f"{'OK' if (t26_ok and back_ok and guard_ok) else 'FAIL'}"
+		)
+		ok = ok and t26_ok and back_ok and guard_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow
