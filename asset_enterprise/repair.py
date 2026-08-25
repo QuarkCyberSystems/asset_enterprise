@@ -835,3 +835,126 @@ def link_repair_voucher_references(company=None, asset=None, dry_run=1):
 	if not dry_run:
 		frappe.db.commit()
 	return stuck
+
+
+def find_orphaned_posted_rows(company=None, asset=None):
+	"""Depreciation that is POSTED in the ledger but sits only on a
+	SUPERSEDED generation — invisible to the Active schedule.
+
+	GAP-031/032 make the Active generation the complete record: posted
+	rows are copied verbatim into every generation, and asset_values sums
+	posted rows from the Active one alone. A journal entry stamped on a
+	generation after it was superseded breaks that — the charge is in the
+	GL, the Active schedule still shows the period as due, and the
+	scheduler will charge it again (UAT ACC-ASS-2026-00191, 2026-08-25:
+	three 2026 entries landed on ACC-ADS-2026-00401 78 seconds after a
+	capitalization superseded it).
+	"""
+	filters = ""
+	values = {}
+	if company:
+		filters += " and a.company = %(company)s"
+		values["company"] = company
+	if asset:
+		filters += " and a.name = %(asset)s"
+		values["asset"] = asset
+	return frappe.db.sql(
+		f"""
+		select old.asset, old.name as superseded_schedule, ds.name as row_name,
+		       ds.schedule_date, ds.depreciation_amount, ds.journal_entry,
+		       ds.days_in_period, ds.daily_rate, ds.cost_center, ds.is_pya_entry,
+		       live.name as active_schedule
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` old on ds.parent = old.name
+		join `tabAsset` a on a.name = old.asset
+		join `tabAsset Depreciation Schedule` live
+		     on live.asset = old.asset and live.status = 'Active' and live.docstatus = 1
+		where old.status <> 'Active' and old.docstatus = 1
+		  and ifnull(ds.journal_entry, '') <> ''
+		  and ifnull(ds.reversal_journal_entry, '') = ''
+		  and not exists (
+		      select 1 from `tabDepreciation Schedule` cur
+		      where cur.parent = live.name and cur.journal_entry = ds.journal_entry
+		  )
+		  {filters}
+		order by old.asset, ds.schedule_date
+		""",
+		values,
+		as_dict=True,
+	)
+
+
+def repair_orphaned_posted_rows(company=None, asset=None, dry_run=1):
+	"""Carry orphaned posted rows onto the Active generation verbatim,
+	then respread what is left from the corrected base.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.repair_orphaned_posted_rows \\
+	        --kwargs "{'dry_run': 1}"
+	"""
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
+
+	rows = find_orphaned_posted_rows(company=company, asset=asset)
+	by_asset = {}
+	for row in rows:
+		by_asset.setdefault(row.asset, []).append(row)
+	print(f"{len(rows)} posted row(s) stranded on superseded generations, {len(by_asset)} asset(s):")
+
+	for asset_name, orphans in by_asset.items():
+		print(f"  {asset_name}  Active {orphans[0].active_schedule}")
+		unmatched = []
+		for row in orphans:
+			target = frappe.db.get_value(
+				"Depreciation Schedule",
+				{
+					"parent": orphans[0].active_schedule,
+					"schedule_date": row.schedule_date,
+					"journal_entry": ("in", ("", None)),
+				},
+				"name",
+			)
+			print(
+				f"    {row.schedule_date}  {flt(row.depreciation_amount):,.2f}  "
+				f"{row.journal_entry}  (from {row.superseded_schedule})  "
+				f"-> {target or 'NO MATCHING ROW'}"
+			)
+			if not target:
+				# Never invent a row: the Active generation may legitimately
+				# have re-priced the period away. Report it for a human.
+				unmatched.append(row)
+				continue
+			if dry_run:
+				continue
+			frappe.db.set_value(
+				"Depreciation Schedule", target,
+				{
+					"depreciation_amount": row.depreciation_amount,
+					"days_in_period": row.days_in_period,
+					"daily_rate": row.daily_rate,
+					"cost_center": row.cost_center,
+					"is_pya_entry": row.is_pya_entry,
+					"journal_entry": row.journal_entry,
+				},
+				update_modified=False,
+			)
+		if unmatched:
+			print(f"    ! {len(unmatched)} row(s) have no matching period on the Active "
+			      f"generation — reported, not written.")
+		if dry_run:
+			continue
+		# The base moved: respread the remaining rows so the Active
+		# generation's unposted total lands on the derived NBV again.
+		recalculate_asset_values(asset_name, save=True)
+		last_posted = last_posted_schedule_date(asset_name)
+		if last_posted:
+			supersede_and_regenerate(
+				asset_name,
+				as_of_date=getdate(last_posted),
+				reason=_("Rebuilt after recovering depreciation stranded on a "
+					"superseded generation (GAP-031/032)"),
+			)
+			recalculate_asset_values(asset_name, save=True)
+	if not dry_run:
+		frappe.db.commit()
+	return rows

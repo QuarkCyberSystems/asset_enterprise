@@ -2401,6 +2401,94 @@ def _run():
 		)
 		ok = ok and t23_ok
 
+		# T32: a journal entry may NEVER be stamped on a superseded
+		# generation. On UAT a capitalization superseded
+		# ACC-ADS-2026-00401 at 16:38:07 and three depreciation entries
+		# landed on that dead generation at 16:39:25 — the GL held the
+		# charge, the Active schedule still showed the months as due, and
+		# the scheduler would have charged them again. The form button was
+		# already guarded; the stamp itself was not.
+		g1 = make_test_asset(company, gross=36_000, submit=True)
+		enable_depreciation(
+			g1.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+			depreciation_start_date=get_first_day(add_months(nowdate(), -2)),
+		)
+		stale_row = first_unposted_row(g1.name)
+		_post_one(first_unposted_row(g1.name), getdate(nowdate()))
+		supersede_and_regenerate(g1.name, as_of_date=nowdate(), reason="t32 probe")
+		# stale_row still points at the now-superseded generation, exactly
+		# as a caller holding rows read before the supersession would.
+		try:
+			_post_one(stale_row, getdate(nowdate()))
+			t32_ok = False
+			t32_msg = "posting on a superseded generation was ALLOWED"
+		except frappe.ValidationError as e:
+			t32_ok = "superseded" in str(e).lower() or "Superseded" in str(e)
+			t32_msg = str(e)[:60]
+		print(f"t32    stale-generation posting refused: {t32_msg} {'OK' if t32_ok else 'FAIL'}")
+		ok = ok and t32_ok
+
+		# T33: the repair carries already-stranded rows back onto the
+		# Active generation and respreads the rest.
+		from asset_enterprise import repair as repair_mod
+
+		r1 = make_test_asset(company, gross=60_000, submit=True)
+		enable_depreciation(
+			r1.name, total_number_of_depreciations=60, frequency_of_depreciation=1,
+			depreciation_start_date=get_first_day(add_months(nowdate(), -2)),
+		)
+		_post_one(first_unposted_row(r1.name), getdate(nowdate()))
+		posted_je = frappe.db.sql(
+			"""select ds.journal_entry, ds.name, ds.schedule_date
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active'
+			     and ifnull(ds.journal_entry, '') <> '' limit 1""",
+			r1.name, as_dict=True,
+		)[0]
+		supersede_and_regenerate(r1.name, as_of_date=nowdate(), reason="t33 probe")
+		# Strand it: the posted row exists on the superseded generation
+		# only, which is the state the race leaves behind.
+		live_row = frappe.db.get_value(
+			"Depreciation Schedule",
+			{"parent": frappe.db.get_value("Asset Depreciation Schedule",
+				{"asset": r1.name, "status": "Active", "docstatus": 1}, "name"),
+			 "journal_entry": posted_je.journal_entry},
+			"name",
+		)
+		frappe.db.set_value("Depreciation Schedule", live_row, "journal_entry", None,
+			update_modified=False)
+		stranded = repair_mod.find_orphaned_posted_rows(asset=r1.name)
+
+		real_commit = frappe.db.commit
+		frappe.db.commit = lambda *a, **k: None
+		try:
+			repair_mod.repair_orphaned_posted_rows(asset=r1.name, dry_run=1)
+			dry_clean = bool(repair_mod.find_orphaned_posted_rows(asset=r1.name))
+			repair_mod.repair_orphaned_posted_rows(asset=r1.name, dry_run=0)
+		finally:
+			frappe.db.commit = real_commit
+
+		left = repair_mod.find_orphaned_posted_rows(asset=r1.name)
+		vals = recalculate_asset_values(r1.name, save=False)
+		unposted = flt(frappe.db.sql(
+			"""select coalesce(sum(ds.depreciation_amount), 0)
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			     and ifnull(ds.journal_entry, '') = ''""",
+			r1.name)[0][0])
+		t33_ok = (
+			len(stranded) == 1 and dry_clean and not left
+			and abs(unposted - flt(vals["net_book_value"])) < 0.02
+		)
+		print(
+			f"t33    stranded rows recovered: detected={len(stranded)} dry-run-left-it={dry_clean} "
+			f"remaining={len(left)} schedule unposted {unposted:,.2f} vs NBV "
+			f"{flt(vals['net_book_value']):,.2f} {'OK' if t33_ok else 'FAIL'}"
+		)
+		ok = ok and t33_ok
+
 	finally:
 		frappe.db.rollback(save_point="phase11_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})

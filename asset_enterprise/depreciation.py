@@ -1410,10 +1410,51 @@ def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount,
 	return legs
 
 
+def _assert_row_is_live(row):
+	"""GAP-031/032: a journal entry may only be stamped on a row of the
+	asset's ACTIVE generation.
+
+	`post_schedule_entries` guards the form button, but the stamp itself
+	happens here — and this is the only place it happens, so this is the
+	only place the invariant can be enforced for every door (mass runs,
+	the scheduler, the final-row path, anything added later).
+
+	It matters because a generation is superseded between the moment a
+	caller reads its rows and the moment it posts them: on UAT
+	ACC-ASS-2026-00191 a capitalization superseded ACC-ADS-2026-00401 at
+	16:38:07 and three depreciation entries landed on that dead
+	generation at 16:39:25. The Active generation still showed those
+	three months as due — the ledger held the charge, the schedule did
+	not, and the scheduler would have charged them a second time.
+	"""
+	schedule = row.get("schedule") if hasattr(row, "get") else getattr(row, "schedule", None)
+	if not schedule:
+		return
+	status, asset_name = frappe.db.get_value(
+		"Asset Depreciation Schedule", schedule, ["status", "asset"]
+	) or (None, None)
+	if not status or status == "Active":
+		return
+	live = frappe.db.get_value(
+		"Asset Depreciation Schedule",
+		{"asset": asset_name, "status": "Active", "docstatus": 1},
+		"name",
+	)
+	frappe.throw(
+		_(
+			"{0} is {1} — depreciation posts only from the asset's Active generation. "
+			"This schedule was replaced while the entry was being prepared; re-read the "
+			"asset's rows and post again.{2}"
+		).format(schedule, _(status), _(" Active generation: {0}.").format(live) if live else ""),
+		title=_("Superseded Schedule"),
+	)
+
+
 def _post_one(row, posting_date):
 	from asset_enterprise import tcc
 	from asset_enterprise.accounts import get_enterprise_account
 
+	_assert_row_is_live(row)
 	asset = frappe.get_doc("Asset", row.asset)
 	company = asset.company
 	aca = frappe.db.get_value(
