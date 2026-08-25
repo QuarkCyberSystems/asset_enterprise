@@ -289,3 +289,38 @@ def movement_cost_centre_impact(
 				{"period_end": str(end), "amount": flt(r.depreciation_amount)}
 			)
 	return out
+
+
+@frappe.whitelist()
+def reversible_partial_scraps(asset):
+	"""Posted partial scraps of an asset that have not been reversed.
+
+	The reversal endpoint takes ONE treatment, so where an asset carries
+	several partial scraps the user has to say which — this feeds that
+	choice, newest first.
+	"""
+	frappe.has_permission("Asset", "read", asset, throw=True)
+	rows = frappe.db.sql(
+		"""
+		select ft.name, ft.posting_date, ft.amount, ft.journal_entry, ft.transaction_type
+		from `tabFinancial Treatment` ft
+		where ft.asset = %s and ft.transaction_category = 'Disposal'
+		  and ft.status = 'Posted' and ft.transaction_type like 'Partial Disposal%%'
+		order by ft.posting_date desc, ft.creation desc
+		""",
+		asset,
+		as_dict=True,
+	)
+	from frappe.utils import get_first_day, get_last_day, getdate, nowdate
+
+	today = getdate(nowdate())
+	for r in rows:
+		# Same window the server enforces (VR-033), so the form can offer
+		# the right action rather than inviting a refusal.
+		r.in_window = bool(
+			get_first_day(today) <= getdate(r.posting_date) <= get_last_day(today)
+		)
+		r.scrap_transaction = frappe.db.get_value(
+			"Scrap Transaction", {"journal_entry": r.journal_entry, "docstatus": 1}, "name"
+		)
+	return rows

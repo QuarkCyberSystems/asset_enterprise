@@ -24,6 +24,7 @@
   "cost_center",
   "posting_section",
   "journal_entry",
+  "reversal_journal_entry",
   "amended_from"
  ],
  "fields": [
@@ -153,6 +154,15 @@
    "label": "Journal Entry",
    "options": "Journal Entry",
    "read_only": 1
+  },
+  {
+   "fieldname": "reversal_journal_entry",
+   "fieldtype": "Link",
+   "options": "Journal Entry",
+   "label": "Reversal Entry",
+   "read_only": 1,
+   "depends_on": "eval:doc.reversal_journal_entry",
+   "description": "The mirror entry that reversed this scrap. The original stays posted."
   },
   {
    "fieldname": "amended_from",

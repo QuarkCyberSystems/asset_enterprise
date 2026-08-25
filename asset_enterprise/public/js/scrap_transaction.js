@@ -6,6 +6,13 @@
 frappe.ui.form.on("Scrap Transaction", {
 	refresh(frm) {
 		frm.trigger("ae_lock_cost_center");
+		if (
+			frm.doc.docstatus === 1 &&
+			frm.doc.scrap_type === "Partial Scrap" &&
+			!frm.doc.reversal_journal_entry
+		) {
+			window.ae_partial_scrap_actions(frm, frm.doc.asset);
+		}
 	},
 
 	asset(frm) {

@@ -24,6 +24,10 @@ frappe.ui.form.on("Asset", {
 			);
 		}
 
+		// A partially scrapped asset keeps its normal status, so it never
+		// matches the full-scrap buttons below (client, 25/08).
+		window.ae_partial_scrap_actions(frm, frm.doc.name);
+
 		// Same-period Restore (GAP-016 Path 1) — backend gates the window.
 		if (frm.doc.status === "Scrapped") {
 			frm.add_custom_button(

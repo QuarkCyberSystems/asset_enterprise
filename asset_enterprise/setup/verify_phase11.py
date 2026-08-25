@@ -1284,6 +1284,71 @@ def _run():
 			      f"{'OK' if t27b_ok else 'FAIL: ' + str(e)[:110]}")
 			ok = ok and t27b_ok
 
+
+		# T28 (client, 25/08 — SCR-2026-01459): a partial scrap is undone by
+		# REVERSING it, and gets the same pair of routes a full scrap has
+		# (client ruling): same period, or cross-period after the window.
+		# The engine existed and TC-043 passed, but nothing reached it —
+		# the restore buttons are gated on status "Scrapped", which a
+		# partially scrapped asset never carries.
+		from asset_enterprise.api import reversible_partial_scraps
+		from asset_enterprise.disposal import partial_scrap_asset
+		from asset_enterprise.restore import restore_partial_scrap
+
+		ps = _mk_posted(50_000)
+		before = flt(recalculate_asset_values(ps.name, save=False)["historical_asset_value"])
+		partial_scrap_asset(ps.name, percentage=10, scrapping_type="Damage",
+		                    scrap_date=nowdate())
+		after_scrap = flt(recalculate_asset_values(ps.name, save=False)["historical_asset_value"])
+		offered = reversible_partial_scraps(ps.name)
+		t28_ok = len(offered) == 1 and offered[0]["in_window"] and after_scrap < before
+		print(f"t28    partial scrap offered for reversal: {len(offered)} row(s), "
+		      f"in_window={offered[0]['in_window'] if offered else None}; HAV "
+		      f"{before:,.2f} -> {after_scrap:,.2f} {'OK' if t28_ok else 'FAIL'}")
+		ok = ok and t28_ok
+
+		mirror = restore_partial_scrap(ps.name, offered[0]["name"])
+		restored = flt(recalculate_asset_values(ps.name, save=False)["historical_asset_value"])
+		still_posted = frappe.db.get_value(
+			"Journal Entry", offered[0]["journal_entry"], "docstatus") == 1
+		scrap_doc = offered[0].get("scrap_transaction")
+		stamped = frappe.db.get_value(
+			"Scrap Transaction", scrap_doc, "reversal_journal_entry") if scrap_doc else None
+		t28b_ok = (
+			abs(restored - before) < 0.01 and bool(mirror) and still_posted
+			and (not scrap_doc or stamped == mirror)
+		)
+		print(f"t28b   reversed via {mirror}: HAV back to {restored:,.2f} (want {before:,.2f}); "
+		      f"original entry still posted={still_posted}; scrap record stamped={stamped} "
+		      f"{'OK' if t28b_ok else 'FAIL'}")
+		ok = ok and t28b_ok
+
+		# out of window: refused with PARTIAL wording, then allowed cross-period
+		ps2 = _mk_posted(50_000)
+		partial_scrap_asset(ps2.name, percentage=10, scrapping_type="Damage",
+		                    scrap_date=nowdate())
+		ft2 = reversible_partial_scraps(ps2.name)[0]["name"]
+		frappe.db.set_value("Financial Treatment", ft2, "posting_date",
+		                    add_months(nowdate(), -5), update_modified=False)
+		try:
+			restore_partial_scrap(ps2.name, ft2)
+			print("t28c   FAIL (out-of-window reversal allowed without the cross-period route)")
+			ok = False
+		except frappe.ValidationError as e:
+			msg = frappe.utils.strip_html(str(e))
+			t28c_ok = "Cross-Period Reverse Partial Scrap" in msg and "Replacement" not in msg
+			print(f"t28c   out-of-window refusal names the PARTIAL route: "
+			      f"{'OK' if t28c_ok else 'FAIL: ' + msg[:120]}")
+			ok = ok and t28c_ok
+		before2 = flt(recalculate_asset_values(ps2.name, save=False)["historical_asset_value"])
+		m2 = restore_partial_scrap(ps2.name, ft2, cross_period=1)
+		after2 = flt(recalculate_asset_values(ps2.name, save=False)["historical_asset_value"])
+		t28d_ok = bool(m2) and after2 > before2
+
+		print(f"t28d   cross-period reversal: {m2}; HAV {before2:,.2f} -> {after2:,.2f} "
+		      f"{'OK' if t28d_ok else 'FAIL'}")
+		ok = ok and t28d_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow

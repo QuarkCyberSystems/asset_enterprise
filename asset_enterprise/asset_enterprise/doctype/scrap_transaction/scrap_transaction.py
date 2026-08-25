@@ -141,6 +141,20 @@ class ScrapTransaction(Document):
 			)
 
 	def on_cancel(self):
+		# The three GAP-016 paths are for a FULL scrap. After a partial
+		# scrap nothing was disposed — only part of the value left — so
+		# naming them sent the user looking for buttons that could never
+		# apply (client, 25/08, SCR-2026-01459).
+		if self.scrap_type == "Partial Scrap":
+			frappe.throw(
+				_(
+					"A Scrap Transaction cannot be cancelled (immutable ledger). To undo "
+					"this partial scrap use <b>Reverse Partial Scrap</b> on the asset — "
+					"same period — or <b>Cross-Period Reverse Partial Scrap</b> once that "
+					"window has passed. The original entry stays posted either way."
+				),
+				title=_("Use the Reversal Action"),
+			)
 		frappe.throw(
 			_(
 				"A Scrap Transaction cannot be cancelled (immutable ledger). To recover "

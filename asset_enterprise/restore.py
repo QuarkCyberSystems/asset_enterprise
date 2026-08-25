@@ -23,7 +23,7 @@ depreciation entry accumulates the disposed periods in one posting
 
 import frappe
 from frappe import _
-from frappe.utils import flt, get_first_day, get_last_day, getdate, nowdate
+from frappe.utils import cint, flt, get_first_day, get_last_day, getdate, nowdate
 
 
 @frappe.whitelist()
@@ -105,13 +105,29 @@ def restore_asset(asset_name):
 
 
 @frappe.whitelist()
-def restore_partial_scrap(asset_name, financial_treatment):
-	"""Path 1 for a partial scrap: mirror one Partial Disposal FT/JE
-	proportionally, under the same same-period / zero-subsequent gate."""
+def restore_partial_scrap(asset_name, financial_treatment, cross_period=0):
+	"""Reverse ONE partial scrap by mirroring its disposal JE
+	proportionally. The original entry stays posted.
+
+	A partial scrap gets the same pair of routes a full scrap has
+	(client ruling, 25/08 — "treat it same like full scrap reversal"):
+
+	  * inside the window — same period, nothing posted since (VR-033);
+	  * `cross_period=1` — after the window, the Path 3 treatment. The
+	    mirror posts TODAY and the schedule re-prices from the restored
+	    value; periods already posted at the reduced base stay as they
+	    are, which is what the immutable ledger requires.
+
+	Until now only the first existed, and the design's stated fallback
+	("use Create Replacement Asset") was written for a full scrap: after
+	a partial scrap nothing was disposed, so there is no disposed record
+	to replace and a new asset would not put the value back.
+	"""
 	from asset_enterprise.depreciation import enterprise_enabled
 
 	if not enterprise_enabled():
 		frappe.throw(_("Partial scrap restore requires Enterprise Assets."))
+	frappe.has_permission("Asset", "write", asset_name, throw=True)
 
 	ft = frappe.get_doc("Financial Treatment", financial_treatment)
 	if ft.asset != asset_name or ft.transaction_category != "Disposal":
@@ -120,10 +136,14 @@ def restore_partial_scrap(asset_name, financial_treatment):
 		frappe.throw(_("{0} is {1} — only Posted treatments can be restored.").format(ft.name, ft.status))
 
 	asset = frappe.get_doc("Asset", asset_name)
-	_same_period_gate(asset, ft.posting_date)
+	if not cint(cross_period):
+		_same_period_gate(asset, ft.posting_date, partial=True)
 
 	mirror = _mirror_je(
-		ft.journal_entry, _("Partial scrap restore of Asset {0}").format(asset_name)
+		ft.journal_entry,
+		_("Partial scrap restore of Asset {0}{1}").format(
+			asset_name, _(" (cross-period)") if cint(cross_period) else ""
+		),
 	)
 
 	from asset_enterprise import tcc
@@ -148,6 +168,33 @@ def restore_partial_scrap(asset_name, financial_treatment):
 		)
 	except frappe.ValidationError:
 		pass
+
+	# Say so on the scrap record itself, or it keeps reading as live —
+	# the same record-versus-ledger mismatch that bit the movement fix.
+	scrap = frappe.db.get_value(
+		"Scrap Transaction", {"journal_entry": ft.journal_entry, "docstatus": 1}, "name"
+	)
+	if scrap:
+		frappe.db.set_value(
+			"Scrap Transaction", scrap, "reversal_journal_entry", mirror, update_modified=False
+		)
+		frappe.get_doc("Scrap Transaction", scrap).add_comment(
+			"Comment",
+			_("Reversed via {0}{1}. The original entry stays posted.").format(
+				mirror, _(" (cross-period)") if cint(cross_period) else ""
+			),
+		)
+
+	from asset_enterprise.tcc import add_snapshot_activity
+
+	add_snapshot_activity(
+		asset_name,
+		_("Partial scrap reversed via {0}{1}; the original entry stays posted.").format(
+			mirror, _(" — cross-period") if cint(cross_period) else ""
+		),
+		transaction_type="Restore (Partial Scrap)",
+		journal_entry=mirror,
+	)
 	return mirror
 
 
@@ -289,7 +336,7 @@ def create_replacement_asset(source_asset):
 	return replacement.name
 
 
-def _same_period_gate(asset, disposal_date):
+def _same_period_gate(asset, disposal_date, partial=False):
 	"""VR-033: same calendar month (EOM period model) + zero depreciation
 	posted since the disposal."""
 	disposal_date = getdate(disposal_date)
@@ -309,6 +356,17 @@ def _same_period_gate(asset, disposal_date):
 	)[0][0]
 
 	if not in_period or posted_since:
+		if partial:
+			# Create Replacement Asset is meaningless here: nothing was
+			# disposed, so there is no record to replace.
+			frappe.throw(
+				_(
+					"Restore window has passed (partial scrap {0}; same-period reversals "
+					"only, with no depreciation posted since). Use 'Cross-Period Reverse "
+					"Partial Scrap' — the value returns today and the schedule re-prices "
+					"from there. See GAP-016."
+				).format(disposal_date)
+			)
 		frappe.throw(
 			_(
 				"Restore window has passed (disposal {0}; same-period restores only, "
