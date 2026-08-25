@@ -49,6 +49,14 @@ class EnterpriseAssetRepair(AssetRepair):
 				amount=flt(self.total_repair_cost),
 				hav_delta=flt(self.total_repair_cost),
 				life_delta_months=flt(self.get("increase_in_asset_life") or 0),
+				# The repair posts its GL under its OWN voucher (core
+				# make_gl_entries), not a Journal Entry. Link it so the
+				# values fold's counted-voucher set recognises the GL and
+				# the manual sweep never double-counts the capitalized
+				# cost (client, 2026-08-25: HAV was net + FT delta + GL
+				# sweep = 33,000 instead of 18,000).
+				voucher_type="Asset Repair",
+				voucher_no=self.name,
 			)
 			from asset_enterprise.depreciation import regenerate_after_value_change
 
@@ -201,6 +209,12 @@ class EnterpriseAssetRepair(AssetRepair):
 				# C3: the reversal's own completion date (chosen in the
 				# dialog, default today) anchors the FT pairing.
 				posting_date=getdate(self.completion_date or nowdate()),
+				# The Reversal Repair's GL is posted under ITS voucher
+				# (make_reverse_gl_entries) — link it so the mirror FT
+				# points at the right voucher and the fold's counted set
+				# covers the reversal GL too.
+				voucher_type="Asset Repair",
+				voucher_no=self.name,
 			)
 
 		# 4. Prospective schedule from the reduced base — resuming from

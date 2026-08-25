@@ -88,9 +88,15 @@ def _category_accounts(asset):
 
 
 def _counted_vouchers(asset_name):
-	"""Journal Entries already represented in the fold — schedule rows
-	and Financial Treatments. Anything else on the asset's accounts is
-	a manual posting."""
+	"""Journal Entries and GL vouchers already represented in the fold —
+	schedule rows and Financial Treatments. Anything else on the asset's
+	accounts is a manual posting.
+
+	Treatments that post under their OWN voucher (Capitalized Repair,
+	GA-0006 settlement runs — `voucher_type`/`voucher_no` on the FT) are
+	counted too: without this, the manual-GL sweep re-added their GL as
+	an "unrepresented" manual posting and the derived HAV double-counted
+	the capitalized cost (client, 2026-08-25)."""
 	names = set()
 	for je, rev in frappe.db.sql(
 		"""select ds.journal_entry, ds.reversal_journal_entry
@@ -100,13 +106,15 @@ def _counted_vouchers(asset_name):
 		asset_name,
 	):
 		names.update(x for x in (je, rev) if x)
-	names.update(
-		frappe.get_all(
-			"Financial Treatment",
-			filters={"asset": asset_name, "journal_entry": ("is", "set")},
-			pluck="journal_entry",
-		)
-	)
+	for row in frappe.get_all(
+		"Financial Treatment",
+		filters={"asset": asset_name},
+		fields=["journal_entry", "voucher_no"],
+	):
+		if row.journal_entry:
+			names.add(row.journal_entry)
+		if row.voucher_no:
+			names.add(row.voucher_no)
 	return names
 
 

@@ -698,3 +698,64 @@ def backfill_row_daycount_metadata(company=None, asset=None, dry_run=1):
 	frappe.db.commit()
 	print(f"backfilled {len(updates)} row(s)")
 	return [u[2] for u in updates]
+
+
+def find_unlinked_repair_treatments(company=None, asset=None):
+	"""Posted Capitalized Repair Addition FTs whose GL voucher is not
+	linked.
+
+	The repair posts its GL under its own voucher; a treatment that does
+	not carry voucher_type/voucher_no is invisible to the values fold's
+	counted-voucher set, so the manual-GL sweep re-adds the repair's GL
+	as an "unrepresented" manual posting and the derived HAV
+	double-counts the capitalized cost (client, 2026-08-25: HAV 33,000
+	instead of 18,000)."""
+	filters = {
+		"source_doctype": "Asset Repair",
+		"transaction_type": "Capitalized Repair",
+		"status": "Posted",
+		"voucher_no": ("is", "not set"),
+	}
+	if company:
+		filters["company"] = company
+	if asset:
+		filters["asset"] = asset
+	return frappe.get_all(
+		"Financial Treatment",
+		filters=filters,
+		fields=["name", "asset", "source_name", "amount"],
+	)
+
+
+def link_repair_voucher_references(company=None, asset=None, dry_run=1):
+	"""Report (dry_run=1) or set (dry_run=0) the missing voucher link on
+	Capitalized Repair treatments, then recalculate the affected assets
+	so their ledger-derived HAV drops the double-count.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.link_repair_voucher_references \\
+	        --kwargs "{'dry_run': 1}"
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.link_repair_voucher_references \\
+	        --kwargs "{'dry_run': 0}"
+	"""
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	stuck = find_unlinked_repair_treatments(company=company, asset=asset)
+	print(f"{len(stuck)} Capitalized Repair treatment(s) without a voucher link:")
+	for row in stuck:
+		print(
+			f"  FT {row.name}  asset {row.asset}  repair {row.source_name}  "
+			f"amount {flt(row.amount):,.2f}"
+		)
+		if dry_run:
+			continue
+		frappe.db.set_value(
+			"Financial Treatment", row.name,
+			{"voucher_type": "Asset Repair", "voucher_no": row.source_name},
+			update_modified=False,
+		)
+		recalculate_asset_values(row.asset, save=True)
+	if not dry_run:
+		frappe.db.commit()
+	return stuck

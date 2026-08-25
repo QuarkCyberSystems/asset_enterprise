@@ -2768,6 +2768,100 @@ def tc047d():
 	return "FAIL", "repair reversal allowed on a fully depreciated asset"
 
 
+# ============================================================== TC-047e
+@tc("TC-047e", "Capitalized Repair — HAV after repair equals base + total cost")
+def tc047e():
+	# Client issue 2026-08-25 (ACC-ASS-2026-00214): the ledger-derived
+	# HAV double-counted a capitalized repair — the Addition FT recorded
+	# +total_repair_cost but never linked the repair's GL voucher, so the
+	# manual-GL sweep added the repair's GL a second time. Expected HAV
+	# after a 2,000 asset + 16,000 repair (15,000 from a PI + 1,000
+	# stock): 2,000 + 16,000 = 18,000, and back to 2,000 after reversal.
+	company = _company()
+	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
+	clearing = _plain(company, "Liability")
+	expense = _plain(company, "Expense")
+	cc = frappe.db.get_value(
+		"Cost Center", {"company": company, "is_group": 0}, "name"
+	) or frappe.db.get_value("Company", company, "cost_center")
+	item = _stock_item()
+	warehouse = _warehouse(company)
+	_stock_in(company, item, warehouse, 200, 200)
+	asset = _plain_asset(company, cat, "TC-047e Repair HAV", 2_000)
+	asset.submit()
+
+	# v16 shape: repair_cost is derived from the invoices child (PI rows).
+	svc = "TC-REPAIR-SERVICE"
+	if not frappe.db.exists("Item", svc):
+		frappe.get_doc({
+			"doctype": "Item", "item_code": svc, "item_name": "TC Repair Service",
+			"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+			"is_stock_item": 0, "is_fixed_asset": 0, "is_purchase_item": 1,
+			"stock_uom": "Nos",
+		}).insert(ignore_permissions=True)
+	pi = frappe.get_doc({
+		"doctype": "Purchase Invoice",
+		"company": company,
+		"supplier": _supplier(),
+		"posting_date": nowdate(),
+		"set_posting_time": 1,
+		"items": [{
+			"item_code": svc, "qty": 1, "rate": 15_000,
+			"expense_account": expense, "cost_center": cc,
+		}],
+	})
+	pi.flags.ignore_permissions = True
+	pi.insert()
+	pi.submit()
+
+	repair = frappe.get_doc({
+		"doctype": "Asset Repair",
+		"asset": asset.name,
+		"company": company,
+		"failure_date": nowdate(),
+		"repair_status": "Completed",
+		"completion_date": nowdate(),
+		"capitalize_repair_cost": 1,
+		"cost_center": cc,
+		"capital_work_in_progress_account": clearing,
+		"invoices": [{"purchase_invoice": pi.name, "expense_account": expense, "repair_cost": 15_000}],
+		"stock_items": [
+			{"item_code": item, "consumed_quantity": 1, "valuation_rate": 1_000,
+			 "warehouse": warehouse, "total_value": 1_000}
+		],
+	})
+	repair.flags.ignore_permissions = True
+	repair.insert()
+	repair.submit()
+	repair.reload()
+
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	hav_after = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"], 2)
+	ft = frappe.db.get_value(
+		"Financial Treatment",
+		{"source_doctype": "Asset Repair", "source_name": repair.name, "status": "Posted"},
+		["name", "voucher_type", "voucher_no", "journal_entry"], as_dict=True,
+	)
+	repair.reload()
+	repair.cancel()
+	hav_after_rev = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"], 2)
+	ok = (
+		flt(repair.repair_cost) == 15_000  # derived from the invoices child
+		and flt(repair.total_repair_cost) == 16_000
+		and hav_after == 18_000.00
+		and ft and ft.voucher_type == "Asset Repair" and ft.voucher_no == repair.name
+		and hav_after_rev == 2_000.00
+	)
+	return (
+		("PASS" if ok else "FAIL"),
+		f"repair_cost {flt(repair.repair_cost):,.0f} + stock 1,000 = total "
+		f"{flt(repair.total_repair_cost):,.0f}; HAV after repair {hav_after:,.2f} (want 18,000); "
+		f"FT {ft and ft.name} voucher {ft and ft.voucher_no}; "
+		f"HAV after reversal {hav_after_rev:,.2f} (want 2,000)",
+	)
+
+
 # ============================================================== TC-048
 @tc("TC-048", "Composite Partial Scrap by Amount")
 def tc048():
