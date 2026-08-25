@@ -1072,6 +1072,33 @@ def _run():
 		)
 		ok = ok and t24_ok
 
+		# T24b (client, 24/08 follow-on): the adjustment entry belongs to
+		# the centre that held the asset on its date — core would use the
+		# company's depreciation cost centre instead.
+		ccs11 = frappe.get_all(
+			"Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2)
+		v3 = make_test_asset(company, gross=30_000, submit=True)
+		frappe.db.set_value("Asset", v3.name, "cost_center", ccs11[0], update_modified=False)
+		mv11 = frappe.get_doc({
+			"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+			"transaction_date": frappe.utils.now(),
+			"assets": [{"asset": v3.name, "target_cost_center": ccs11[1]}]})
+		mv11.flags.ignore_permissions = True
+		mv11.insert()
+		mv11.submit()
+		imp2 = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": v3.name, "company": company,
+			"date": nowdate(), "transaction_type": "Initial Impairment",
+			"current_asset_value": 30_000, "new_asset_value": 28_000})
+		imp2.flags.ignore_permissions = True
+		imp2.insert()
+		t24b_ok = imp2.cost_center == ccs11[1]
+		print(
+			f"t24b   adjustment cost centre from history: {imp2.cost_center} "
+			f"(want {ccs11[1]}, the centre holding it today) {'OK' if t24b_ok else 'FAIL'}"
+		)
+		ok = ok and t24b_ok
+
 		# T25: Invoice Adjustment is raised BY the invoice, never by hand.
 		v2 = make_test_asset(company, gross=30_000, submit=True)
 		try:

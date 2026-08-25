@@ -34,6 +34,19 @@ class EnterpriseAVA(AssetValueAdjustment):
 		# the user can still override.
 		if self._enterprise():
 			self._refuse_manual_invoice_adjustment()
+			# Same rule as everywhere else: the entry belongs to the centre
+			# that held the asset on the adjustment date. Core otherwise
+			# falls back to the company's depreciation cost centre
+			# (`self.cost_center or depreciation_cost_center`), so an
+			# impairment of an asset sitting in Head Office was booked to
+			# the company default. Only filled when the user has not
+			# chosen one — a deliberate choice still stands.
+			if not self.get("cost_center") and self.get("asset"):
+				from asset_enterprise.depreciation import cost_centre_on
+
+				self.cost_center = cost_centre_on(
+					self.asset, self.get("date") or nowdate()
+				) or frappe.db.get_value("Asset", self.asset, "cost_center")
 			# Client, 24/08: for impairment and revaluation the account is
 			# NOT the user's to pick — it comes from the Asset Category
 			# (§3.5 chain) and the field is read-only. Resolved here even
