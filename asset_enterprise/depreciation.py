@@ -1036,6 +1036,37 @@ def post_schedule_entries(schedule_name, date=None, sch_start_idx=None, sch_end_
 	routing and the Financial Treatment record, so the same asset posted
 	differently depending on which button was used."""
 	posting_date = getdate(date or nowdate())
+
+	# GAP-031: only the ACTIVE generation may post. A superseded one is a
+	# historical copy — its rows were re-priced into the generation that
+	# replaced it, and posting from it books a stale amount while the
+	# Active generation still shows the period as due, so the scheduler
+	# posts it AGAIN. Proven: posting two rows off a superseded schedule
+	# left the Active one still owing both (client, 25/08,
+	# ACC-ADS-2026-00401 — "the schedule is superseded, the action should
+	# be prevented").
+	status, asset_name = frappe.db.get_value(
+		"Asset Depreciation Schedule", schedule_name, ["status", "asset"]
+	) or (None, None)
+	if status and status != "Active":
+		live = frappe.db.get_value(
+			"Asset Depreciation Schedule",
+			{"asset": asset_name, "status": "Active", "docstatus": 1},
+			"name",
+		)
+		frappe.throw(
+			_(
+				"{0} is {1} — depreciation posts only from the asset's Active "
+				"schedule.{2} A superseded generation is kept for audit; its rows were "
+				"re-priced into the schedule that replaced it."
+			).format(
+				schedule_name,
+				_(status),
+				_(" Use {0}.").format(live) if live else "",
+			),
+			title=_("Superseded Schedule"),
+		)
+
 	rows = frappe.db.sql(
 		"""
 		select ds.name as row_name, ds.parent as schedule, ds.schedule_date,

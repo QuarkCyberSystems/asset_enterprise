@@ -1644,6 +1644,56 @@ def _run():
 		)
 		ok = ok and t30b_ok
 
+		# T31 (client, 25/08 — ACC-ADS-2026-00401): "the schedule is
+		# superseded, the action should be prevented". Posting from a
+		# superseded generation booked a stale amount AND left the Active
+		# generation still showing the period as due, so the scheduler
+		# would post it again — double depreciation.
+		from asset_enterprise.depreciation import post_schedule_entries, supersede_and_regenerate
+
+		sup = make_test_asset(company, gross=36_000, submit=True)
+		sup_start = get_first_day(add_months(nowdate(), -4))
+		enable_depreciation(
+			sup.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+			available_for_use_date=str(sup_start), depreciation_start_date=str(sup_start))
+		sup_old = frappe.db.get_value("Asset Depreciation Schedule",
+			{"asset": sup.name, "status": "Active", "docstatus": 1}, "name")
+		for r in frappe.db.sql("""select ds.name as row_name, ds.parent as schedule,
+				ds.schedule_date, ds.depreciation_amount, ds.cost_center, ads.asset,
+				ads.finance_book, ds.daily_rate, ds.days_in_period
+			from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent=ads.name
+			where ds.parent=%s order by ds.schedule_date limit 2""", sup_old, as_dict=True):
+			_post_one(r, getdate(nowdate()))
+		supersede_and_regenerate(sup.name, as_of_date=str(add_months(nowdate(), -2)),
+		                         reason="t31 value change")
+		sup_new = frappe.db.get_value("Asset Depreciation Schedule",
+			{"asset": sup.name, "status": "Active", "docstatus": 1}, "name")
+
+		def sup_due(sched):
+			return frappe.db.sql("""select count(*) from `tabDepreciation Schedule`
+				where parent=%s and ifnull(journal_entry,'')='' and schedule_date<=%s""",
+				(sched, nowdate()))[0][0]
+
+		due_before = sup_due(sup_new)
+		try:
+			post_schedule_entries(sup_old, nowdate())
+			print("t31    FAIL (posted from a superseded schedule)")
+			ok = False
+		except frappe.ValidationError as e:
+			msg = frappe.utils.strip_html(str(e))
+			t31_ok = "Superseded" in msg and sup_new in msg and sup_due(sup_new) == due_before
+			print(f"t31    superseded schedule refuses to post, and points at {sup_new}: "
+			      f"{'OK' if t31_ok else 'FAIL: ' + msg[:110]}")
+			ok = ok and t31_ok
+
+		# the Active generation still posts normally
+		posted_active = post_schedule_entries(sup_new, nowdate())
+		t31b_ok = len(posted_active) == due_before and due_before > 0
+		print(f"t31b   the Active generation still posts: {len(posted_active)} entries "
+		      f"(want {due_before}) {'OK' if t31b_ok else 'FAIL'}")
+		ok = ok and t31b_ok
+
 		# T20 (client, 19/08 — ACC-AVA-2026-00002): the desk's Cancel All
 		# dialog must never offer the depreciation schedule, and a direct
 		# schedule cancel is refused; the asset reversal (the one flow

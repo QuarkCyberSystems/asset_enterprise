@@ -52,6 +52,9 @@ doctype_js = {
 	"Asset Movement": "public/js/asset_movement.js",
 	# A Reversal Repair is raised by cancelling a capitalized repair.
 	"Asset Repair": "public/js/asset_repair.js",
+	# GAP-031: a superseded generation must not offer the posting
+	# button — the server refuses it, and it used to double-post.
+	"Asset Depreciation Schedule": "public/js/asset_depreciation_schedule.js",
 }
 
 # §4.8: an asset carries the live schedule plus one frozen copy per
