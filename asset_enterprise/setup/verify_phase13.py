@@ -210,9 +210,13 @@ def _run():
 		vals = recalculate_asset_values(c1.name, save=True)
 		reg = register_row(company, c1.name)
 		rec = recon_row(company, c1.name)
+		# Four periods, not three: the run names a PERIOD and posts on its
+		# last day (§4.6), so a schedule starting three months ago has the
+		# current month due as well. Each must carry its own entry — core's
+		# row-guessing used to hand two rows the same one.
 		s2_ok = (
-			len(jes) == 3 and posted_sum > 0
-			and d_ac == -posted_sum and d_ex == posted_sum and cc_rows == 3
+			len(jes) == 4 and len(set(jes)) == 4 and posted_sum > 0
+			and d_ac == -posted_sum and d_ex == posted_sum and cc_rows == 4
 			and flt(vals["accumulated_depreciation_value"]) == posted_sum
 			and gl_asset_sum(accum, c1.name) == -posted_sum
 			and reg and flt(reg["depreciated_amount"]) == posted_sum
@@ -220,7 +224,7 @@ def _run():
 			and rec and rec["flagged"] == "No"
 		)
 		print(
-			f"s2 depreciation | 3 JEs, GL Δ Accum={d_ac} Exp={d_ex} CC-rows={cc_rows} | "
+			f"s2 depreciation | {len(jes)} JEs, GL Δ Accum={d_ac} Exp={d_ex} CC-rows={cc_rows} | "
 			f"derived accum={vals['accumulated_depreciation_value']} | register depr/value="
 			f"{reg and (reg['depreciated_amount'], reg['asset_value'])} | recon={rec and rec['flagged']} "
 			f"{'OK' if s2_ok else 'FAIL'}"

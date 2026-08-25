@@ -7,6 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "company",
+  "period_month",
+  "period_year",
   "posting_date",
   "mode",
   "column_break_a",
@@ -24,10 +26,26 @@
    "reqd": 1
   },
   {
+   "fieldname": "period_month",
+   "fieldtype": "Select",
+   "label": "Period Month",
+   "options": "January\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember",
+   "reqd": 1,
+   "description": "Depreciation posts on the last day of this period (§4.6)."
+  },
+  {
+   "fieldname": "period_year",
+   "fieldtype": "Int",
+   "label": "Period Year",
+   "reqd": 1
+  },
+  {
    "fieldname": "posting_date",
    "fieldtype": "Date",
    "label": "Posting Date",
-   "reqd": 1
+   "reqd": 1,
+   "read_only": 1,
+   "description": "End of the selected period — set by the system, not typed."
   },
   {
    "default": "All Eligible",

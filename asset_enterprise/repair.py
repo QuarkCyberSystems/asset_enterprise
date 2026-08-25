@@ -958,3 +958,77 @@ def repair_orphaned_posted_rows(company=None, asset=None, dry_run=1):
 	if not dry_run:
 		frappe.db.commit()
 	return rows
+
+
+def find_misstamped_schedule_rows(company=None, asset=None):
+	"""Schedule rows claiming a journal entry that belongs to another row.
+
+	Core's JournalEntry.on_submit guessed which row a depreciation entry
+	belonged to by matching `schedule_date == posting_date` and an equal
+	amount. Our engine posts several periods at ONE posting date (§4.6
+	makes it a month end), so the guess could land on a row we were not
+	posting: that row was marked posted with another period's entry, the
+	asset read more accumulated depreciation than the ledger held, and
+	the period could never be posted for real.
+
+	A row is mis-stamped when its entry is shared with an EARLIER row —
+	the earlier row is the one the engine actually posted.
+	"""
+	conditions, values = ["ads.docstatus = 1", "ifnull(ds.journal_entry, '') <> ''"], {}
+	if company:
+		conditions.append("a.company = %(company)s")
+		values["company"] = company
+	if asset:
+		conditions.append("a.name = %(asset)s")
+		values["asset"] = asset
+	return frappe.db.sql(
+		f"""
+		select ads.asset, ds.name as row_name, ds.parent as schedule,
+		       ds.schedule_date, ds.depreciation_amount, ds.journal_entry,
+		       keeper.schedule_date as entry_belongs_to
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		join `tabAsset` a on a.name = ads.asset
+		join `tabDepreciation Schedule` keeper
+		     on keeper.parent = ds.parent and keeper.journal_entry = ds.journal_entry
+		    and (keeper.schedule_date < ds.schedule_date
+		         or (keeper.schedule_date = ds.schedule_date and keeper.idx < ds.idx))
+		where {" and ".join(conditions)}
+		order by ads.asset, ds.schedule_date
+		""",
+		values,
+		as_dict=True,
+	)
+
+
+def repair_misstamped_schedule_rows(company=None, asset=None, dry_run=1):
+	"""Clear the false stamp so the period becomes payable again.
+
+	The journal entry itself is untouched — it is real, and it belongs to
+	the earlier row that keeps it. Only the claim is removed.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.repair_misstamped_schedule_rows \\
+	        --kwargs "{'dry_run': 1}"
+	"""
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	rows = find_misstamped_schedule_rows(company=company, asset=asset)
+	print(f"{len(rows)} row(s) claiming another period's journal entry:")
+	touched = set()
+	for row in rows:
+		print(
+			f"  {row.asset}  {row.schedule_date}  {flt(row.depreciation_amount):,.2f}  "
+			f"claims {row.journal_entry} (posted for {row.entry_belongs_to})"
+		)
+		if dry_run:
+			continue
+		frappe.db.set_value(
+			"Depreciation Schedule", row.row_name, "journal_entry", None, update_modified=False
+		)
+		touched.add(row.asset)
+	for asset_name in touched:
+		recalculate_asset_values(asset_name, save=True)
+	if not dry_run:
+		frappe.db.commit()
+	return rows

@@ -18,6 +18,9 @@ def _run():
 	from asset_enterprise.setup.test_fixtures import pick_company
 	company = pick_company()
 
+	from asset_enterprise.asset_enterprise.doctype.mass_asset_depreciation.mass_asset_depreciation import (
+		MONTHS,
+	)
 	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.setup.test_fixtures import make_test_asset
 
@@ -57,6 +60,103 @@ def _run():
 		m_ok = bool(posted)
 		print(f"mad    results={[(r.asset, r.outcome) for r in results]} {'OK' if m_ok else 'FAIL'}")
 		ok = ok and m_ok
+
+		# GAP-005 / §4.6 (client, 25/08): the run names a PERIOD and the
+		# system supplies the date — the last day of that month. A typed
+		# date is read back as its period and re-derived, so the two can
+		# never disagree.
+		mad_period = frappe.get_doc(
+			{
+				"doctype": "Mass Asset Depreciation",
+				"company": company,
+				"period_month": "February",
+				"period_year": 2026,
+				"mode": "All Eligible",
+			}
+		)
+		mad_period.flags.ignore_permissions = True
+		mad_period.insert()
+		mid_month = frappe.get_doc(
+			{
+				"doctype": "Mass Asset Depreciation",
+				"company": company,
+				# no period — the API/import shape, a mid-month date
+				"posting_date": "2026-02-11",
+				"mode": "All Eligible",
+			}
+		)
+		mid_month.flags.ignore_permissions = True
+		mid_month.insert()
+		eom_ok = (
+			getdate(mad_period.posting_date) == getdate("2026-02-28")   # short month, not 30/31
+			and getdate(mid_month.posting_date) == getdate("2026-02-28")
+			and mid_month.period_month == "February" and cint(mid_month.period_year) == 2026
+			and frappe.get_meta("Mass Asset Depreciation").get_field("posting_date").read_only
+		)
+		print(
+			f"madeom period Feb-2026 -> {mad_period.posting_date} (want 2026-02-28); typed "
+			f"2026-02-11 -> {mid_month.posting_date} as {mid_month.period_month} "
+			f"{mid_month.period_year}; posting date read-only="
+			f"{bool(frappe.get_meta('Mass Asset Depreciation').get_field('posting_date').read_only)} "
+			f"{'OK' if eom_ok else 'FAIL'}"
+		)
+		ok = ok and eom_ok
+
+		# One posting date, several periods — core's JournalEntry
+		# on_submit GUESSES which schedule row an entry belongs to
+		# (schedule_date == posting_date AND equal amount), which is only
+		# ever right when a row is posted on its own date. A month-end run
+		# covering four periods had core stamp the 31/08 row with the
+		# 31/05 entry: the asset read 12,300 of depreciation against
+		# 9,200 in the ledger, and that row could never be posted for
+		# real. Every posted row must carry its OWN entry.
+		from asset_enterprise.depreciation import enable_depreciation as _enable_dep
+
+		a2 = make_test_asset(company, gross=73_000, submit=True)
+		_enable_dep(
+			a2.name, total_number_of_depreciations=24, frequency_of_depreciation=1,
+			depreciation_start_date=get_first_day(add_months(nowdate(), -3)),
+		)
+		mad_multi = frappe.get_doc(
+			{
+				"doctype": "Mass Asset Depreciation", "company": company,
+				"mode": "All Eligible",   # restricted modes need the VR-006 role
+				"period_month": MONTHS[getdate(nowdate()).month - 1],
+				"period_year": getdate(nowdate()).year,
+			}
+		)
+		mad_multi.flags.ignore_permissions = True
+		mad_multi.insert()
+		mad_multi.submit()
+		posted_rows = frappe.db.sql(
+			"""select ds.schedule_date, ds.depreciation_amount, ds.journal_entry
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			     and ifnull(ds.journal_entry, '') <> ''""",
+			a2.name, as_dict=True,
+		)
+		jes = [r.journal_entry for r in posted_rows]
+		gl_accum = flt(frappe.db.sql(
+			"""select coalesce(sum(credit - debit), 0) from `tabGL Entry`
+			   where against_voucher = %s and is_cancelled = 0 and voucher_no in %s
+			     and account in (select accumulated_depreciation_account
+			                     from `tabAsset Category Account` where company_name = %s)""",
+			(a2.name, tuple(jes) if jes else ("",), company))[0][0])
+		rows_sum = flt(sum(flt(r.depreciation_amount) for r in posted_rows), 2)
+		derived = flt(recalculate_asset_values(a2.name, save=False)["accumulated_depreciation_value"], 2)
+		je_ok = (
+			len(posted_rows) == 4                      # May..Aug relative to the run
+			and len(set(jes)) == len(jes)              # no entry claimed by two rows
+			and abs(gl_accum - rows_sum) < 0.01        # the ledger backs every row
+			and abs(derived - rows_sum) < 0.01
+		)
+		print(
+			f"madje  {len(posted_rows)} periods in one run (want 4): {len(set(jes))} distinct "
+			f"entries (want {len(jes)}); rows {rows_sum:,.2f} vs GL {gl_accum:,.2f} vs derived "
+			f"{derived:,.2f} {'OK' if je_ok else 'FAIL'}"
+		)
+		ok = ok and je_ok
 
 		# VR-007 document level: an identical re-run has nothing to post and
 		# must be REFUSED, not recorded as an empty submitted run (client,

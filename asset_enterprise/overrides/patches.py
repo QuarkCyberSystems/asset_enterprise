@@ -71,6 +71,12 @@ WRAPPED_ATTRS = {
 # class instead of the module.
 CLASS_PATCH_TARGETS = [
 	("erpnext.controllers.buying_controller", "BuyingController", "update_fixed_asset", 2),
+	(
+		"erpnext.accounts.doctype.journal_entry.journal_entry",
+		"JournalEntry",
+		"update_journal_entry_link_on_depr_schedule",
+		3,
+	),
 ]
 
 # (attr, original callable, wrapper callable) — filled by _rebind().
@@ -453,6 +459,44 @@ def apply_patches():
 	# A class attribute — every subclass resolves it at call time, so
 	# there is no already-imported copy to rebind.
 	core_buying.BuyingController.update_fixed_asset = update_fixed_asset
+
+	# GAP-031 / §4.6: core GUESSES which schedule row a depreciation JE
+	# belongs to — update_journal_entry_link_on_depr_schedule matches on
+	# `schedule_date == posting_date` AND an equal amount — because core
+	# only ever posts a row on its own schedule date. Our engine does
+	# not: a mass run posts several periods at ONE posting date (§4.6
+	# makes that date a month end), and the scheduler, the final-row path
+	# and the immediate-charge path all post rows dated differently from
+	# the entry.
+	#
+	# When the guess lands on a DIFFERENT row than the one being posted,
+	# that row is silently marked as posted with another period's journal
+	# entry: the asset then reads more accumulated depreciation than the
+	# ledger holds, and the row can never be posted for real. Reproduced
+	# on dev — a four-period run stamped the 31/08 row with the 31/05
+	# entry, derived accum 12,300.00 against 9,200.00 of GL.
+	#
+	# _post_one stamps the row it is actually posting, so under
+	# Enterprise Assets core's guess is never needed and can only ever be
+	# wrong. Manual Depreciation-Entry JEs are deliberately left unlinked
+	# too — GAP-006 counts them through the manual-GL sweep, and letting
+	# one claim a schedule row would mark a period posted with no
+	# Financial Treatment behind it.
+	import erpnext.accounts.doctype.journal_entry.journal_entry as core_je
+
+	core_link_depr_row = core_je.JournalEntry.update_journal_entry_link_on_depr_schedule
+
+	def update_journal_entry_link_on_depr_schedule(self, asset, je_row):
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if enterprise_enabled():
+			return None
+		return core_link_depr_row(self, asset, je_row)
+
+	update_journal_entry_link_on_depr_schedule._asset_enterprise_wrapper = True
+	core_je.JournalEntry.update_journal_entry_link_on_depr_schedule = (
+		update_journal_entry_link_on_depr_schedule
+	)
 
 	# GAP-036: a grouping asset is a structural container with no value —
 	# it must not appear as a zero-value line in the Fixed Asset Register.
