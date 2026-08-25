@@ -182,6 +182,42 @@ class EnterpriseAssetMovement(AssetMovement):
 				frappe.db.set_value(
 					"Asset", d.asset, "cost_center", d.target_cost_center, update_modified=False
 				)
+				self._announce_depreciation_effect(d, prior)
+
+	def _announce_depreciation_effect(self, d, prior):
+		"""The transfer posts no GL of its own, so its only visible effect
+		arrives later inside depreciation entries. Record what it did on
+		the document itself — the form warns before submit, and this
+		keeps the same statement for API/import submissions and for
+		anyone reading the movement afterwards (client, 24/08)."""
+		from asset_enterprise.api import movement_cost_centre_impact
+
+		try:
+			impact = movement_cost_centre_impact(
+				d.asset, self.transaction_date, d.target_cost_center,
+				# this runs after the asset has already been moved
+				old_cost_center=prior,
+			)
+		except Exception:
+			return
+		notes = []
+		if impact.get("split"):
+			s = impact["split"]
+			notes.append(
+				_(
+					"Period ending {0} splits {1} days to {2} and {3} days to {4}, in one entry."
+				).format(
+					s["period_end"], s["days_before"], prior, s["days_after"], d.target_cost_center
+				)
+			)
+		if impact.get("earlier_unposted"):
+			notes.append(
+				_(
+					"{0} earlier unposted period(s) stay with {1} whenever they post."
+				).format(len(impact["earlier_unposted"]), prior)
+			)
+		if notes:
+			self.add_comment("Comment", _("Effect on depreciation: ") + " ".join(notes))
 
 	def on_cancel(self):
 		super().on_cancel()

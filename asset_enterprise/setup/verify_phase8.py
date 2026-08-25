@@ -262,6 +262,49 @@ def _run():
 		)
 		ok = ok and g21c_ok
 
+		# gap021d (client, 24/08): the transfer posts nothing of its own, so
+		# the user is told BEFORE submitting what it will do to
+		# depreciation — the period split, and that earlier unposted
+		# periods stay with the old centre.
+		from asset_enterprise.api import movement_cost_centre_impact
+
+		warn_asset = make_test_asset(company, gross=36_000, submit=True)
+		frappe.db.set_value("Asset", warn_asset.name, "cost_center", prior_cc, update_modified=False)
+		enable_depreciation(
+			warn_asset.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+			available_for_use_date=str(get_first_day(add_months(nowdate(), -2))),
+			depreciation_start_date=str(get_first_day(add_months(nowdate(), -2))),
+		)
+		mv3 = frappe.get_doc({
+			"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+			"transaction_date": frappe.utils.now(),
+			"assets": [{"asset": warn_asset.name, "target_cost_center": cc2}]})
+		mv3.flags.ignore_permissions = True
+		mv3.insert()   # still a DRAFT — this is when the form warns
+		preview = movement_cost_centre_impact(warn_asset.name, nowdate(), cc2)
+		mv3.submit()
+		note = frappe.db.sql(
+			"""select content from `tabComment` where reference_doctype='Asset Movement'
+			   and reference_name=%s and comment_type='Comment'
+			   and content like '%%Effect on depreciation%%' limit 1""",
+			mv3.name,
+		)
+		g21d_ok = (
+			preview.get("old_cost_center") == prior_cc
+			and preview.get("new_cost_center") == cc2
+			# two months of unposted history plus the period being split
+			and bool(preview.get("split"))
+			and len(preview.get("earlier_unposted") or []) >= 1
+			and bool(note)
+		)
+		print(
+			f"gap021d pre-submit warning: preview {prior_cc} -> {cc2}, "
+			f"split={bool(preview.get('split'))}, "
+			f"earlier-unposted={len(preview.get('earlier_unposted') or [])}; "
+			f"recorded on the movement={bool(note)} {'OK' if g21d_ok else 'FAIL'}"
+		)
+		ok = ok and g21d_ok
+
 		# GAP-028: cancel restores prior CC.
 		mv.reload()
 		mv.cancel()

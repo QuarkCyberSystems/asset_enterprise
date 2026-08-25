@@ -45,6 +45,9 @@ doctype_js = {
 	# from the Scrapping Type, and unlock the cost centre when that type
 	# allows it to be changed.
 	"Scrap Transaction": "public/js/scrap_transaction.js",
+	# A cost-centre transfer posts nothing itself; its effect lands in
+	# later depreciation entries. Spell that out before submit.
+	"Asset Movement": "public/js/asset_movement.js",
 }
 
 # §4.8: an asset carries the live schedule plus one frozen copy per

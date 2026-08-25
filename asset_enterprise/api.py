@@ -2,6 +2,7 @@
 these endpoints re-run the authoritative logic)."""
 
 import frappe
+from frappe.utils import cint
 
 
 @frappe.whitelist()
@@ -214,3 +215,77 @@ def ava_difference_account(asset, transaction_type=None):
 		"locked": 1 if account else 0,
 		"asset_category": a.asset_category,
 	}
+
+
+@frappe.whitelist()
+def movement_cost_centre_impact(
+	asset, transaction_date, target_cost_center, old_cost_center=None
+):
+	"""What a cost-centre transfer will do to depreciation, BEFORE it is
+	submitted.
+
+	The transfer itself posts nothing, so the effect only shows up later
+	in the depreciation entries — which is why it kept surprising people.
+	Two things are worth saying out loud:
+
+	  * the period containing the transfer is split by days between the
+	    two centres, in one entry (GAP-021);
+	  * periods that ended BEFORE the transfer stay with the old centre
+	    however late they are posted.
+	"""
+	from frappe.utils import add_days, date_diff, flt, get_first_day, getdate
+
+	from asset_enterprise.depreciation import cost_centre_on
+	from asset_enterprise.rounding import fa_module_round
+
+	frappe.has_permission("Asset", "read", asset, throw=True)
+	on = getdate(transaction_date)
+	company, old_cc = frappe.db.get_value(
+		"Asset", asset, ["company", "cost_center"]
+	) or (None, None)
+	# `old_cost_center` is passed by callers running AFTER the transfer has
+	# been applied — by then the history already answers with the TARGET,
+	# and the comparison below would short-circuit to "nothing changes".
+	old_cc = old_cost_center or cost_centre_on(asset, on) or old_cc
+	out = {
+		"asset": asset,
+		"old_cost_center": old_cc,
+		"new_cost_center": target_cost_center,
+		"split": None,
+		"earlier_unposted": [],
+	}
+	if not company or old_cc == target_cost_center:
+		return out
+
+	rows = frappe.db.sql(
+		"""
+		select ds.schedule_date, ds.depreciation_amount, ds.days_in_period
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		  and ifnull(ds.journal_entry, '') = ''
+		order by ds.schedule_date
+		""",
+		asset,
+		as_dict=True,
+	)
+	for r in rows:
+		end = getdate(r.schedule_date)
+		days = cint(r.days_in_period) or 1
+		start = add_days(end, -(days - 1))
+		if start <= on <= end:
+			before = max(0, date_diff(on, start))
+			after = days - before
+			old_part = fa_module_round(flt(r.depreciation_amount) * before / days, company)
+			out["split"] = {
+				"period_end": str(end),
+				"days_before": before,
+				"days_after": after,
+				"old_amount": old_part,
+				"new_amount": fa_module_round(flt(r.depreciation_amount) - old_part, company),
+			}
+		elif end < on:
+			out["earlier_unposted"].append(
+				{"period_end": str(end), "amount": flt(r.depreciation_amount)}
+			)
+	return out
