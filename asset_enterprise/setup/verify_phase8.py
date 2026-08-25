@@ -3,7 +3,7 @@
 import traceback
 
 import frappe
-from frappe.utils import add_months, cint, flt, get_first_day, get_last_day, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, flt, get_first_day, get_last_day, getdate, nowdate
 
 
 def run():
@@ -304,6 +304,55 @@ def _run():
 			f"recorded on the movement={bool(note)} {'OK' if g21d_ok else 'FAIL'}"
 		)
 		ok = ok and g21d_ok
+
+		# gap021e: any number of moves inside one period, and attribution
+		# must survive a REGENERATION (a value change rebuilds future rows
+		# from scratch — they used to come back untagged and fall back to
+		# the asset's current centre).
+		cc3 = frappe.get_all(
+			"Cost Center",
+			filters={"company": company, "is_group": 0, "name": ["not in", [prior_cc, cc2]]},
+			pluck="name", limit=1,
+		)
+		if cc3:
+			cc3 = cc3[0]
+			multi = make_test_asset(company, gross=36_000, submit=True)
+			frappe.db.set_value("Asset", multi.name, "cost_center", prior_cc, update_modified=False)
+			enable_depreciation(
+				multi.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+				available_for_use_date=str(get_first_day(nowdate())),
+				depreciation_start_date=str(get_first_day(nowdate())),
+			)
+			start = get_first_day(nowdate())
+			for target, day in ((cc2, 10), (cc3, 20)):
+				m = frappe.get_doc({
+					"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+					"transaction_date": f"{add_days(start, day - 1)} 10:00:00",
+					"assets": [{"asset": multi.name, "target_cost_center": target}]})
+				m.flags.ignore_permissions = True
+				m.insert()
+				m.submit()
+			amount = 3100.0
+			split = cost_centre_split(multi.name, start, get_last_day(nowdate()), amount, company)
+			three_ok = (
+				len(split) == 3
+				and [cc for cc, _a in split] == [prior_cc, cc2, cc3]
+				and abs(sum(a for _cc, a in split) - amount) < 0.01
+			)
+			# a value change regenerates the future rows; attribution must
+			# still come from the history afterwards
+			from asset_enterprise.depreciation import supersede_and_regenerate
+
+			supersede_and_regenerate(
+				multi.name, as_of_date=start, reason="gap021e regeneration probe")
+			after = cost_centre_split(multi.name, start, get_last_day(nowdate()), amount, company)
+			g21e_ok = three_ok and after == split
+			print(
+				f"gap021e two moves in one period: {[(cc, round(a, 2)) for cc, a in split]} "
+				f"(want 3 segments summing {amount:,.2f}); unchanged after regeneration="
+				f"{after == split} {'OK' if g21e_ok else 'FAIL'}"
+			)
+			ok = ok and g21e_ok
 
 		# GAP-028: cancel restores prior CC.
 		mv.reload()
