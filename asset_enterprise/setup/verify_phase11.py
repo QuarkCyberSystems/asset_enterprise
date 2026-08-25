@@ -702,6 +702,210 @@ def _run():
 		)
 		ok = ok and f8_ok
 
+		# ---------- F9: C3 — reversal posting date (dialog + role gate)
+		# Default is always TODAY; a different date requires the per-
+		# company Reversal Date Edit Role (Asset Settings > Reversals).
+		# The endpoints enforce server-side; Administrator passes.
+		from asset_enterprise.api import (
+			cancel_ava_with_reversal,
+			cancel_repair_with_reversal,
+			reversal_date_editable,
+		)
+
+		f9_role = "AE Reversal Date Editor"
+		if not frappe.db.exists("Role", f9_role):
+			frappe.get_doc({"doctype": "Role", "role_name": f9_role}).insert(
+				ignore_permissions=True
+			)
+		as9 = frappe.get_doc("Asset Settings")
+		as9.append("reversal_roles", {"company": company, "reversal_date_edit_role": f9_role})
+		as9.flags.ignore_permissions = True
+		as9.save()
+
+		# A temp user who can cancel AVAs and repairs but holds NO
+		# reversal-date role (Accounts Manager / Manufacturing Manager).
+		norole_user = frappe.get_doc({
+			"doctype": "User",
+			"email": "ae_c3_norole@example.com",
+			"first_name": "AE C3 NoRole",
+			"send_welcome_email": 0,
+			"roles": [{"role": "Accounts Manager"}, {"role": "Manufacturing Manager"}],
+		})
+		norole_user.flags.ignore_permissions = True
+		norole_user.insert(ignore_permissions=True)
+
+		src_date = add_days(nowdate(), -3)
+		other_date = add_days(nowdate(), -1)
+		too_early = add_days(nowdate(), -4)
+
+		def _mk_ava():
+			a = make_test_asset(company, gross=1_000_000, submit=True)
+			ava = frappe.get_doc({
+				"doctype": "Asset Value Adjustment",
+				"company": company,
+				"asset": a.name,
+				"date": src_date,
+				"transaction_type": "Upward Revaluation",
+				"current_asset_value": 1_000_000,
+				"new_asset_value": 1_200_000,
+				"difference_amount": 200_000,
+				"difference_account": pick_plain_account(company, "Asset"),
+			})
+			ava.flags.ignore_permissions = True
+			ava.insert()
+			ava.submit()
+			return ava
+
+		def _rev_date_of(source_name):
+			return frappe.db.get_value(
+				"Asset Value Adjustment",
+				{"reversal_of_ava": source_name, "docstatus": 1},
+				"date",
+			)
+
+		def _refused(fn, needle):
+			try:
+				fn()
+			except frappe.ValidationError as e:
+				return needle in str(e)
+			return False
+
+		def _as_user(user, fn):
+			prev = frappe.session.user
+			try:
+				frappe.set_user(user)
+				return fn()
+			finally:
+				frappe.set_user(prev)
+
+		# (a) today needs no role: non-holder cancels via the endpoint.
+		ava_a = _mk_ava()
+		f9_today = bool(
+			_as_user(
+				norole_user.name,
+				lambda: cancel_ava_with_reversal(ava_a.name, posting_date=nowdate()),
+			)
+		)
+		f9_today = f9_today and _rev_date_of(ava_a.name) == getdate(nowdate())
+
+		# (b) another date + Administrator (has the role): date flows to
+		# the Reversal AVA AND the mirror FT.
+		ava_b = _mk_ava()
+		f9_other = bool(cancel_ava_with_reversal(ava_b.name, posting_date=other_date))
+		f9_other = f9_other and _rev_date_of(ava_b.name) == getdate(other_date)
+		ft_b = frappe.db.get_value(
+			"Financial Treatment",
+			{"asset": frappe.db.get_value("Asset Value Adjustment", ava_b.name, "asset"),
+			 "reversal_reference": ("is", "set")},
+			"posting_date",
+		)
+		f9_other = f9_other and getdate(ft_b) == getdate(other_date)
+
+		# (c) another date + non-holder: refused; source stays submitted.
+		ava_c = _mk_ava()
+		f9_gate = _as_user(
+			norole_user.name,
+			lambda: _refused(
+				lambda: cancel_ava_with_reversal(ava_c.name, posting_date=other_date),
+				"requires the",
+			),
+		)
+		f9_gate = f9_gate and frappe.db.get_value("Asset Value Adjustment", ava_c.name, "docstatus") == 1
+
+		# (d) a date before the source posting date: refused even for
+		# Administrator.
+		ava_d = _mk_ava()
+		f9_early = _refused(
+			lambda: cancel_ava_with_reversal(ava_d.name, posting_date=too_early),
+			"before the AVA posting date",
+		)
+		f9_early = f9_early and frappe.db.get_value("Asset Value Adjustment", ava_d.name, "docstatus") == 1
+
+		# (e) no role configured for the company: another date refused
+		# even for Administrator; today still fine.
+		ava_e = _mk_ava()
+		frappe.db.sql(
+			"delete from `tabAsset Settings Reversal Role` where parent = 'Asset Settings'"
+		)
+		f9_noconf = _refused(
+			lambda: cancel_ava_with_reversal(ava_e.name, posting_date=other_date),
+			"No Reversal Date Edit Role is configured",
+		)
+		as9 = frappe.get_doc("Asset Settings")
+		as9.append("reversal_roles", {"company": company, "reversal_date_edit_role": f9_role})
+		as9.flags.ignore_permissions = True
+		as9.save()
+
+		# (f) repair: another date + Administrator flows to the Reversal
+		# Repair completion_date AND the mirror FT posting date.
+		def _mk_repair(asset):
+			r = frappe.get_doc({
+				"doctype": "Asset Repair",
+				"asset": asset.name,
+				"company": company,
+				"failure_date": src_date,
+				"repair_status": "Completed",
+				"completion_date": src_date,
+				"capitalize_repair_cost": 1,
+				"repair_cost": 25_000,
+				"cost_center": frappe.db.get_value("Asset", asset.name, "cost_center"),
+				"purchase_invoice": None,
+				"capital_work_in_progress_account": pick_plain_account(company, "Liability"),
+			})
+			r.flags.ignore_permissions = True
+			r.insert()
+			r.submit()
+			return r
+
+		r1_asset = make_test_asset(company, gross=500_000, submit=True)
+		repair1 = _mk_repair(r1_asset)
+		f9_rep = bool(cancel_repair_with_reversal(repair1.name, posting_date=other_date))
+		rev_rep1 = frappe.db.get_value(
+			"Asset Repair", {"reversal_of_repair": repair1.name, "docstatus": 1}, "name"
+		)
+		f9_rep = (
+			f9_rep
+			and bool(rev_rep1)
+			# completion_date is a Datetime field — normalize before comparing
+			and getdate(frappe.db.get_value("Asset Repair", rev_rep1, "completion_date"))
+			== getdate(other_date)
+		)
+		f9_rep = f9_rep and getdate(
+			frappe.db.get_value(
+				"Financial Treatment",
+				{"asset": r1_asset.name, "reversal_reference": ("is", "set")},
+				"posting_date",
+			)
+		) == getdate(other_date)
+
+		# (g) repair: another date + non-holder refused.
+		r2_asset = make_test_asset(company, gross=500_000, submit=True)
+		repair2 = _mk_repair(r2_asset)
+		f9_rep_gate = _as_user(
+			norole_user.name,
+			lambda: _refused(
+				lambda: cancel_repair_with_reversal(repair2.name, posting_date=other_date),
+				"requires the",
+			),
+		)
+
+		# (h) UX helper mirrors the enforcement.
+		ed_norole = _as_user(norole_user.name, lambda: reversal_date_editable(company)["editable"] is False)
+		ed_admin = reversal_date_editable(company)["editable"] is True
+
+		f9_ok = (
+			f9_today and f9_other and f9_gate and f9_early and f9_noconf
+			and f9_rep and f9_rep_gate and ed_norole and ed_admin
+		)
+		print(
+			f"f9     reversal date: today-no-role={f9_today} other-date-admin={f9_other} "
+			f"non-holder-refused={f9_gate} before-source-refused={f9_early} "
+			f"no-role-config-refused={f9_noconf} repair-date={f9_rep} "
+			f"repair-non-holder-refused={f9_rep_gate} ux-helper={ed_norole and ed_admin} "
+			f"{'OK' if f9_ok else 'FAIL'}"
+		)
+		ok = ok and f9_ok
+
 		# ================= Phase 11b guard/enrichment checks =================
 
 		# T3/T4 (VR-010 / VR-025): movement guards.

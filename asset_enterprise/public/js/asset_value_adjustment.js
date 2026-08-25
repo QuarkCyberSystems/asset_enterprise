@@ -61,6 +61,17 @@ frappe.ui.form.on("Asset Value Adjustment", {
 		ae_apply_difference_account(frm);
 	},
 
+	// C3 (§3.7 / GAP-030): cancelling a Standard AVA raises its Reversal
+	// AVA. Offer the posting-date choice (default today; role-gated)
+	// instead of the bare cancel — the server enforces the same rules.
+	before_cancel(frm) {
+		if (frm.doc.reversal_of_ava || frm.doc.reversed_by_ava) {
+			return; // a reversal (or an already-reversed original) — let the server refuse
+		}
+		frappe.validated = false;
+		ae_reverse_ava_dialog(frm);
+	},
+
 	refresh(frm) {
 		window.ae_hide_system_only_option(frm, "transaction_type", "Invoice Adjustment");
 		ae_apply_difference_account(frm);
@@ -98,3 +109,52 @@ frappe.ui.form.on("Asset Value Adjustment", {
 		}
 	},
 });
+
+// C3 — confirm + posting-date dialog for the auto-raised Reversal AVA.
+function ae_reverse_ava_dialog(frm) {
+	const d = new frappe.ui.Dialog({
+		title: __("Reverse Asset Value Adjustment"),
+		fields: [
+			{ fieldtype: "HTML", fieldname: "preview" },
+			{
+				fieldtype: "Date",
+				fieldname: "posting_date",
+				label: __("Reversal Posting Date"),
+				default: frappe.datetime.get_today(),
+			},
+		],
+		primary_action_label: __("Cancel & Create Reversal"),
+		primary_action(values) {
+			frappe.call({
+				method: "asset_enterprise.api.cancel_ava_with_reversal",
+				args: { ava_name: frm.doc.name, posting_date: values.posting_date },
+				freeze: true,
+				callback(r) {
+					if (r.exc) return;
+					d.hide();
+					frappe.show_alert({
+						message: __("Reversal AVA created — posting date {0}.", [values.posting_date]),
+						indicator: "green",
+					});
+					frm.reload_doc();
+				},
+			});
+		},
+	});
+	d.fields_dict.preview.$wrapper.html(
+		__(
+			"This reverses <b>{0}</b> ({1}). The original journal entry {2} stays posted per the immutable ledger; a mirror entry posts on the chosen date and depreciation recalculates prospectively.",
+			[
+				frappe.utils.escape_html(frm.doc.name),
+				frappe.utils.escape_html(frm.doc.transaction_type || ""),
+				frm.doc.journal_entry
+					? `<a href="/app/journal-entry/${encodeURIComponent(
+							frm.doc.journal_entry
+					  )}"><b>${frappe.utils.escape_html(frm.doc.journal_entry)}</b></a>`
+					: __("(none)"),
+			]
+		)
+	);
+	window.ae_apply_reversal_date_gate(d, frm.doc.company);
+	d.show();
+}

@@ -12,6 +12,8 @@
   "controls_section",
   "prevent_disposal_before_full_invoicing",
   "warn_invoice_below_receipt",
+  "reversal_section",
+  "reversal_roles",
   "mass_depreciation_section",
   "mass_depreciation_authority_roles"
  ],
@@ -52,6 +54,18 @@
    "fieldname": "warn_invoice_below_receipt",
    "fieldtype": "Check",
    "label": "Warn When Invoice Is Below Receipt Amount"
+  },
+  {
+   "fieldname": "reversal_section",
+   "fieldtype": "Section Break",
+   "label": "Reversals"
+  },
+  {
+   "description": "Per-company role allowed to change a reversal posting date from today (C3, \u00a73.7 / GAP-030 / GAP-033). Default is always today; only holders of this role may post the reversal on another date.",
+   "fieldname": "reversal_roles",
+   "fieldtype": "Table",
+   "label": "Reversal Date Edit Roles (per Company)",
+   "options": "Asset Settings Reversal Role"
   },
   {
    "fieldname": "mass_depreciation_section",

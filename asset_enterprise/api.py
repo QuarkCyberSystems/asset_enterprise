@@ -2,6 +2,7 @@
 these endpoints re-run the authoritative logic)."""
 
 import frappe
+from frappe import _
 from frappe.utils import cint
 
 
@@ -324,3 +325,117 @@ def reversible_partial_scraps(asset):
 			"Scrap Transaction", {"journal_entry": r.journal_entry, "docstatus": 1}, "name"
 		)
 	return rows
+
+
+# ---------------------------------------------------------------------------
+# C3 — reversal posting date (GA-0005-01 §3.7 / GAP-030 / GAP-033).
+# A Standard AVA / capitalized Asset Repair cancel raises its Reversal
+# counter-document; the reversal posts on TODAY by default. The dialog
+# lets a user with the company's Reversal Date Edit Role choose another
+# date. Enforcement is server-side here — the JS is UX-only (C126).
+# ---------------------------------------------------------------------------
+
+
+def _reversal_date_edit_role(company):
+	"""The per-company role allowed to change a reversal posting date
+	from today (Asset Settings > Reversals > per-Company table)."""
+	return frappe.db.get_value(
+		"Asset Settings Reversal Role",
+		{"parent": "Asset Settings", "company": company},
+		"reversal_date_edit_role",
+	)
+
+
+def _assert_reversal_date(company, source_posting_date, posting_date, label):
+	"""Validate a user-chosen reversal posting date.
+
+	- The date can never precede the transaction it reverses
+	  (GA-0001-01 / VR-042 semantics: a counter-document posts on or
+	  after its source).
+	- Today is the default and needs no permission. Any OTHER date
+	  requires the company's Reversal Date Edit Role; with no role
+	  configured the reversal posts today, always.
+	"""
+	from frappe.utils import getdate, nowdate
+
+	chosen = getdate(posting_date or nowdate())
+	if source_posting_date and chosen < getdate(source_posting_date):
+		frappe.throw(
+			_(
+				"Reversal posting date {0} is before the {1} posting date {2} — "
+				"a reversal cannot precede the transaction it reverses."
+			).format(chosen, label, getdate(source_posting_date)),
+			title=_("Reversal Date Before Source"),
+		)
+	if chosen != getdate(nowdate()):
+		role = _reversal_date_edit_role(company)
+		if not role:
+			frappe.throw(
+				_(
+					"No Reversal Date Edit Role is configured for {0} — the reversal "
+					"posts today. Set one in Asset Settings > Reversals to allow other dates."
+				).format(company),
+				title=_("Reversal Date Locked"),
+			)
+		if frappe.session.user != "Administrator" and role not in frappe.get_roles():
+			frappe.throw(
+				_(
+					"Changing the reversal posting date from today requires the {0} role."
+				).format(role),
+				title=_("Reversal Date Locked"),
+			)
+	return chosen
+
+
+@frappe.whitelist()
+def cancel_ava_with_reversal(ava_name, posting_date=None):
+	"""C3: cancel a Standard AVA and raise its Reversal AVA on a
+	user-chosen posting date (default today; other dates need the
+	company's Reversal Date Edit Role)."""
+	from frappe.utils import getdate, nowdate
+
+	doc = frappe.get_doc("Asset Value Adjustment", ava_name)
+	frappe.has_permission("Asset Value Adjustment", "cancel", doc, throw=True)
+	_assert_reversal_date(doc.company, doc.get("date"), posting_date, _("AVA"))
+	frappe.flags["ae_ava_reversal_date"] = getdate(posting_date or nowdate())
+	try:
+		doc.cancel()
+	finally:
+		frappe.flags["ae_ava_reversal_date"] = None
+	return True
+
+
+@frappe.whitelist()
+def cancel_repair_with_reversal(repair_name, posting_date=None):
+	"""C3: cancel a capitalized Asset Repair and raise its Reversal
+	Repair on a user-chosen posting date (default today; other dates
+	need the company's Reversal Date Edit Role)."""
+	from frappe.utils import getdate, nowdate
+
+	doc = frappe.get_doc("Asset Repair", repair_name)
+	frappe.has_permission("Asset Repair", "cancel", doc, throw=True)
+	_assert_reversal_date(
+		doc.company,
+		doc.get("completion_date") or doc.get("failure_date"),
+		posting_date,
+		_("Asset Repair"),
+	)
+	frappe.flags["ae_repair_reversal_date"] = getdate(posting_date or nowdate())
+	try:
+		doc.cancel()
+	finally:
+		frappe.flags["ae_repair_reversal_date"] = None
+	return True
+
+
+@frappe.whitelist()
+def reversal_date_editable(company):
+	"""C3 UX helper: may the current user change the reversal posting
+	date from today for this company? (Enforcement lives in the cancel
+	endpoints; this only decides whether the dialog's date field is
+	editable.)"""
+	role = _reversal_date_edit_role(company)
+	if not role:
+		return {"editable": False, "role": None}
+	editable = frappe.session.user == "Administrator" or role in frappe.get_roles()
+	return {"editable": editable, "role": role}

@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import flt, nowdate
+from frappe.utils import flt, getdate, nowdate
 
 from erpnext.assets.doctype.asset_value_adjustment.asset_value_adjustment import (
 	AssetValueAdjustment,
@@ -376,7 +376,9 @@ class EnterpriseAVA(AssetValueAdjustment):
 				"asset": self.asset,
 				"company": self.company,
 				"finance_book": self.get("finance_book"),
-				"date": nowdate(),
+				# C3: the dialog's chosen date (default today) travels via
+				# this flag; the endpoint validates role + date bounds.
+				"date": getdate(frappe.flags.get("ae_ava_reversal_date") or nowdate()),
 				"transaction_type": self.get("transaction_type"),
 				"current_asset_value": self.new_asset_value,
 				"new_asset_value": self.current_asset_value,  # swap -> core posts mirror JE

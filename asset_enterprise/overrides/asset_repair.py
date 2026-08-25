@@ -196,7 +196,12 @@ class EnterpriseAssetRepair(AssetRepair):
 			"name",
 		)
 		if original_ft:
-			tcc.reverse(original_ft, self, posting_date=nowdate())
+			tcc.reverse(
+				original_ft, self,
+				# C3: the reversal's own completion date (chosen in the
+				# dialog, default today) anchors the FT pairing.
+				posting_date=getdate(self.completion_date or nowdate()),
+			)
 
 		# 4. Prospective schedule from the reduced base — resuming from
 		# the last POSTED row, with today (the reversal) as the
@@ -206,14 +211,13 @@ class EnterpriseAssetRepair(AssetRepair):
 			supersede_and_regenerate,
 		)
 
-		from frappe.utils import getdate
-
 		last_posted = last_posted_schedule_date(self.asset)
+		reversal_date = getdate(self.completion_date or nowdate())
 		try:
 			supersede_and_regenerate(
 				self.asset,
-				as_of_date=getdate(last_posted) if last_posted else nowdate(),
-				rate_change_date=getdate(nowdate()) if last_posted else None,
+				as_of_date=getdate(last_posted) if last_posted else reversal_date,
+				rate_change_date=reversal_date if last_posted else None,
 				# The life the source repair granted goes back with the
 				# value — otherwise the cost was reversed but the asset
 				# kept the extra months and days (client, 21/08).
@@ -274,7 +278,9 @@ class EnterpriseAssetRepair(AssetRepair):
 				"asset": self.asset,
 				"company": self.company,
 				"failure_date": self.failure_date,
-				"completion_date": now(),
+				"completion_date": getdate(
+					frappe.flags.get("ae_repair_reversal_date") or nowdate()
+				),
 				"repair_status": "Completed",
 				"repair_cost": 0,
 				"capitalize_repair_cost": 0,  # financials flow via _submit_reversal

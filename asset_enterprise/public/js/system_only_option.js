@@ -22,6 +22,35 @@ window.ae_hide_system_only_option = function (frm, fieldname, option) {
 	);
 };
 
+// C3 (GA-0005-01 §3.7): the reversal posting date defaults to today;
+// changing it needs the company's Reversal Date Edit Role (per-company
+// table on Asset Settings). This locks the dialog's date field when the
+// current user lacks the role — enforcement lives server-side in the
+// cancel endpoints; this is UX only (C126).
+window.ae_apply_reversal_date_gate = function (dialog, company) {
+	frappe.call({
+		method: "asset_enterprise.api.reversal_date_editable",
+		args: { company: company },
+		callback(r) {
+			const info = r.message || {};
+			if (info.editable) return;
+			dialog.set_df_property("posting_date", "read_only", 1);
+			dialog.set_df_property(
+				"posting_date",
+				"description",
+				info.role
+					? __("Only the {0} role may change this date — the reversal posts today.", [
+							info.role,
+					  ])
+					: __(
+							"No role is configured to change this date — the reversal posts today."
+					  )
+			);
+		},
+	});
+};
+
+
 // GAP-016 / TC-043: a partial scrap is undone by REVERSING it — the
 // original entry stays posted. Same pair of routes as a full scrap
 // (client ruling, 25/08): same period, or cross-period once that window
