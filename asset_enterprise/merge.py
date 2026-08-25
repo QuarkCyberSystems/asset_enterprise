@@ -491,7 +491,11 @@ def consume_stock_items(cap_doc):
 	"""
 	from asset_enterprise import tcc
 
-	rows = [r for r in (cap_doc.get("stock_items") or []) if flt(r.get("qty"))]
+	# The child field is `stock_qty` — there is NO `qty` on Asset
+	# Capitalization Stock Item. Reading the wrong name filtered every row
+	# out, so a submitted capitalization consumed nothing and posted
+	# nothing (client, 25/08, ACC-ASC-2026-00049/50).
+	rows = [r for r in (cap_doc.get("stock_items") or []) if flt(r.get("stock_qty"))]
 	if not rows:
 		return None, None
 
@@ -510,7 +514,7 @@ def consume_stock_items(cap_doc):
 			"items": [
 				{
 					"item_code": r.item_code,
-					"qty": flt(r.qty),
+					"qty": flt(r.stock_qty),
 					"s_warehouse": r.warehouse,
 					"basic_rate": flt(r.get("valuation_rate")) or None,
 					"cost_center": r.get("cost_center") or target.get("cost_center"),

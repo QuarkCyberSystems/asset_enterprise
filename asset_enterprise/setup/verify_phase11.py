@@ -2005,6 +2005,17 @@ def _run():
 			return flt(frappe.db.get_value(
 				"Bin", {"item_code": stock_item, "warehouse": wh}, "actual_qty"))
 
+		# Assert the FIELD NAME against the doctype, not against what this
+		# test happens to set. The first version of t30 built the row with
+		# "qty" — which does not exist on Asset Capitalization Stock Item —
+		# and frappe kept it as a stray in-memory attribute, so the test
+		# passed while every real document consumed nothing.
+		acsi = frappe.get_meta("Asset Capitalization Stock Item")
+		field_ok = bool(acsi.get_field("stock_qty")) and not acsi.get_field("qty")
+		print(f"t30pre quantity field on the child doctype is stock_qty (not qty): "
+		      f"{'OK' if field_ok else 'FAIL'}")
+		ok = ok and field_ok
+
 		t30_target = _mk_posted(90_000)
 		hav_before = flt(recalculate_asset_values(t30_target.name, save=False)["historical_asset_value"])
 		qty_before = on_hand()
@@ -2014,8 +2025,8 @@ def _run():
 			"transaction_sub_type": "Standard Maintenance",
 			"target_asset": t30_target.name, "posting_date": nowdate(),
 			"set_posting_time": 1, "entry_type": "Capitalization",
-			"stock_items": [{"item_code": stock_item, "qty": 25, "warehouse": wh,
-			                 "valuation_rate": 100, "basic_rate": 100, "amount": 2_500}]})
+			"stock_items": [{"item_code": stock_item, "stock_qty": 25, "warehouse": wh,
+			                 "valuation_rate": 100, "amount": 2_500}]})
 		cap30.flags.ignore_permissions = True
 		cap30.flags.ignore_mandatory = True
 		cap30.insert()
