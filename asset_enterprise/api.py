@@ -206,4 +206,11 @@ def ava_difference_account(asset, transaction_type=None):
 		# Unconfigured: report the gap on the form rather than blocking it.
 		frappe.clear_last_message()
 		account = None
-	return {"account": account, "locked": 1, "asset_category": a.asset_category}
+	# Locked only when there is something to lock it to. The field is
+	# mandatory, so a locked EMPTY one would stop the document being saved
+	# at all — the caller must be able to trust this flag on its own.
+	return {
+		"account": account,
+		"locked": 1 if account else 0,
+		"asset_category": a.asset_category,
+	}
