@@ -2863,16 +2863,12 @@ def tc047e():
 
 
 # ============================================================== TC-047f
-@tc("TC-047f", "Capitalized Repair — future schedule rebuilt from the corrected base")
-def tc047f():
-	# Blast radius of the 2026-08-25 client issue: the double-counted NBV
-	# was spread into the FUTURE schedule rows, not just the display
-	# (ACC-ASS-2026-00214 had 32,333.36 unposted; it should be 17,333.36).
-	# Invariant: the Active schedule's unposted total always equals the
-	# derived NBV minus salvage — the very thing the bug violated.
+def _repaired_depreciating_asset(label):
+	"""A 2,000 depreciating asset with one posted row and a 16,000
+	capitalized repair — the shape of the client's ACC-ASS-2026-00214.
+	Shared by TC-047f and TC-047g."""
 	from frappe.utils import get_first_day
 
-	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.depreciation import _post_one, enable_depreciation
 
 	company = _company()
@@ -2882,7 +2878,7 @@ def tc047f():
 	cc = frappe.db.get_value(
 		"Cost Center", {"company": company, "is_group": 0}, "name"
 	) or frappe.db.get_value("Company", company, "cost_center")
-	asset = _plain_asset(company, cat, "TC-047f Repair Schedule", 2_000)
+	asset = _plain_asset(company, cat, label, 2_000)
 	asset.submit()
 	enable_depreciation(
 		asset.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
@@ -2939,27 +2935,116 @@ def tc047f():
 	repair.flags.ignore_permissions = True
 	repair.insert()
 	repair.submit()
+	return asset
 
-	values = recalculate_asset_values(asset.name, save=False)
-	salvage = flt(frappe.db.get_value(
-		"Asset Finance Book", {"parent": asset.name}, "expected_value_after_useful_life") or 0
-	)
-	expected = flt(values["net_book_value"]) - salvage
-	sched_unposted = flt(
+
+def _unposted_schedule_total(asset_name):
+	return flt(
 		frappe.db.sql(
 			"""select coalesce(sum(ds.depreciation_amount), 0)
 			   from `tabDepreciation Schedule` ds
 			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
 			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
 			     and ifnull(ds.journal_entry, '') = ''""",
-			asset.name,
+			asset_name,
 		)[0][0]
 	)
-	ok = abs(sched_unposted - expected) < 0.01
+
+
+@tc("TC-047f", "Capitalized Repair — future schedule rebuilt from the corrected base")
+def tc047f():
+	# Blast radius of the 2026-08-25 client issue: the double-counted NBV
+	# was spread into the FUTURE schedule rows, not just the display
+	# (ACC-ASS-2026-00214 had 32,333.36 unposted; it should be 17,333.36).
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	asset = _repaired_depreciating_asset("TC-047f Repair Schedule")
+
+	values = recalculate_asset_values(asset.name, save=False)
+	salvage = flt(frappe.db.get_value(
+		"Asset Finance Book", {"parent": asset.name}, "expected_value_after_useful_life") or 0
+	)
+	sched_unposted = _unposted_schedule_total(asset.name)
+	# The schedule must spread the ABSOLUTE right number — 2,000 base plus
+	# the 16,000 repair, less what is already posted. Comparing it to the
+	# derived NBV alone proves nothing: the double-count moves both figures
+	# together, so that check passed while the bug was live (2026-08-25).
+	posted = flt(values["accumulated_depreciation_value"])
+	expected = flt(18_000 - posted - salvage, 2)
+	hav_ok = abs(flt(values["historical_asset_value"]) - 18_000) < 0.01
+	ok = hav_ok and abs(sched_unposted - expected) < 0.01
 	return (
 		("PASS" if ok else "FAIL"),
-		f"Active schedule unposted {sched_unposted:,.2f} vs derived NBV {expected:,.2f} "
-		f"(HAV {values['historical_asset_value']:,.2f})",
+		f"HAV {values['historical_asset_value']:,.2f} (want 18,000); Active schedule "
+		f"unposted {sched_unposted:,.2f} (want {expected:,.2f} = 18,000 − posted "
+		f"{posted:,.2f} − salvage {salvage:,.2f})",
+	)
+
+
+# ============================================================== TC-047g
+@tc("TC-047g", "Capitalized Repair — backfill repairs an already-corrupted asset")
+def tc047g():
+	"""The forward fix protects new repairs; assets repaired BEFORE it
+	still carry the double-count, and the backfill utility is what
+	corrects them. It must fix both halves — the derived HAV and the
+	future schedule rows the inflated NBV was spread over — and its dry
+	run must report that truthfully while writing nothing.
+	"""
+	from asset_enterprise import repair as repair_mod
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
+
+	asset = _repaired_depreciating_asset("TC-047g Repair Backfill")
+	ft = frappe.get_all(
+		"Financial Treatment",
+		filters={"asset": asset.name, "transaction_type": "Capitalized Repair"},
+		pluck="name",
+	)[0]
+
+	# Recreate the pre-fix state: treatment with no voucher link, and a
+	# future schedule already spread over the inflated NBV.
+	frappe.db.set_value("Financial Treatment", ft,
+		{"voucher_type": None, "voucher_no": None}, update_modified=False)
+	recalculate_asset_values(asset.name, save=True)
+	supersede_and_regenerate(
+		asset.name, as_of_date=last_posted_schedule_date(asset.name),
+		reason="TC-047g: reproduce the pre-fix corruption",
+	)
+	corrupt_hav = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"])
+	corrupt_sched = _unposted_schedule_total(asset.name)
+
+	# The utility commits, as a CLI repair tool should — but a COMMIT
+	# releases the harness savepoint and this fixture would outlive the
+	# run. Neutralise it for the duration; everything else is unchanged.
+	real_commit = frappe.db.commit
+	frappe.db.commit = lambda *a, **k: None
+	try:
+		# Dry run: must SEE the rebuild, and leave nothing behind.
+		repair_mod.link_repair_voucher_references(asset=asset.name, dry_run=1)
+		dry_clean = (
+			not frappe.db.get_value("Financial Treatment", ft, "voucher_no")
+			and abs(_unposted_schedule_total(asset.name) - corrupt_sched) < 0.01
+		)
+		repair_mod.link_repair_voucher_references(asset=asset.name, dry_run=0)
+	finally:
+		frappe.db.commit = real_commit
+	values = recalculate_asset_values(asset.name, save=False)
+	salvage = flt(frappe.db.get_value(
+		"Asset Finance Book", {"parent": asset.name}, "expected_value_after_useful_life") or 0
+	)
+	fixed_sched = _unposted_schedule_total(asset.name)
+	expected = flt(18_000 - flt(values["accumulated_depreciation_value"]) - salvage, 2)
+
+	corrupted_ok = corrupt_hav > 18_000.01           # the fixture really was broken
+	hav_ok = abs(flt(values["historical_asset_value"]) - 18_000) < 0.01
+	sched_ok = abs(fixed_sched - expected) < 0.01
+	ok = corrupted_ok and dry_clean and hav_ok and sched_ok
+	return (
+		("PASS" if ok else "FAIL"),
+		f"corrupted HAV {corrupt_hav:,.2f} / schedule {corrupt_sched:,.2f}; dry run "
+		f"left it untouched={dry_clean}; after backfill HAV "
+		f"{values['historical_asset_value']:,.2f} (want 18,000) and schedule "
+		f"{fixed_sched:,.2f} (want {expected:,.2f})",
 	)
 
 

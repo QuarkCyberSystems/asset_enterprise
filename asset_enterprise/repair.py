@@ -727,15 +727,19 @@ def find_unlinked_repair_treatments(company=None, asset=None):
 	)
 
 
-def _rebuild_schedule_after_voucher_fix(asset_name):
-	"""The double-counted NBV was already spread into the FUTURE schedule
-	rows by the post-repair regeneration — the blast radius beyond the
-	display (client, 2026-08-25: ACC-ASS-2026-00214 had 32,333.36 unposted
-	across 24 rows; it should be 17,333.36). Rebuild future rows from the
-	corrected derived base; posted rows are preserved (supersession,
-	IA-05). Returns True when a rebuild was needed."""
+def _schedule_rebuild_needed(asset_name):
+	"""Read-only: does the Active schedule still spread the double-counted
+	NBV over its future rows?
+
+	MEASURE THIS ONLY AFTER THE VOUCHER LINK IS SET. Before the link, the
+	schedule and the derived NBV are BOTH inflated by the same repair GL,
+	so they agree with each other and the divergence is invisible — the
+	first cut of this backfill asked the question too early, always got
+	False, and left the corrupted schedule in place while reporting that
+	nothing needed rebuilding (2026-08-25 review).
+	"""
 	from asset_enterprise.asset_values import recalculate_asset_values
-	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
+	from asset_enterprise.depreciation import last_posted_schedule_date
 
 	if not frappe.db.exists(
 		"Asset Depreciation Schedule",
@@ -760,16 +764,38 @@ def _rebuild_schedule_after_voucher_fix(asset_name):
 	)
 	if expected <= 0 or abs(unposted - expected) < 0.01:
 		return False
-	last_posted = last_posted_schedule_date(asset_name)
-	if not last_posted:
-		return False
+	# A rebuild respreads from the last posted row; with nothing posted
+	# there is no anchor, so report what can actually be done.
+	return bool(last_posted_schedule_date(asset_name))
+
+
+def _rebuild_future_schedule(asset_name):
+	"""Respread the future rows from the corrected derived base. Posted
+	rows are preserved and the corrupted generation is Superseded, never
+	cancelled (GAP-031/032, IA-05)."""
+	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
+
 	supersede_and_regenerate(
 		asset_name,
-		as_of_date=getdate(last_posted),
+		as_of_date=getdate(last_posted_schedule_date(asset_name)),
 		reason=_("Rebuilt after repair-voucher backfill — future rows were "
 			"spread over a double-counted NBV (client 2026-08-25)"),
 	)
-	return True
+
+
+def _apply_voucher_link(row):
+	"""Set the missing link, re-derive the asset's values, and report
+	whether the future schedule still needs rebuilding. Returns True when
+	a rebuild is required."""
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	frappe.db.set_value(
+		"Financial Treatment", row.name,
+		{"voucher_type": "Asset Repair", "voucher_no": row.source_name},
+		update_modified=False,
+	)
+	recalculate_asset_values(row.asset, save=True)
+	return _schedule_rebuild_needed(row.asset)
 
 
 def link_repair_voucher_references(company=None, asset=None, dry_run=1):
@@ -785,26 +811,27 @@ def link_repair_voucher_references(company=None, asset=None, dry_run=1):
 	        asset_enterprise.repair.link_repair_voucher_references \\
 	        --kwargs "{'dry_run': 0}"
 	"""
-	from asset_enterprise.asset_values import recalculate_asset_values
-
 	stuck = find_unlinked_repair_treatments(company=company, asset=asset)
 	print(f"{len(stuck)} Capitalized Repair treatment(s) without a voucher link:")
 	for row in stuck:
-		needs = _rebuild_schedule_after_voucher_fix(row.asset)
+		if dry_run:
+			# The divergence only becomes visible once the link is set,
+			# so the dry run applies the fix inside a savepoint, reads
+			# the answer, and rolls back — the report is then exactly
+			# what the live run will do, and nothing is written.
+			frappe.db.savepoint("ae_repair_voucher_backfill")
+			try:
+				needs = _apply_voucher_link(row)
+			finally:
+				frappe.db.rollback(save_point="ae_repair_voucher_backfill")
+		else:
+			needs = _apply_voucher_link(row)
+			if needs:
+				_rebuild_future_schedule(row.asset)
 		print(
 			f"  FT {row.name}  asset {row.asset}  repair {row.source_name}  "
 			f"amount {flt(row.amount):,.2f}  schedule-rebuild-needed={needs}"
 		)
-		if dry_run:
-			continue
-		frappe.db.set_value(
-			"Financial Treatment", row.name,
-			{"voucher_type": "Asset Repair", "voucher_no": row.source_name},
-			update_modified=False,
-		)
-		recalculate_asset_values(row.asset, save=True)
-		if needs:
-			_rebuild_schedule_after_voucher_fix(row.asset)
 	if not dry_run:
 		frappe.db.commit()
 	return stuck
