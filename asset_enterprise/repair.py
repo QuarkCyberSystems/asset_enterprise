@@ -17,6 +17,8 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, cint, date_diff, flt, getdate
 
+from asset_enterprise.rounding import fa_module_round
+
 
 def find_missing_opening_entries(company=None, asset=None):
 	"""Submitted assets that SHOULD carry an opening JE but have no GL
@@ -1192,4 +1194,114 @@ def backfill_asset_dimension_from_references(company=None, asset=None, dry_run=1
 			)
 		frappe.db.commit()
 	print(f"  {len(rows)} stamped{' (dry run — nothing written)' if dry_run else ''}")
+	return rows
+
+
+def _legacy_acquisition_candidates(company=None):
+	"""Older acquisition rows carry no `voucher_detail_no`, so nothing on
+	the row links it to a receipt line (MAT-PRE-2026-00284's 13,500,000
+	is one). The line is still identifiable when the voucher has exactly
+	ONE fixed-asset line posting to that account — anything less certain
+	is reported, never guessed.
+	"""
+	rows = frappe.db.sql(
+		"""
+		select gle.name as gl_row, gle.voucher_type, gle.voucher_no, gle.account,
+		       gle.debit, gle.company
+		from `tabGL Entry` gle
+		where gle.is_cancelled = 0
+		  and ifnull(gle.asset, '') = ''
+		  and ifnull(gle.voucher_detail_no, '') = ''
+		  and gle.voucher_type in ('Purchase Receipt', 'Purchase Invoice')
+		  and gle.debit > 0
+		order by gle.posting_date, gle.creation
+		""",
+		as_dict=True,
+	)
+	item_doctype = {
+		"Purchase Receipt": ("Purchase Receipt Item", "purchase_receipt_item"),
+		"Purchase Invoice": ("Purchase Invoice Item", "purchase_invoice_item"),
+	}
+	out = []
+	for row in rows:
+		if company and row.company != company:
+			continue
+		doctype, asset_field = item_doctype[row.voucher_type]
+		lines = frappe.get_all(
+			doctype,
+			filters={"parent": row.voucher_no, "is_fixed_asset": 1, "expense_account": row.account},
+			fields=["name", "qty", "amount"],
+		)
+		if len(lines) != 1:
+			row.skipped = f"{len(lines)} fixed-asset lines post to this account — ambiguous"
+			out.append(row)
+			continue
+		line = lines[0]
+		assets = frappe.get_all(
+			"Asset",
+			filters={asset_field: line.name, "docstatus": ("<", 2)},
+			fields=["name", "net_purchase_amount"],
+			order_by="creation, name",
+		)
+		if not assets:
+			row.skipped = "the line created no surviving Asset"
+			out.append(row)
+			continue
+		row.line, row.assets = line, assets
+		# The line booked qty x per_unit; each surviving asset takes one
+		# unit. A unit whose asset was cancelled stays unattributed rather
+		# than being spread over the survivors, which would overstate them.
+		row.per_unit = fa_module_round(flt(line.amount) / (flt(line.qty) or 1), row.company)
+		out.append(row)
+	return out
+
+
+def backfill_legacy_acquisition_rows(company=None, dry_run=1):
+	"""Attribute acquisition rows that predate `voucher_detail_no`."""
+	rows = _legacy_acquisition_candidates(company=company)
+	done = skipped = 0
+	print(f"{len(rows)} legacy acquisition row(s) with no line reference:")
+	for row in rows:
+		if row.get("skipped"):
+			skipped += 1
+			print(f"  SKIP {row.voucher_no}  {flt(row.debit):,.2f}  — {row.skipped}")
+			continue
+		names = [a.name for a in row.assets]
+		assigned = fa_module_round(row.per_unit * len(names), row.company)
+		residual = fa_module_round(flt(row.debit) - assigned, row.company)
+		print(
+			f"  {row.voucher_no}  {flt(row.debit):,.2f}  -> {len(names)} x "
+			f"{row.per_unit:,.2f} ({', '.join(names)})"
+			+ (f"; {residual:,.2f} left unattributed (cancelled unit)" if residual else "")
+		)
+		done += 1
+		if dry_run:
+			continue
+		source = frappe.get_doc("GL Entry", row.gl_row)
+		for idx, asset_row in enumerate(row.assets):
+			if idx == 0 and not residual:
+				frappe.db.set_value(
+					"GL Entry", source.name,
+					{"debit": row.per_unit, "debit_in_account_currency": row.per_unit,
+					 "asset": asset_row.name},
+					update_modified=False,
+				)
+				continue
+			sibling = frappe.copy_doc(source)
+			sibling.asset = asset_row.name
+			sibling.debit = sibling.debit_in_account_currency = row.per_unit
+			sibling.flags.ignore_permissions = True
+			sibling.flags.ignore_validate = True
+			sibling.docstatus = 1
+			sibling.db_insert()
+		if residual:
+			frappe.db.set_value(
+				"GL Entry", source.name,
+				{"debit": residual, "debit_in_account_currency": residual},
+				update_modified=False,
+			)
+	if not dry_run:
+		frappe.db.commit()
+	print(f"  {done} attributed, {skipped} left for a human"
+	      f"{' (dry run — nothing written)' if dry_run else ''}")
 	return rows
