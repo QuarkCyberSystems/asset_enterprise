@@ -1134,3 +1134,62 @@ def backfill_asset_dimension(company=None, asset=None, dry_run=1):
 	print(f"  {stamped} stamped in place, {split} split across their assets"
 	      f"{' (dry run — nothing written)' if dry_run else ''}")
 	return rows
+
+
+def find_undimensioned_asset_rows(company=None, asset=None):
+	"""GL rows that NAME an asset but carry no `asset` dimension.
+
+	Everything our engine posts references the asset (`against_voucher`),
+	and since the dimension was registered those rows also carry it. Rows
+	written before that registration name the asset and nothing else, so
+	a ledger-derived value would miss them — e.g. ACC-ASS-2026-00035's
+	10,000,000 opening entry of 2026-08-16.
+
+	The asset is stated on the row, so this is a stamp, never a guess.
+	"""
+	conditions, values = [
+		"gle.is_cancelled = 0",
+		"ifnull(gle.asset, '') = ''",
+		"gle.against_voucher_type = 'Asset'",
+		"ifnull(gle.against_voucher, '') <> ''",
+	], {}
+	if company:
+		conditions.append("gle.company = %(company)s")
+		values["company"] = company
+	if asset:
+		conditions.append("gle.against_voucher = %(asset)s")
+		values["asset"] = asset
+	return frappe.db.sql(
+		f"""
+		select gle.name as gl_row, gle.against_voucher as asset, gle.account,
+		       gle.debit, gle.credit, gle.voucher_type, gle.voucher_no
+		from `tabGL Entry` gle
+		where {" and ".join(conditions)}
+		order by gle.posting_date, gle.creation
+		""",
+		values,
+		as_dict=True,
+	)
+
+
+def backfill_asset_dimension_from_references(company=None, asset=None, dry_run=1):
+	"""Stamp the dimension on rows that already name their asset."""
+	rows = find_undimensioned_asset_rows(company=company, asset=asset)
+	by_asset = {}
+	for row in rows:
+		by_asset.setdefault(row.asset, []).append(row)
+	print(f"{len(rows)} row(s) naming an asset without the dimension, across "
+	      f"{len(by_asset)} asset(s):")
+	for asset_name, asset_rows in list(by_asset.items())[:15]:
+		accounts = {r.account for r in asset_rows}
+		print(f"  {asset_name}: {len(asset_rows)} row(s) over {len(accounts)} account(s)")
+	if len(by_asset) > 15:
+		print(f"  ... and {len(by_asset) - 15} more asset(s)")
+	if not dry_run:
+		for row in rows:
+			frappe.db.set_value(
+				"GL Entry", row.gl_row, "asset", row.asset, update_modified=False
+			)
+		frappe.db.commit()
+	print(f"  {len(rows)} stamped{' (dry run — nothing written)' if dry_run else ''}")
+	return rows
