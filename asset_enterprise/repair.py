@@ -1232,7 +1232,12 @@ def _legacy_acquisition_candidates(company=None):
 			filters={"parent": row.voucher_no, "is_fixed_asset": 1, "expense_account": row.account},
 			fields=["name", "qty", "amount"],
 		)
-		if len(lines) != 1:
+		if not lines:
+			# Not an asset acquisition at all — an ordinary purchase row on
+			# the same voucher. Not a candidate, so not a finding either:
+			# reporting these as "left for a human" buried the real ones.
+			continue
+		if len(lines) > 1:
 			row.skipped = f"{len(lines)} fixed-asset lines post to this account — ambiguous"
 			out.append(row)
 			continue
