@@ -77,6 +77,18 @@ CLASS_PATCH_TARGETS = [
 		"update_journal_entry_link_on_depr_schedule",
 		3,
 	),
+	(
+		"erpnext.stock.doctype.purchase_receipt.purchase_receipt",
+		"PurchaseReceipt",
+		"get_gl_entries",
+		1,
+	),
+	(
+		"erpnext.accounts.doctype.purchase_invoice.purchase_invoice",
+		"PurchaseInvoice",
+		"get_gl_entries",
+		1,
+	),
 ]
 
 # (attr, original callable, wrapper callable) — filled by _rebind().
@@ -496,6 +508,38 @@ def apply_patches():
 	update_journal_entry_link_on_depr_schedule._asset_enterprise_wrapper = True
 	core_je.JournalEntry.update_journal_entry_link_on_depr_schedule = (
 		update_journal_entry_link_on_depr_schedule
+	)
+
+	# GAP-006 / §5.1 (audit C1): core books an asset purchase with neither
+	# the `asset` dimension nor against_voucher, and writes ONE row per
+	# receipt LINE — so a qty-4 line books a single amount for four
+	# assets and the acquisition cost cannot be attributed in the ledger.
+	# That is the only reason the values fold starts from
+	# net_purchase_amount instead of GL. Stamp the leg, splitting it when
+	# a line made several assets; see gl_attribution for the rules.
+	#
+	# BuyingController.on_submit -> process_fixed_asset() creates the
+	# assets BEFORE make_gl_entries() runs on both doctypes, so the
+	# mapping is exact rather than a guess. The transform runs after
+	# core's process_gl_map; merge_similar_entries keys on accounting
+	# dimensions, so rows for different assets never merge back.
+	import erpnext.accounts.doctype.purchase_invoice.purchase_invoice as core_pi
+	import erpnext.stock.doctype.purchase_receipt.purchase_receipt as core_pr
+
+	def _attributed(core_get_gl_entries):
+		def get_gl_entries(self, *args, **kwargs):
+			from asset_enterprise.gl_attribution import attribute_asset_legs
+
+			return attribute_asset_legs(self, core_get_gl_entries(self, *args, **kwargs))
+
+		get_gl_entries._asset_enterprise_wrapper = True
+		return get_gl_entries
+
+	core_pr.PurchaseReceipt.get_gl_entries = _attributed(
+		core_pr.PurchaseReceipt.get_gl_entries
+	)
+	core_pi.PurchaseInvoice.get_gl_entries = _attributed(
+		core_pi.PurchaseInvoice.get_gl_entries
 	)
 
 	# GAP-036: a grouping asset is a structural container with no value —

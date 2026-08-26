@@ -95,6 +95,83 @@ def _run():
 		)
 		ok = ok and pr_ok
 
+		# GAP-006 / §5.1 (audit C1): the acquisition leg must be
+		# attributable PER ASSET. Core writes one row for the whole
+		# receipt line with no dimension at all, so a line of qty 2 books
+		# a single amount covering both assets and their cost cannot be
+		# read from the ledger — the reason the values fold had to start
+		# from net_purchase_amount. The line above made two assets, so the
+		# leg must arrive as two stamped rows that still sum to the line.
+		legs = frappe.db.sql(
+			"""select ifnull(ds.asset, '') as asset, ds.debit, ds.account,
+			          ds.voucher_detail_no
+			   from `tabGL Entry` ds
+			   where ds.voucher_no = %s and ds.is_cancelled = 0
+			     and ds.voucher_detail_no = %s and ds.debit > 0""",
+			(pr.name, pr.items[0].name), as_dict=True,
+		)
+		attr_ok = (
+			len(legs) == 2
+			and {row.asset for row in legs} == set(assets)
+			and abs(flt(sum(flt(row.debit) for row in legs)) - 2_000) < 0.01
+			and all(abs(flt(row.debit) - 1_000) < 0.01 for row in legs)
+			and all(row.voucher_detail_no == pr.items[0].name for row in legs)
+		)
+		print(
+			f"prattr acquisition legs={len(legs)} (want 2, one per asset) "
+			f"stamped={sorted(row.asset for row in legs)} total="
+			f"{flt(sum(flt(row.debit) for row in legs)):,.2f} (want 2,000.00) "
+			f"{'OK' if attr_ok else 'FAIL'}"
+		)
+		ok = ok and attr_ok
+
+		# ...and assets bought BEFORE the stamp exists are recoverable.
+		# Collapse the two legs back into the single unattributed row core
+		# used to write, then let the backfill rebuild them: every case is
+		# determinable from voucher_detail_no, so nothing is guessed.
+		from asset_enterprise.repair import backfill_asset_dimension
+
+		for extra in legs[1:]:
+			frappe.db.sql(
+				"delete from `tabGL Entry` where name = %s",
+				frappe.db.get_value("GL Entry", {"voucher_no": pr.name,
+					"voucher_detail_no": pr.items[0].name, "asset": extra.asset}, "name"),
+			)
+		frappe.db.set_value(
+			"GL Entry",
+			frappe.db.get_value("GL Entry", {"voucher_no": pr.name,
+				"voucher_detail_no": pr.items[0].name, "debit": (">", 0)}, "name"),
+			{"debit": 2_000, "debit_in_account_currency": 2_000, "asset": None},
+			update_modified=False,
+		)
+		real_commit = frappe.db.commit
+		frappe.db.commit = lambda *a, **k: None   # keep the suite's savepoint
+		try:
+			backfill_asset_dimension(asset=assets[0], dry_run=0)
+		finally:
+			frappe.db.commit = real_commit
+		rebuilt = frappe.db.sql(
+			"""select ifnull(asset, '') as asset, debit from `tabGL Entry`
+			   where voucher_no = %s and voucher_detail_no = %s and debit > 0
+			     and is_cancelled = 0""",
+			(pr.name, pr.items[0].name), as_dict=True,
+		)
+		voucher_balance = flt(frappe.db.sql(
+			"""select coalesce(sum(debit) - sum(credit), 0) from `tabGL Entry`
+			   where voucher_no = %s and is_cancelled = 0""", pr.name)[0][0], 2)
+		bf_ok = (
+			len(rebuilt) == 2
+			and {row.asset for row in rebuilt} == set(assets)
+			and abs(flt(sum(flt(row.debit) for row in rebuilt)) - 2_000) < 0.01
+			and abs(voucher_balance) < 0.01
+		)
+		print(
+			f"prbf   backfill rebuilt {len(rebuilt)} legs (want 2) totalling "
+			f"{flt(sum(flt(row.debit) for row in rebuilt)):,.2f} (want 2,000.00); voucher "
+			f"balance {voucher_balance:,.2f} (want 0.00) {'OK' if bf_ok else 'FAIL'}"
+		)
+		ok = ok and bf_ok
+
 		# GAP-004.4 / TC-007: cancelling a receipt CASCADE-reverses the
 		# assets it created — "Assets whose PR is reversed must not be left
 		# in Submitted status" — and the records survive to be audited

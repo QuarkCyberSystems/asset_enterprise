@@ -1032,3 +1032,105 @@ def repair_misstamped_schedule_rows(company=None, asset=None, dry_run=1):
 	if not dry_run:
 		frappe.db.commit()
 	return rows
+
+
+def find_unattributed_acquisition_legs(company=None, asset=None):
+	"""Acquisition GL rows that carry no `asset` dimension.
+
+	Core books an asset purchase without the dimension and with one row
+	per receipt LINE, so the cost of an asset bought before this app
+	stamped that leg cannot be read from the ledger (audit C1). Every
+	case is determinable: the row's `voucher_detail_no` IS the receipt /
+	invoice line, and each Asset carries `purchase_receipt_item` /
+	`purchase_invoice_item` back to it — nothing here is guessed.
+	"""
+	rows = frappe.db.sql(
+		"""
+		select gle.name as gl_row, gle.voucher_type, gle.voucher_no,
+		       gle.voucher_detail_no, gle.account, gle.debit, gle.credit, gle.company
+		from `tabGL Entry` gle
+		where gle.is_cancelled = 0
+		  and ifnull(gle.asset, '') = ''
+		  and ifnull(gle.voucher_detail_no, '') <> ''
+		  and gle.voucher_type in ('Purchase Receipt', 'Purchase Invoice')
+		  and gle.debit > 0
+		order by gle.posting_date, gle.creation
+		""",
+		as_dict=True,
+	)
+	from asset_enterprise.gl_attribution import _asset_line, _assets_from_line
+
+	out = []
+	for row in rows:
+		if company and row.company != company:
+			continue
+		item_row, asset_field = _asset_line(row.voucher_type, row.voucher_detail_no)
+		if not item_row or row.account != item_row.expense_account:
+			continue
+		assets = _assets_from_line(asset_field, row.voucher_detail_no)
+		if not assets or (asset and asset not in [a.name for a in assets]):
+			continue
+		row.assets = assets
+		out.append(row)
+	return out
+
+
+def backfill_asset_dimension(company=None, asset=None, dry_run=1):
+	"""Stamp — and where a line made several assets, split — the historic
+	acquisition legs, so the ledger can answer "what did this asset cost".
+
+	The existing row is REUSED for the first asset (its amount reduced to
+	that asset's share) and siblings are inserted for the rest, so the
+	voucher stays balanced and its total never moves.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.backfill_asset_dimension \\
+	        --kwargs "{'dry_run': 1}"
+	"""
+	from asset_enterprise.gl_attribution import _AMOUNT_FIELDS, _shares
+
+	rows = find_unattributed_acquisition_legs(company=company, asset=asset)
+	stamped = split = 0
+	print(f"{len(rows)} acquisition leg(s) with no asset dimension:")
+	for row in rows:
+		names = [a.name for a in row.assets]
+		print(
+			f"  {row.voucher_type} {row.voucher_no}  {row.account}  "
+			f"{flt(row.debit):,.2f}  -> {len(names)} asset(s): {', '.join(names)}"
+		)
+		if len(names) == 1:
+			stamped += 1
+			if not dry_run:
+				frappe.db.set_value(
+					"GL Entry", row.gl_row, "asset", names[0], update_modified=False
+				)
+			continue
+
+		split += 1
+		if dry_run:
+			continue
+		source = frappe.get_doc("GL Entry", row.gl_row)
+		parts = {
+			field: _shares(source.get(field), row.assets, source.company)
+			for field in _AMOUNT_FIELDS
+			if flt(source.get(field))
+		}
+		for idx, asset_row in enumerate(row.assets):
+			if idx == 0:
+				values = {field: values[0] for field, values in parts.items()}
+				values["asset"] = asset_row.name
+				frappe.db.set_value("GL Entry", source.name, values, update_modified=False)
+				continue
+			sibling = frappe.copy_doc(source)
+			sibling.asset = asset_row.name
+			for field, values in parts.items():
+				sibling.set(field, values[idx])
+			sibling.flags.ignore_permissions = True
+			sibling.flags.ignore_validate = True
+			sibling.docstatus = 1
+			sibling.db_insert()
+	if not dry_run:
+		frappe.db.commit()
+	print(f"  {stamped} stamped in place, {split} split across their assets"
+	      f"{' (dry run — nothing written)' if dry_run else ''}")
+	return rows
