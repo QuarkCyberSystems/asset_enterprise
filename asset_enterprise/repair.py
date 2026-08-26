@@ -1257,6 +1257,17 @@ def _legacy_acquisition_candidates(company=None):
 		# unit. A unit whose asset was cancelled stays unattributed rather
 		# than being spread over the survivors, which would overstate them.
 		row.per_unit = fa_module_round(flt(line.amount) / (flt(line.qty) or 1), row.company)
+		# The row must still cover a unit for every surviving asset. It
+		# does not when part of it was attributed already, or when the
+		# line's amount moved after posting — MAT-PRE-2026-00354 offers
+		# 2,000 against three surviving 1,000 units. Writing those anyway
+		# would put a NEGATIVE debit on the residual row.
+		if fa_module_round(row.per_unit * len(assets), row.company) > flt(row.debit) + 0.005:
+			row.skipped = (
+				f"row holds {flt(row.debit):,.2f} but the line's units for its "
+				f"{len(assets)} surviving asset(s) come to "
+				f"{fa_module_round(row.per_unit * len(assets), row.company):,.2f}"
+			)
 		out.append(row)
 	return out
 
