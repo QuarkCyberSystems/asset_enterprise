@@ -344,8 +344,20 @@ def autofill_asset_allocation(doc):
 			{
 				"asset": asset_name,
 				"purchase_receipt": frappe.db.get_value("Asset", asset_name, "purchase_receipt"),
+				"allocated_amount": _invoice_rate_for_asset(doc, asset_name),
 			},
 		)
+
+
+def _invoice_rate_for_asset(doc, asset_name):
+	"""What this invoice charges for one unit of that asset's receipt
+	line — the default allocation, and the even split the engine applied
+	before allocations could be typed."""
+	pr_item = frappe.db.get_value("Asset", asset_name, "purchase_receipt_item")
+	for row in doc.items:
+		if pr_item and row.get("pr_detail") == pr_item:
+			return flt(row.net_rate)
+	return 0.0
 
 
 @frappe.whitelist()
@@ -432,7 +444,73 @@ def pi_validate(doc, method=None):
 				).format(row.asset, prior[0][0])
 			)
 
+	# Show the effect of the allocation on the DRAFT: the deltas were
+	# only written at submit, so a user redistributing amounts saw
+	# nothing move until it was too late to reconsider.
+	for row in doc.pi_asset_allocation:
+		row.pi_delta_amount, row.fx_delta_amount = _compute_deltas(
+			doc, row.asset, row.get("allocated_amount")
+		)
+
+	_validate_allocation_total(doc)
 	_maybe_warn_below_receipt(doc)
+
+
+def _validate_allocation_total(doc):
+	"""Client, 26/08: the allocation is editable so an invoice can be
+	distributed unevenly across the assets it covers — "should be
+	editable and not exceed the total of invoice".
+
+	The ceiling is the invoice's ASSET amount, not its grand total:
+	that is the value the invoice parks in Asset Received But Not Billed
+	and the only value there is to distribute. Taxes and non-asset lines
+	never land on an asset, so counting them would let the assets absorb
+	value the invoice never booked for them.
+
+	Allocating LESS is allowed — a genuinely partial invoice does exactly
+	that — but it is said out loud, because the unallocated remainder
+	stays in the clearing account rather than reaching any asset. That is
+	the shape of the GAP-012 defect the client reported on 16/08, where an
+	invoice submitted with its whole difference stranded.
+	"""
+	rows = [r for r in doc.pi_asset_allocation if r.get("allocated_amount") is not None]
+	if not rows:
+		return
+	allocated = fa_module_round(sum(flt(r.allocated_amount) for r in rows), doc.company)
+	asset_total = fa_module_round(
+		sum(flt(i.net_amount) for i in doc.items if i.get("is_fixed_asset")), doc.company
+	)
+	if not asset_total:
+		return
+
+	if allocated > asset_total + 0.005:
+		frappe.throw(
+			_(
+				"Asset Allocation totals {0} but this invoice only carries {1} of asset "
+				"value. Reduce the allocated amounts — the assets cannot absorb more "
+				"than the invoice charges for them."
+			).format(
+				frappe.format_value(allocated, {"fieldtype": "Currency"}),
+				frappe.format_value(asset_total, {"fieldtype": "Currency"}),
+			),
+			title=_("Allocation Exceeds the Invoice"),
+		)
+
+	shortfall = fa_module_round(asset_total - allocated, doc.company)
+	if shortfall > 0.005:
+		frappe.msgprint(
+			_(
+				"Asset Allocation covers {0} of this invoice's {1} of asset value. The "
+				"remaining {2} stays in the Asset Received But Not Billed / clearing "
+				"account and reaches no asset — allocate it if it belongs to one."
+			).format(
+				frappe.format_value(allocated, {"fieldtype": "Currency"}),
+				frappe.format_value(asset_total, {"fieldtype": "Currency"}),
+				frappe.format_value(shortfall, {"fieldtype": "Currency"}),
+			),
+			title=_("Part of the Invoice is Unallocated"),
+			indicator="orange",
+		)
 
 
 def _maybe_warn_below_receipt(doc):
@@ -442,7 +520,7 @@ def _maybe_warn_below_receipt(doc):
 	if not frappe.db.get_single_value("Asset Settings", "warn_invoice_below_receipt", cache=False):
 		return
 	for row in doc.pi_asset_allocation:
-		price_delta, _fx = _compute_deltas(doc, row.asset)
+		price_delta, _fx = _compute_deltas(doc, row.asset, row.get("allocated_amount"))
 		if price_delta < 0:
 			frappe.msgprint(
 				_(
@@ -473,7 +551,7 @@ def pi_on_submit(doc, method=None):
 	transfer_legs = []  # Phase 11c D1: delta moves OUT of ARBNB at PI time
 
 	for row in doc.pi_asset_allocation:
-		price_delta, fx_delta = _compute_deltas(doc, row.asset)
+		price_delta, fx_delta = _compute_deltas(doc, row.asset, row.get("allocated_amount"))
 		frappe.db.set_value(
 			"PI Asset Allocation",
 			row.name,
@@ -686,12 +764,19 @@ def pi_on_cancel(doc, method=None):
 		tcc.reverse(ft, ("Purchase Invoice", doc.name))
 
 
-def _compute_deltas(doc, asset_name):
+def _compute_deltas(doc, asset_name, allocated=None):
 	"""(price_delta, fx_delta) in company currency for one asset (N3).
 
-	price delta = (PI rate − PR rate, supplier currency) × PR exchange
-	fx delta    = PI rate × (PI exchange − PR exchange)
+	price delta = (allocated − PR rate, supplier currency) × PR exchange
+	fx delta    = allocated × (PI exchange − PR exchange)
 	Together they sum to the base-currency difference.
+
+	`allocated` is what THIS invoice carries for THIS asset. It defaults
+	to the invoice's unit rate — one asset, one unit — which is the even
+	split the engine has always applied. A user who distributes the
+	invoice unevenly across the assets it covers (client, 26/08) passes
+	their own figure here, and the decomposition is unchanged: the
+	allocation replaces the rate, nothing else moves.
 	"""
 	asset = frappe.db.get_value(
 		"Asset", asset_name, ["purchase_receipt", "purchase_receipt_item"], as_dict=True
@@ -718,10 +803,9 @@ def _compute_deltas(doc, asset_name):
 	)
 	pi_conversion = flt(doc.conversion_rate or 1)
 
+	carried = flt(pi_item.net_rate) if allocated is None else flt(allocated)
 	price_delta = fa_module_round(
-		(flt(pi_item.net_rate) - flt(pr_item.net_rate)) * pr_conversion, doc.company
+		(carried - flt(pr_item.net_rate)) * pr_conversion, doc.company
 	)
-	fx_delta = fa_module_round(
-		flt(pi_item.net_rate) * (pi_conversion - pr_conversion), doc.company
-	)
+	fx_delta = fa_module_round(carried * (pi_conversion - pr_conversion), doc.company)
 	return price_delta, fx_delta

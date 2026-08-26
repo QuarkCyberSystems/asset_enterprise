@@ -332,6 +332,81 @@ def _run():
 		)
 		ok = ok and bool(d_ok)
 
+		# GAP-012 (client, 26/08): the invoice can be distributed UNEVENLY
+		# across the assets it covers — "should be editable and not exceed
+		# the total of invoice". Two assets received at 1,000 each, invoiced
+		# at 1,200 each: the engine's even split gives both +200, but the
+		# extra cost may belong to one of them.
+		pr_alloc = frappe.get_doc(
+			{
+				"doctype": "Purchase Receipt", "company": company, "supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [{"item_code": "AE-SMOKE-ITEM", "qty": 2, "rate": 1000,
+				           "asset_location": seed.location}],
+			}
+		)
+		pr_alloc.flags.ignore_permissions = True
+		pr_alloc.insert()
+		pr_alloc.submit()
+		pair = frappe.get_all(
+			"Asset", filters={"purchase_receipt": pr_alloc.name}, pluck="name",
+			order_by="creation, name",
+		)
+
+		def _alloc_invoice(first, second):
+			return frappe.get_doc(
+				{
+					"doctype": "Purchase Invoice", "company": company, "supplier": supplier,
+					"posting_date": nowdate(),
+					"items": [{"item_code": "AE-SMOKE-ITEM", "qty": 2, "rate": 1200,
+					           "purchase_receipt": pr_alloc.name,
+					           "pr_detail": pr_alloc.items[0].name}],
+					"pi_asset_allocation": [
+						{"asset": pair[0], "allocated_amount": first},
+						{"asset": pair[1], "allocated_amount": second},
+					],
+				}
+			)
+
+		# The ceiling first: 1,600 + 1,000 asks the assets to carry 2,600
+		# of an invoice that only charges 2,400 for them.
+		over = _alloc_invoice(1_600, 1_000)
+		over.flags.ignore_permissions = True
+		try:
+			over.insert()
+			over_blocked = False
+		except frappe.ValidationError as exc:
+			over_blocked = "exceed" in str(exc).lower() or "cannot absorb" in str(exc).lower()
+
+		# Now the real split: 1,500 / 900 — the whole 2,400, unevenly.
+		alloc_pi = _alloc_invoice(1_500, 900)
+		alloc_pi.flags.ignore_permissions = True
+		alloc_pi.insert()
+		alloc_pi.submit()
+		alloc_rows = frappe.get_all(
+			"PI Asset Allocation", filters={"parent": alloc_pi.name},
+			fields=["asset", "allocated_amount", "pi_delta_amount"], order_by="idx",
+		)
+		by_asset = {r.asset: r for r in alloc_rows}
+		# 1,500 - 1,000 = +500 on the first; 900 - 1,000 = -100 on the second.
+		hav_a = recalculate_asset_values(pair[0], save=False)["historical_asset_value"]
+		hav_b = recalculate_asset_values(pair[1], save=False)["historical_asset_value"]
+		alloc_ok = (
+			over_blocked
+			and abs(flt(by_asset[pair[0]].pi_delta_amount) - 500) < 0.01
+			and abs(flt(by_asset[pair[1]].pi_delta_amount) + 100) < 0.01
+			and abs(flt(hav_a) - 1_500) < 0.01
+			and abs(flt(hav_b) - 900) < 0.01
+		)
+		print(
+			f"pialloc over-allocation blocked={over_blocked}; split 1,500/900 -> deltas "
+			f"{flt(by_asset[pair[0]].pi_delta_amount):,.2f}/"
+			f"{flt(by_asset[pair[1]].pi_delta_amount):,.2f} (want 500.00/-100.00); "
+			f"HAV {flt(hav_a):,.2f}/{flt(hav_b):,.2f} (want 1,500.00/900.00) "
+			f"{'OK' if alloc_ok else 'FAIL'}"
+		)
+		ok = ok and alloc_ok
+
 		# Re-selection block: second PI covering the same asset.
 		pi2 = frappe.get_doc(
 			{

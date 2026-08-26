@@ -8,6 +8,7 @@
  "field_order": [
   "asset",
   "purchase_receipt",
+  "allocated_amount",
   "pi_delta_amount",
   "fx_delta_amount"
  ],
@@ -30,7 +31,14 @@
    "read_only": 1
   },
   {
-   "description": "PI rate \u2212 PR rate: capitalized to this asset via Asset Invoice Difference / Clearing.",
+   "fieldname": "allocated_amount",
+   "fieldtype": "Currency",
+   "label": "Invoice Amount Allocated",
+   "in_list_view": 1,
+   "description": "Share of this invoice's asset value carried by this asset. Defaults to the invoice rate; edit to split an invoice unevenly across the assets it covers. The total across rows may not exceed the invoice's asset amount."
+  },
+  {
+   "description": "Allocated amount less what the receipt booked for this asset — capitalized via Asset Invoice Difference. Derived, never typed.",
    "fieldname": "pi_delta_amount",
    "fieldtype": "Currency",
    "in_list_view": 1,
@@ -38,7 +46,7 @@
    "read_only": 1
   },
   {
-   "description": "FX portion routed to Exchange Gain/Loss \u2014 never capitalized (GA-0005-01 GAP-012).",
+   "description": "FX portion routed to Exchange Gain/Loss — never capitalized (GA-0005-01 GAP-012).",
    "fieldname": "fx_delta_amount",
    "fieldtype": "Currency",
    "label": "FX Delta (Gain/Loss)",
