@@ -285,6 +285,24 @@ def e12():
 	return ok, f"{len(rows)} row(s) totalling {total:,.2f} (want 1 row, 55,000.00)"
 
 
+@case("E-15", "§4.6 exceptions", "a disposal still posts on its transaction date, not month-end")
+def e15():
+	from asset_enterprise import disposal
+
+	company = _company()
+	asset = _asset(company, gross=120_000, months=24,
+	               start=get_last_day(add_months(nowdate(), -2)))
+	scrap_date = add_days(getdate(nowdate()), -3)   # deliberately mid-month
+	disposal.scrap_asset(asset, scrap_date=scrap_date)
+	rows = _rows(asset)
+	last = rows[-1] if rows else None
+	ok = bool(last) and getdate(last.schedule_date) == getdate(scrap_date)
+	return ok, (
+		f"scrapped {scrap_date}: last schedule row {last and last.schedule_date} "
+		f"(want the transaction date, NOT {get_last_day(scrap_date)})"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

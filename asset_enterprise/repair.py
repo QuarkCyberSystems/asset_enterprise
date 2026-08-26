@@ -1321,3 +1321,80 @@ def backfill_legacy_acquisition_rows(company=None, dry_run=1):
 	print(f"  {done} attributed, {skipped} left for a human"
 	      f"{' (dry run — nothing written)' if dry_run else ''}")
 	return rows
+
+
+def align_terminal_rows_to_month_end(company=None, asset=None, dry_run=1):
+	"""Re-date UNPOSTED terminal rows to the end of their period.
+
+	Client ruling 26/08 (Option 1): a life ending mid-month charges the
+	same amount for the same days, but the row posts at that month's end
+	like every other row — VR-015's "all schedule dates are the last
+	calendar day of their month".
+
+	Only the posting date moves. `period_end_date` keeps the end of life,
+	so the asset's horizon, its rate and every extension are unchanged.
+
+	NEVER touched: posted rows (immutable), and §4.6's own exceptions —
+	disposal, scrap, partial disposal, capitalization issue and category
+	transfer post on the transaction date by design, so a row on a
+	disposed asset is left exactly where it is.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.align_terminal_rows_to_month_end \\
+	        --kwargs "{'dry_run': 1}"
+	"""
+	from frappe.utils import get_last_day
+
+	conditions = ["ads.status = 'Active'", "ads.docstatus = 1", "ifnull(ds.journal_entry, '') = ''"]
+	values = {}
+	if company:
+		conditions.append("a.company = %(company)s")
+		values["company"] = company
+	if asset:
+		conditions.append("a.name = %(asset)s")
+		values["asset"] = asset
+	rows = frappe.db.sql(
+		f"""
+		select ds.name as row_name, ads.asset, a.status, ds.schedule_date,
+		       ds.depreciation_amount, ds.days_in_period, ds.idx,
+		       (select max(idx) from `tabDepreciation Schedule` where parent = ads.name) as last_idx
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		join `tabAsset` a on a.name = ads.asset
+		where {" and ".join(conditions)}
+		  and ds.schedule_date <> LAST_DAY(ds.schedule_date)
+		order by ads.asset
+		""",
+		values,
+		as_dict=True,
+	)
+	DISPOSED = ("Scrapped", "Sold", "Disposed", "Capitalized", "Cancelled")
+	moved = skipped = 0
+	print(f"{len(rows)} unposted row(s) not dated month-end:")
+	for row in rows:
+		if row.status in DISPOSED:
+			skipped += 1
+			print(f"  SKIP {row.asset} {row.schedule_date} — asset is {row.status}, §4.6 exception")
+			continue
+		if row.idx != row.last_idx:
+			skipped += 1
+			print(f"  SKIP {row.asset} {row.schedule_date} — interior row (mid-period split)")
+			continue
+		target = get_last_day(row.schedule_date)
+		print(
+			f"  {row.asset}  {row.schedule_date} -> {target}  "
+			f"{flt(row.depreciation_amount):,.2f} over {row.days_in_period}d"
+		)
+		moved += 1
+		if dry_run:
+			continue
+		frappe.db.set_value(
+			"Depreciation Schedule", row.row_name,
+			{"schedule_date": target, "period_end_date": row.schedule_date},
+			update_modified=False,
+		)
+	if not dry_run:
+		frappe.db.commit()
+	print(f"  {moved} re-dated, {skipped} left alone"
+	      f"{' (dry run — nothing written)' if dry_run else ''}")
+	return rows

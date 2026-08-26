@@ -99,6 +99,7 @@ def build_daily_rate_rows(
 		rows.append(
 			{
 				"schedule_date": cursor,
+				"period_end_date": cursor,
 				"days_in_period": days,
 				"daily_rate": rate,
 				"amount": amount,
@@ -110,12 +111,30 @@ def build_daily_rate_rows(
 		if cursor > end_of_life:
 			cursor = end_of_life
 
-	# Final row absorbs drift (§4.10 point 3).
+	# Final row absorbs drift (§4.10 point 3), and is dated at the END OF
+	# THE PERIOD IT COVERS like every other row — not at the end-of-life
+	# date inside it. A life ending 15/06 charges 15 days, dated 30/06,
+	# exactly as a row dated 31/05 covers 1–31 May.
+	#
+	# Until 2026-08-26 the terminal row used a different convention from
+	# its siblings, which is what left 84 of UAT's schedules with a
+	# mid-month last date against VR-015's "all dates are the last
+	# calendar day of their month" (client ruling, Option 1).
+	# §4.6's exceptions — disposal, scrap, partial disposal,
+	# capitalization issue, category transfer — are unaffected: they are
+	# applied by truncate_rows_at_disposal AFTER this builder, and it
+	# re-dates the last row to the transaction date.
 	days = date_diff(end_of_life, prev)
 	if days > 0 or not rows:
 		rows.append(
 			{
-				"schedule_date": end_of_life,
+				# posts at the end of the period it falls in ...
+				"schedule_date": get_last_day(end_of_life),
+				# ... but only charges up to the end of life, and THIS is
+				# what the horizon is read from. Overloading one date with
+				# both meanings moved every asset's end of life by up to a
+				# month and re-priced ten checks.
+				"period_end_date": end_of_life,
 				"days_in_period": days,
 				"daily_rate": rate,
 				"amount": final_row_amount(depreciable_base, posted_total, company),
@@ -404,9 +423,10 @@ def supersede_and_regenerate(
 	# from the pre-disposal horizon).
 	if not old.get("depreciation_schedule") and not end_of_life_override:
 		frappe.throw(_("Schedule {0} has no rows.").format(old_name))
+	last_row = old.get("depreciation_schedule")[-1] if old.get("depreciation_schedule") else None
 	end_of_life = getdate(
 		end_of_life_override
-		or old.get("depreciation_schedule")[-1].schedule_date
+		or (last_row and (last_row.get("period_end_date") or last_row.schedule_date))
 	)
 
 	from asset_enterprise.asset_values import recalculate_asset_values
@@ -485,6 +505,7 @@ def supersede_and_regenerate(
 				"is_pya_entry": r.get("is_pya_entry"),
 				"days_in_period": r.get("days_in_period"),
 				"daily_rate": r.get("daily_rate"),
+				"period_end_date": r.get("period_end_date") or r.schedule_date,
 			},
 		)
 	for row in future_rows:
@@ -497,6 +518,7 @@ def supersede_and_regenerate(
 				"accumulated_depreciation_amount": fa_module_round(accumulated, company),
 				"days_in_period": row["days_in_period"],
 				"daily_rate": row["daily_rate"],
+				"period_end_date": row.get("period_end_date") or row["schedule_date"],
 				# verbatim pre-event copies keep their GAP-021 cost centre
 				"cost_center": row.get("cost_center"),
 			},
@@ -704,10 +726,11 @@ def regenerate_after_value_change(
 
 
 def active_schedule_horizon(asset_name):
-	"""Last schedule date of the Active generation (the end of life)."""
+	"""End of life per the Active generation — the last day it CHARGES
+	for, which is not always the day the last row posts (§4.6)."""
 	return frappe.db.sql(
 		"""
-		select max(ds.schedule_date)
+		select max(coalesce(ds.period_end_date, ds.schedule_date))
 		from `tabDepreciation Schedule` ds
 		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
 		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
@@ -1071,6 +1094,7 @@ def enable_depreciation(
 				"accumulated_depreciation_amount": fa_module_round(accumulated, asset.company),
 				"days_in_period": row["days_in_period"],
 				"daily_rate": row["daily_rate"],
+				"period_end_date": row.get("period_end_date") or row["schedule_date"],
 			},
 		)
 	ads.flags.ignore_permissions = True

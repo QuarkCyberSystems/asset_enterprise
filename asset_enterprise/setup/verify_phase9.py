@@ -340,14 +340,26 @@ def _run():
 			available_for_use_date=afu, depreciation_start_date=posting,
 		)
 		stamped = frappe.db.get_value("Asset", c2.name, "available_for_use_date")
-		horizon = frappe.db.sql(
-			"select max(schedule_date) from `tabDepreciation Schedule` where parent = %s",
+		# Two different dates since the 26/08 ruling, and the test asserts
+		# BOTH: the life ends 2029-02-27 (basis + 36m − 1d) and the row
+		# charging that last stub POSTS at its month end, 2029-02-28
+		# (§4.6 / VR-015). Reading only the posting date, as this check
+		# used to, cannot tell a correct schedule from a life extended by
+		# a month.
+		horizon, posts_on = frappe.db.sql(
+			"""select max(coalesce(period_end_date, schedule_date)), max(schedule_date)
+			   from `tabDepreciation Schedule` where parent = %s""",
 			ads_c2.name if hasattr(ads_c2, "name") else ads_c2,
-		)[0][0]
-		c_ok = getdate(stamped) == getdate(afu) and getdate(horizon) == getdate("2029-02-27")
+		)[0]
+		c_ok = (
+			getdate(stamped) == getdate(afu)
+			and getdate(horizon) == getdate("2029-02-27")
+			and getdate(posts_on) == getdate(get_last_day("2029-02-27"))
+		)
 		print(
-			f"gap011c explicit AFU: stamped={stamped} (want {afu}) horizon={horizon} "
-			f"(want 2029-02-27 = basis + 36m - 1d) {'OK' if c_ok else 'FAIL'}"
+			f"gap011c explicit AFU: stamped={stamped} (want {afu}) life ends {horizon} "
+			f"(want 2029-02-27 = basis + 36m - 1d), last row posts {posts_on} "
+			f"(want 2029-02-28 month-end) {'OK' if c_ok else 'FAIL'}"
 		)
 		ok = ok and c_ok
 

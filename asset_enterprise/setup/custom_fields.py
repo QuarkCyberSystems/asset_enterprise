@@ -574,12 +574,24 @@ CUSTOM_FIELDS = {
 			"insert_after": "days_in_period",
 		},
 		{
+			"fieldname": "period_end_date",
+			"fieldtype": "Date",
+			"label": "Period Covered To",
+			"read_only": 1,
+			"insert_after": "daily_rate",
+			"description": "The last day this row actually charges for. Normally the "
+			"same as the schedule date; on the TERMINAL row of a life that ends "
+			"mid-month it is the end-of-life date, while the row posts at that "
+			"month's end (§4.6 / VR-015, client ruling 26/08). The asset's horizon "
+			"is read from here, never from the posting date.",
+		},
+		{
 			"fieldname": "reversal_journal_entry",
 			"fieldtype": "Link",
 			"label": "Reversal Journal Entry",
 			"options": "Journal Entry",
 			"read_only": 1,
-			"insert_after": "daily_rate",
+			"insert_after": "period_end_date",
 			"description": "Mirror journal entry that reversed this posted row "
 			"(e.g. straddling depreciation reversed at merge). Row drops out of "
 			"the accumulated fold; original JE stays posted.",
