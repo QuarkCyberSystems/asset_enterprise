@@ -25,6 +25,8 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, get_first_day, get_last_day, getdate, nowdate
 
+from asset_enterprise.api import assert_reversal_not_before_source
+
 
 
 def _charge_if_life_exhausted(asset_name, mirror):
@@ -58,6 +60,10 @@ def restore_asset(asset_name):
 		frappe.throw(_("Asset {0} is not scrapped — nothing to restore.").format(asset_name))
 
 	_same_period_gate(asset, asset.disposal_date)
+	# The same-period gate keeps this inside the disposal's own period,
+	# but a disposal dated LATER in that period would still be reversed
+	# before it happened — the mirror posts today (VR-022).
+	assert_reversal_not_before_source(asset.disposal_date, nowdate(), _("disposal"))
 
 	mirror = _mirror_je(
 		asset.journal_entry_for_scrap,
@@ -156,6 +162,9 @@ def restore_partial_scrap(asset_name, financial_treatment, cross_period=0):
 	asset = frappe.get_doc("Asset", asset_name)
 	if not cint(cross_period):
 		_same_period_gate(asset, ft.posting_date, partial=True)
+	# VR-022 applies to the partial path too: the mirror posts today, and
+	# a scrap dated ahead of today would be reversed before it happened.
+	assert_reversal_not_before_source(ft.posting_date, nowdate(), _("partial scrap"))
 
 	mirror = _mirror_je(
 		ft.journal_entry,
@@ -264,6 +273,9 @@ def cross_period_restore(asset_name, restore_date=None):
 
 	restore_date = getdate(restore_date or nowdate())
 	disposal_date = getdate(asset.disposal_date)
+	# VR-022: the restore may be in a LATER period — that is what Path 3
+	# is for — but never in an earlier one than the disposal it reverses.
+	assert_reversal_not_before_source(disposal_date, restore_date, _("disposal"))
 
 	mirror = _mirror_je(
 		asset.journal_entry_for_scrap,

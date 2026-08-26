@@ -346,15 +346,17 @@ def _reversal_date_edit_role(company):
 	)
 
 
-def _assert_reversal_date(company, source_posting_date, posting_date, label):
-	"""Validate a user-chosen reversal posting date.
+def assert_reversal_not_before_source(source_posting_date, posting_date, label):
+	"""VR-022 / GA-0001-01: a counter-document posts on or after the
+	transaction it reverses — never before it.
 
-	- The date can never precede the transaction it reverses
-	  (GA-0001-01 / VR-042 semantics: a counter-document posts on or
-	  after its source).
-	- Today is the default and needs no permission. Any OTHER date
-	  requires the company's Reversal Date Edit Role; with no role
-	  configured the reversal posts today, always.
+	Held separately from the role gate below because the two rules have
+	different reach. This one governs EVERY reversal, including the
+	disposal-restore paths, where a chosen date is normal and needs no
+	permission (Path 3 exists precisely to restore in a later period).
+	Until 2026-08-26 those paths enforced nothing: cross_period_restore
+	read the restore date and the disposal date on adjacent lines and
+	never compared them.
 	"""
 	from frappe.utils import getdate, nowdate
 
@@ -363,10 +365,24 @@ def _assert_reversal_date(company, source_posting_date, posting_date, label):
 		frappe.throw(
 			_(
 				"Reversal posting date {0} is before the {1} posting date {2} — "
-				"a reversal cannot precede the transaction it reverses."
+				"a reversal cannot precede the transaction it reverses (VR-022)."
 			).format(chosen, label, getdate(source_posting_date)),
 			title=_("Reversal Date Before Source"),
 		)
+	return chosen
+
+
+def _assert_reversal_date(company, source_posting_date, posting_date, label):
+	"""Validate a user-chosen reversal posting date.
+
+	- It can never precede the transaction it reverses (VR-022, above).
+	- Today is the default and needs no permission. Any OTHER date
+	  requires the company's Reversal Date Edit Role; with no role
+	  configured the reversal posts today, always.
+	"""
+	from frappe.utils import getdate, nowdate
+
+	chosen = assert_reversal_not_before_source(source_posting_date, posting_date, label)
 	if chosen != getdate(nowdate()):
 		role = _reversal_date_edit_role(company)
 		if not role:

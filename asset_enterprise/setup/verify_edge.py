@@ -162,6 +162,33 @@ def e05():
 	)
 
 
+@case("E-06", "VR-022", "reversing a FUTURE-dated partial scrap before it happened is refused")
+def e06():
+	from asset_enterprise import disposal
+
+	company = _company()
+	asset = _asset(company, gross=120_000)
+	ahead = add_days(getdate(nowdate()), 10)
+	disposal.partial_scrap_asset(asset, scrap_value=10_000, scrap_date=ahead)
+	ft = frappe.get_all(
+		"Financial Treatment",
+		filters={"asset": asset, "transaction_category": "Disposal", "status": "Posted"},
+		order_by="creation desc", limit=1, pluck="name",
+	)[0]
+	from asset_enterprise import restore
+
+	# cross_period=1 skips the same-period window gate, so VR-022 is the
+	# only thing left that can refuse this — otherwise the case would
+	# pass on a guard it is not testing.
+	refused, msg = _refused(
+		lambda: restore.restore_partial_scrap(asset, ft, cross_period=1)
+	)
+	return refused, (
+		f"scrap dated {ahead} (10 days ahead), reversal posts today: "
+		f"refused={refused} {msg[:90]}"
+	)
+
+
 # ================================================ §4.3 calendar boundaries
 
 
