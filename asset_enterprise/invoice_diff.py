@@ -694,7 +694,16 @@ def _post_delta_transfer_je(doc, transfer_legs):
 			}
 		)
 		total = fa_module_round(total + amt, doc.company)
-	accounts.append({"account": arbnb, **_side(-total)})
+
+	# A pure REDISTRIBUTION nets to zero: the invoice agrees with the
+	# receipt in total, and the user has only moved cost between the
+	# assets it covers (+500 on one, −500 on another). ARBNB then needs
+	# no movement at all — the invoice put back exactly what the receipt
+	# took out — and appending a zero leg made frappe refuse the whole
+	# entry with "Both Debit and Credit values cannot be zero", failing
+	# the invoice submit outright (client, 26/08).
+	if total:
+		accounts.append({"account": arbnb, **_side(-total)})
 
 	je = frappe.get_doc(
 		{

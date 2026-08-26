@@ -407,6 +407,74 @@ def _run():
 		)
 		ok = ok and alloc_ok
 
+		# ZERO-difference redistribution (client, 26/08): the invoice
+		# agrees with the receipt in TOTAL, and the allocation only moves
+		# cost between the assets it covers. The delta legs then net to
+		# zero, ARBNB needs no movement at all, and appending a zero
+		# balancing leg made frappe refuse the entry — "Both Debit and
+		# Credit values cannot be zero" — failing the whole invoice.
+		arbnb_acct = frappe.db.get_value("Company", company, "asset_received_but_not_billed")
+
+		def _arbnb():
+			return flt(frappe.db.sql(
+				"select coalesce(sum(debit) - sum(credit), 0) from `tabGL Entry` "
+				"where account = %s and is_cancelled = 0", arbnb_acct)[0][0], 2) if arbnb_acct else 0.0
+
+		# Measured across the RECEIPT AND THE INVOICE together: the receipt
+		# credits ARBNB and the invoice debits it back, so the pair nets to
+		# zero. Snapshotting between them would read the invoice's own
+		# +2,000 as a leak.
+		arbnb_before = _arbnb()
+		pr_even = frappe.get_doc(
+			{
+				"doctype": "Purchase Receipt", "company": company, "supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [{"item_code": "AE-SMOKE-ITEM", "qty": 2, "rate": 1000,
+				           "asset_location": seed.location}],
+			}
+		)
+		pr_even.flags.ignore_permissions = True
+		pr_even.insert()
+		pr_even.submit()
+		even = frappe.get_all(
+			"Asset", filters={"purchase_receipt": pr_even.name}, pluck="name",
+			order_by="creation, name",
+		)
+		even_pi = frappe.get_doc(
+			{
+				"doctype": "Purchase Invoice", "company": company, "supplier": supplier,
+				"posting_date": nowdate(),
+				"items": [{"item_code": "AE-SMOKE-ITEM", "qty": 2, "rate": 1000,
+				           "purchase_receipt": pr_even.name, "pr_detail": pr_even.items[0].name}],
+				"pi_asset_allocation": [
+					{"asset": even[0], "allocated_amount": 1_300},
+					{"asset": even[1], "allocated_amount": 700},
+				],
+			}
+		)
+		even_pi.flags.ignore_permissions = True
+		try:
+			even_pi.insert()
+			even_pi.submit()
+			submitted = True
+		except Exception as exc:
+			submitted = False
+			print(f"       redistribution refused: {str(exc)[:90]}")
+		hav_first = flt(recalculate_asset_values(even[0], save=False)["historical_asset_value"]) if submitted else 0
+		hav_second = flt(recalculate_asset_values(even[1], save=False)["historical_asset_value"]) if submitted else 0
+		even_ok = (
+			submitted
+			and abs(hav_first - 1_300) < 0.01 and abs(hav_second - 700) < 0.01
+			and abs((hav_first + hav_second) - 2_000) < 0.01   # the total never moved
+			and abs(_arbnb() - arbnb_before) < 0.01            # ARBNB untouched
+		)
+		print(
+			f"pieven redistribution on an invoice with NO difference: submitted={submitted}; "
+			f"HAV {hav_first:,.2f}/{hav_second:,.2f} (want 1,300.00/700.00, total 2,000.00); "
+			f"ARBNB across receipt+invoice {_arbnb() - arbnb_before:+,.2f} (want 0.00) {'OK' if even_ok else 'FAIL'}"
+		)
+		ok = ok and even_ok
+
 		# Re-selection block: second PI covering the same asset.
 		pi2 = frappe.get_doc(
 			{
