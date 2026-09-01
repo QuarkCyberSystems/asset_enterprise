@@ -39,11 +39,17 @@ def daily_rate(depreciable_base, remaining_days):
 
 
 def day_count_365(start_date, end_date):
-	"""§4.3 day-count rule (v2.16 CH-12, finance formula 23/07/2026):
-	inclusive calendar days minus any 29 February in the span — equals
-	months ÷ 12 × 365 for whole-month spans, matching the client xlsx
-	daily-rate DENOMINATOR. Row allocation keeps actual calendar days;
-	the final row absorbs the leap-day difference."""
+	"""The 365-day-year count: inclusive calendar days minus any 29
+	February in the span — equals months ÷ 12 × 365 for whole-month
+	spans.
+
+	SUPERSEDED as the rate denominator on 2026-09-01 (Vivek's decision,
+	amending CH-12): the denominator is now the ACTUAL number of calendar
+	days, so a leap day is priced into every row rather than concentrated
+	in the final one. Kept because the 365-day count is still the figure
+	the client's original FA_Dep_Simulation workbook quotes, and
+	verify_phase10 ch12 pins it as arithmetic.
+	"""
 	start, end = getdate(start_date), getdate(end_date)
 	days = date_diff(end, start) + 1
 	leap_days = 0
@@ -186,13 +192,14 @@ def build_prospective_rows(nbv_base, as_of_date, end_of_life_date, company, firs
 	start = add_days(getdate(as_of_date), 1)
 	end = getdate(end_of_life_date)
 	total_days = date_diff(end, start) + 1
+	# Denominator = the days the asset is actually held (CH-12 amended,
+	# 2026-09-01). Passing no rate_days makes it total_days by default.
 	return build_daily_rate_rows(
 		nbv_base,
 		start,
 		total_days,
 		company,
 		first_posting_date=first_posting_date,
-		rate_days=day_count_365(start, end),
 	)
 
 
@@ -1068,7 +1075,7 @@ def enable_depreciation(
 	rows = build_daily_rate_rows(
 		base, start, total_days, asset.company,
 		first_posting_date=first_posting,
-		rate_days=day_count_365(start, end_of_life),  # §4.3 v2.16 rule
+		# Denominator = actual calendar days (CH-12 amended, 2026-09-01).
 	)
 
 	fb_row = frappe.get_doc(

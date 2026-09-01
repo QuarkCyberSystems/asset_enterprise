@@ -65,9 +65,14 @@ def _run():
 		row_sum = flt(frappe.db.sql(
 			"select sum(depreciation_amount) from `tabDepreciation Schedule` where parent=%s", ads1
 		)[0][0])
-		leap_ok = first and abs(flt(first.daily_rate) - 100.0) < 1e-9 and row_sum == 73_000
+		# CH-12 AMENDED 2026-09-01 (Vivek): the denominator is the actual
+		# days held, so a leap-spanning life prices at 73,000/731 =
+		# 99.863201 rather than the round 73,000/730 = 100.00 the
+		# 365-basis gave. The total is unchanged either way.
+		leap_ok = first and abs(flt(first.daily_rate) - (73_000 / 731)) < 1e-6 and row_sum == 73_000
 		print(
-			f"ch12b  leap-span rate={first and first.daily_rate} (want 100.0) "
+			f"ch12b  leap-span rate={first and first.daily_rate} "
+			f"(want {73_000 / 731:.9f}; the superseded 365-basis gave 100.0) "
 			f"rows-sum={row_sum} (want 73000) {'OK' if leap_ok else 'FAIL'}"
 		)
 		ok = ok and bool(leap_ok)

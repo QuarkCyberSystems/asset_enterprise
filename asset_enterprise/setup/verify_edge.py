@@ -212,20 +212,34 @@ def e07():
 	)
 
 
-@case("E-08", "CH-12 / §4.3", "one daily rate across a leap year — 29 Feb is not in the denominator")
+@case("E-08", "CH-12 as amended 01/09", "a leap day is priced into the rate, not into the last row")
 def e08():
 	company = _company()
-	# A life spanning 29 Feb 2028. day_count_365 excludes the leap day, so
-	# every row must price at the SAME rate; two rates means the calendar
-	# leaked into the denominator.
+	# A life spanning 29 Feb 2028. Since CH-12 was amended the denominator
+	# is the ACTUAL days held, so the leap day is carried by every row at
+	# one uniform rate — and the final row no longer has to absorb it.
+	# Under the superseded 365-basis the rate was higher and the last row
+	# took the whole correction.
 	asset = _asset(company, gross=120_000, months=24, start=get_last_day("2027-06-30"))
 	rows = _rows(asset)
 	rates = {flt(r.daily_rate, 6) for r in rows if flt(r.daily_rate)}
 	spans_leap = any(str(r.schedule_date).startswith("2028-02") for r in rows)
-	ok = spans_leap and len(rates) == 1
+	feb = next((r for r in rows if str(r.schedule_date).startswith("2028-02")), None)
+	# The leap day is CHARGED: February 2028 must carry 29 days, and the
+	# final row must sit within a day's rate of its neighbours rather than
+	# absorbing a whole leap day.
+	rate = flt(sorted(rates)[0]) if rates else 0
+	last, prev = (rows[-1], rows[-2]) if len(rows) > 1 else (None, None)
+	ok = (
+		spans_leap and len(rates) == 1
+		and feb and int(feb.days_in_period or 0) == 29
+		and last and abs(flt(last.depreciation_amount) - flt(prev.depreciation_amount)) <= rate + 0.02
+	)
 	return ok, (
-		f"{len(rows)} rows spanning Feb-2028={spans_leap}; distinct daily rates "
-		f"{sorted(rates)} (want exactly one)"
+		f"{len(rows)} rows spanning Feb-2028={spans_leap}; one rate {sorted(rates)}; "
+		f"Feb-2028 charges {feb and feb.days_in_period}d (want 29); final row "
+		f"{flt(last.depreciation_amount, 2) if last else '-'} vs previous "
+		f"{flt(prev.depreciation_amount, 2) if prev else '-'} (want within one day's rate)"
 	)
 
 

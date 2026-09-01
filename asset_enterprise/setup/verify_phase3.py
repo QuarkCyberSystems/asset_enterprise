@@ -109,21 +109,33 @@ def _run():
 	ok = ok and total == 10_000_000 and len(rows) == 60
 
 	# --------------------------------- TC-016: prospective recalc (upward)
-	# NBV 9,000,000 over remaining 1,460 days -> 6164.383562/day;
-	# 31d = 191,095.89; 28d = 172,602.74.
+	# The client's FA_Dep_Simulation quotes 6,164.383562 — 9,000,000 over
+	# 1,460 days, a 365-day year with 29/02/2020 excluded. That was CH-12,
+	# and this line keeps the figure on the record as arithmetic.
 	prate = daily_rate(9_000_000, 1460)
-	print(f"tc016  prospective rate = {prate:.6f} (want 6164.383562)")
+	print(f"tc016  xlsx rate (CH-12 365-basis) = {prate:.6f} (want 6164.383562)")
 	ok = ok and abs(prate - 6164.383562) < 0.000001
 
-	# v2.16 §4.3 day-count rule: end of life is the REAL calendar end
-	# (31/12/2021); the rate denominator excludes 29/02/2020 → 1,460 —
-	# reproducing the xlsx rate exactly on a leap-containing span.
+	# CH-12 AMENDED 2026-09-01 (Vivek's decision): the denominator is the
+	# ACTUAL calendar days held, so the leap day is priced into every row
+	# instead of landing on the final one. The span 01/01/2018-31/12/2021
+	# contains 29/02/2020, so it is 1,461 days, not 1,460:
+	#
+	#     9,000,000 / 1,461 = 6,160.164271/day
+	#     31d = 190,965.09   (the xlsx, on the old basis, said 191,095.89)
+	#     28d = 172,484.60   (the xlsx said 172,602.74)
+	#
+	# The DIFFERENCE FROM THE CLIENT WORKBOOK IS DELIBERATE and recorded
+	# in the design's CH-12 note. Both bases still total 9,000,000 exactly
+	# — §4.10 absorption sees to that; only the distribution moves.
 	prows = build_prospective_rows(9_000_000, "2017-12-31", "2021-12-31", company)
 	pjan, pfeb = prows[0], prows[1]
-	m1 = pjan["amount"] == 191_095.89 and pjan["days_in_period"] == 31
-	m2 = pfeb["amount"] == 172_602.74 and pfeb["days_in_period"] == 28
-	print(f"tc016  Jan 2018: {pjan['amount']} ({pjan['days_in_period']}d) want 191095.89/31d {'OK' if m1 else 'FAIL'}")
-	print(f"tc016  Feb 2018: {pfeb['amount']} ({pfeb['days_in_period']}d) want 172602.74/28d {'OK' if m2 else 'FAIL'}")
+	m1 = pjan["amount"] == 190_965.09 and pjan["days_in_period"] == 31
+	m2 = pfeb["amount"] == 172_484.60 and pfeb["days_in_period"] == 28
+	print(f"tc016  Jan 2018: {pjan['amount']} ({pjan['days_in_period']}d) want 190965.09/31d "
+	      f"[xlsx on the superseded basis: 191095.89] {'OK' if m1 else 'FAIL'}")
+	print(f"tc016  Feb 2018: {pfeb['amount']} ({pfeb['days_in_period']}d) want 172484.60/28d "
+	      f"[xlsx: 172602.74] {'OK' if m2 else 'FAIL'}")
 	ptotal = flt(sum(r["amount"] for r in prows), 2)
 	print(f"tc016  prospective sum = {ptotal} (want 9,000,000 exactly) {'OK' if ptotal == 9_000_000 else 'FAIL'}")
 	ok = ok and m1 and m2 and ptotal == 9_000_000

@@ -1146,17 +1146,20 @@ def _run():
 		accum = flt(sum(flt(r.depreciation_amount) for r in t9_rows), 2)
 		t9_ok = (
 			jul and aug
-			and flt(jul.depreciation_amount, 2) == 920.09
-			and flt(aug.depreciation_amount, 2) == 504.57
+			# CH-12 amended 01/09 — actual-day denominator. The client's
+			# original example, on the superseded 365-basis, read
+			# 920.09 / 504.57 / accum 4,333.33 / NBV 28,166.67.
+			and flt(jul.depreciation_amount, 2) == 919.25
+			and flt(aug.depreciation_amount, 2) == 504.11
 			and flt(aug.days_in_period) == 17
 			and jul.journal_entry and aug.journal_entry
-			and accum == 4_333.33
+			and accum == 4_329.38   # 365-basis: 4,333.33
 			and not [r for r in t9_rows if getdate(r.schedule_date) > getdate("2026-08-17")]
 		)
 		print(
-			f"t9     client CM example: Jul={jul and flt(jul.depreciation_amount, 2)} (want 920.09) "
+			f"t9     client CM example: Jul={jul and flt(jul.depreciation_amount, 2)} (want 919.25; 365-basis was 920.09) "
 			f"Aug17={aug and flt(aug.depreciation_amount, 2)} over "
-			f"{aug and aug.days_in_period}d (want 504.57/17), both posted="
+			f"{aug and aug.days_in_period}d (want 504.11/17), both posted="
 			f"{bool(jul and jul.journal_entry and aug and aug.journal_entry)}, accum={accum:,.2f} "
 			f"(want 4,333.33), transferred NBV={flt(32_500 - accum, 2):,.2f} (want 28,166.67) "
 			f"{'OK' if t9_ok else 'FAIL'}"
@@ -1220,20 +1223,23 @@ def _run():
 		t10_status = frappe.db.get_value("Asset", t10.name, "status")
 		t10_ok = (
 			jul and aug and sep
-			and flt(jul.depreciation_amount, 2) == 2_123.29
-			and flt(jul.daily_rate, 6) == 68.493151
+			# CH-12 amended 01/09 — actual-day denominator throughout.
+			# On the superseded 365-basis: 2,123.29 @68.493151, Aug
+			# 2,400.78, Sep 2,695.15, post-event NBV 154,643.85.
+			and flt(jul.depreciation_amount, 2) == 2_122.12
+			and flt(jul.daily_rate, 6) == 68.455641
 			and cint(aug.days_in_period) == 31
-			and flt(aug.depreciation_amount, 2) == 2_400.78
-			and flt(sep.depreciation_amount, 2) == 2_695.15
-			and future_sum == 154_643.85  # the post-event NBV, already net of posted
-			and flt(t10_counter, 2) == 154_643.85
+			and flt(aug.depreciation_amount, 2) == 2_399.45
+			and flt(sep.depreciation_amount, 2) == 2_693.64
+			and future_sum == 154_647.29  # the post-event NBV, already net of posted
+			and flt(t10_counter, 2) == 154_647.29
 			and t10_status == "Partially Depreciated"
 		)
 		print(
 			f"t10    rate change only after its date: Jul={jul and flt(jul.depreciation_amount, 2)} "
-			f"@{jul and flt(jul.daily_rate, 6)} (want 2,123.29 @68.493151 UNCHANGED), "
+			f"@{jul and flt(jul.daily_rate, 6)} (want 2,122.12 @68.455641 UNCHANGED), "
 			f"Aug={aug and flt(aug.depreciation_amount, 2)}/{aug and aug.days_in_period}d "
-			f"(want 2,400.78/31 split at 18/08), Sep={sep and flt(sep.depreciation_amount, 2)} "
+			f"(want 2,399.45/31 split at 18/08), Sep={sep and flt(sep.depreciation_amount, 2)} "
 			f"(want 2,695.15 new rate), future-sum={future_sum:,.2f} (want 154,643.85), "
 			f"core counter={t10_counter:,.2f} (want =NBV) status={t10_status} "
 			f"(want Partially Depreciated) {'OK' if t10_ok else 'FAIL'}"

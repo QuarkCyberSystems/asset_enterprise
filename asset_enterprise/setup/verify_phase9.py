@@ -199,7 +199,16 @@ def _run():
 			pr_asset.name, as_dict=True,
 		)
 		gross = flt(pr_asset.net_purchase_amount)
-		daily = gross / (24 / 12 * 365)  # §4.3 day-count rule
+		# CH-12 AMENDED 2026-09-01: the denominator is the ACTUAL days the
+		# asset is held, so the expectation is derived from the schedule's
+		# own span rather than from months/12*365.
+		horizon = frappe.db.sql(
+			"""select max(coalesce(ds.period_end_date, ds.schedule_date))
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1""",
+			pr_asset.name)[0][0]
+		daily = gross / (frappe.utils.date_diff(horizon, receiving_date) + 1)
 		expected_days = (
 			frappe.utils.date_diff(first[0].schedule_date, receiving_date) + 1
 		) if first else 0

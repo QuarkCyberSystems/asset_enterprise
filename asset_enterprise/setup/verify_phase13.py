@@ -214,13 +214,20 @@ def _run():
 		# last day (§4.6), so a schedule starting three months ago has the
 		# current month due as well. Each must carry its own entry — core's
 		# row-guessing used to hand two rows the same one.
+		# Money summed out of the ledger carries float noise — the GL delta
+		# came back as -12183.319999999832 against a posted 12183.32 — so
+		# these compare to the cent, never with ==. Exact equality only
+		# held before because the old rate produced rounder numbers.
+		def same(a, b):
+			return abs(flt(a) - flt(b)) < 0.01
+
 		s2_ok = (
 			len(jes) == 4 and len(set(jes)) == 4 and posted_sum > 0
-			and d_ac == -posted_sum and d_ex == posted_sum and cc_rows == 4
-			and flt(vals["accumulated_depreciation_value"]) == posted_sum
-			and gl_asset_sum(accum, c1.name) == -posted_sum
-			and reg and flt(reg["depreciated_amount"]) == posted_sum
-			and flt(reg["asset_value"]) == flt(73_000 - posted_sum)
+			and same(d_ac, -posted_sum) and same(d_ex, posted_sum) and cc_rows == 4
+			and same(vals["accumulated_depreciation_value"], posted_sum)
+			and same(gl_asset_sum(accum, c1.name), -posted_sum)
+			and reg and same(reg["depreciated_amount"], posted_sum)
+			and same(reg["asset_value"], 73_000 - posted_sum)
 			and rec and rec["flagged"] == "No"
 		)
 		print(
@@ -248,14 +255,21 @@ def _run():
 			   order by ds.schedule_date""", lp.name, as_dict=True)
 		rates = {round(flt(r.daily_rate), 4) for r in lp_rows if flt(r.daily_rate)}
 		lp_total = sum(flt(r.depreciation_amount) for r in lp_rows)
+		# CH-12 AMENDED 2026-09-01 (Vivek): the denominator is the ACTUAL
+		# days held, so a life spanning 29 February prices at 240,000/731,
+		# not the 365-basis 240,000/730. Still one rate for the whole
+		# schedule, and still 240,000 in total — the leap day is now
+		# carried by every row instead of by the last one.
+		leap_days = len(lp_rows) and 731
 		s2b_ok = (
 			len(rates) == 1
-			and abs(list(rates)[0] - 240_000 / 730) < 0.01   # months/12*365
-            and abs(lp_total - 240_000) <= 0.05
+			and abs(list(rates)[0] - 240_000 / 731) < 0.01
+			and abs(lp_total - 240_000) <= 0.05
 		)
 		print(
 			f"s2b leap-year rate | distinct daily rates={rates} (want ONE = "
-			f"{240_000/730:.4f}) schedule total={lp_total:,.2f} {'OK' if s2b_ok else 'FAIL'}"
+			f"{240_000/731:.4f}; superseded 365-basis: {240_000/730:.4f}) "
+			f"schedule total={lp_total:,.2f} {'OK' if s2b_ok else 'FAIL'}"
 		)
 		ok = ok and bool(s2b_ok)
 
