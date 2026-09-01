@@ -363,6 +363,69 @@ def e16():
 	)
 
 
+@case("E-17", "client workbook 01/09", "the FORM path gives an existing asset the same schedule")
+def e17():
+	"""E-16 enables depreciation through the API. The client fills the
+	depreciation details on the asset itself, so core builds the schedule
+	at submit and our §4.3 rebuild replaces it — a different path, and
+	the one ACC-ASS-2026-00248 came through.
+
+	It also pins a data-entry requirement: v16 replaced `is_existing_asset`
+	with `asset_type`, and core WIPES the opening values unless it reads
+	"Existing Asset" (asset.py validate_depreciation_row). Without it the
+	asset depreciates its full cost — 3,000 instead of 2,000.
+	"""
+	import calendar
+
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+	seed = make_test_asset(company, gross=3_000, submit=False)
+	asset = frappe.get_doc({
+		"doctype": "Asset", "company": company, "item_code": seed.item_code,
+		"asset_name": "AE Smoke Existing Form Path", "asset_category": seed.asset_category,
+		"location": seed.location, "net_purchase_amount": 3_000,
+		"asset_type": "Existing Asset",
+		"purchase_date": "2025-01-01", "available_for_use_date": "2025-01-01",
+		"opening_accumulated_depreciation": 1_000,
+		"opening_number_of_booked_depreciations": 12,
+		"calculate_depreciation": 1,
+		"finance_books": [{
+			"depreciation_method": "Straight Line",
+			"total_number_of_depreciations": 36, "frequency_of_depreciation": 1,
+			"depreciation_start_date": "2026-01-31", "expected_value_after_useful_life": 0,
+		}],
+	})
+	asset.flags.ignore_permissions = True
+	asset.insert()
+	asset.submit()
+
+	rows = _rows(asset.name)
+	rate = 2_000 / 730.0
+	expected, d = [], getdate("2026-01-31")
+	for _i in range(24):
+		days = calendar.monthrange(d.year, d.month)[1]
+		expected.append(flt(days * rate, 2))
+		n = getdate(f"{d.year + (d.month // 12)}-{(d.month % 12) + 1:02d}-01")
+		d = getdate(f"{n.year}-{n.month:02d}-{calendar.monthrange(n.year, n.month)[1]}")
+
+	kept = flt(frappe.db.get_value("Asset", asset.name, "opening_accumulated_depreciation"))
+	total = flt(sum(flt(r.depreciation_amount) for r in rows), 2)
+	ok = (
+		abs(kept - 1_000) < 0.01                    # core did not wipe them
+		and len(rows) == 24
+		and int(rows[0].days_in_period or 0) == 31  # no catch-up for booked time
+		and all(abs(flt(rows[i].depreciation_amount) - expected[i]) < 0.01 for i in range(23))
+		and abs(total - 2_000) < 0.01               # NBV, not the full cost
+	)
+	return ok, (
+		f"opening kept {kept:,.2f} (want 1,000); {len(rows)} rows, first "
+		f"{rows[0].days_in_period if rows else '-'}d "
+		f"{flt(rows[0].depreciation_amount, 2) if rows else '-'} (want 31d 84.93); "
+		f"total {total:,.2f} (want 2,000.00, NOT the 3,000 cost)"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 
