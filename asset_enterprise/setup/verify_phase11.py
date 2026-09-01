@@ -1310,16 +1310,26 @@ def _run():
 		from asset_enterprise import disposal as t_disposal
 		from asset_enterprise.depreciation import post_schedule_entries as t_post
 
+		# The scrap month, and everything anchored to it. Core refuses a
+		# FUTURE scrap date and also refuses one BEFORE the last posted
+		# row, so the fixture has to move as a whole: post through the end
+		# of the month before the scrap, then scrap on its 15th. Anchoring
+		# the scrap to this month while posting through last month only
+		# worked from the 15th onwards — before that the suite aborted
+		# outright (found 01/09).
+		scrap_month = nowdate() if getdate(nowdate()).day >= 15 else add_months(nowdate(), -1)
+		mid_month = str(add_days(get_first_day(scrap_month), 14))
+
 		def _mk_posted(gross):
 			x = make_test_asset(company, gross=gross, submit=True)
-			start = get_first_day(add_months(nowdate(), -4))
+			start = get_first_day(add_months(scrap_month, -4))
 			enable_depreciation(
 				x.name, total_number_of_depreciations=36,
 				available_for_use_date=str(start), depreciation_start_date=str(start),
 			)
 			sched = frappe.db.get_value("Asset Depreciation Schedule",
 				{"asset": x.name, "status": "Active", "docstatus": 1}, "name")
-			t_post(sched, str(add_days(get_first_day(nowdate()), -1)))
+			t_post(sched, str(add_days(get_first_day(scrap_month), -1)))
 			return x
 
 		def _future(asset_name):
@@ -1330,8 +1340,6 @@ def _run():
 				where ads.asset = %s and ads.status='Active' and ads.docstatus=1
 				  and ifnull(ds.journal_entry,'') = ''
 				order by ds.schedule_date""", asset_name, as_dict=True)
-
-		mid_month = str(add_days(get_first_day(nowdate()), 14))
 
 		# T12: mid-month partial scrap — the event month stays one full row.
 		p1 = _mk_posted(36_000)
@@ -1370,10 +1378,16 @@ def _run():
 		ok = ok and t12b_ok
 
 		# T13: Path 1 restore — the schedule must come back ALIVE.
+		# It needs its OWN asset: the same-period gate only lets a restore
+		# undo a disposal in the CURRENT period, and p2 above was scrapped
+		# mid-month, which is last month for the first fortnight. Scrapped
+		# today so the restore is always in-period.
 		from asset_enterprise.restore import restore_asset as t_restore
 
-		t_restore(p2.name)
-		f2_rows = _future(p2.name)
+		p3 = _mk_posted(24_000)
+		t_disposal.scrap_asset(p3.name, scrap_date=nowdate(), scrapping_type="Damage")
+		t_restore(p3.name)
+		f2_rows = _future(p3.name)
 		t13_ok = bool(f2_rows) and getdate(f2_rows[-1].schedule_date) > getdate(nowdate())
 		print(f"t13    path-1 restore: {len(f2_rows)} future rows, horizon "
 		      f"{f2_rows and f2_rows[-1].schedule_date} (want a live schedule) "

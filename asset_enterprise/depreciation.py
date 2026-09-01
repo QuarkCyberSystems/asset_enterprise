@@ -55,6 +55,38 @@ def day_count_365(start_date, end_date):
 	return days - leap_days
 
 
+def opening_booked_days(asset):
+	"""Days the opening accumulated depreciation has ALREADY paid for.
+
+	An existing asset arrives mid-life: `opening_accumulated_depreciation`
+	covers `opening_number_of_booked_depreciations` periods that were
+	charged before it reached this system. Charging must resume AFTER
+	them, and the remaining NBV must spread over the days that are LEFT
+	— not over the whole life, with a §4.5 catch-up for time the opening
+	balance already covered.
+
+	The formula is the client's own (workbook "Existing Asset
+	Depreciation Calculation", 2026-09-01): booked months ÷ 12 × 365 —
+	the same 365-day-year basis §4.3 uses for the rate denominator, so
+	the two are measured in the same unit.
+
+	§4.4 and §4.5 are silent on this: the catch-up rule assumes nothing
+	has been booked yet, which is true of a new asset and false of an
+	existing one. Until 2026-09-01 the engine spread 2,000 of NBV over a
+	1,095-day life at 1.826484/day and opened with a 396-day catch-up
+	row, where the client expects 730 days at 2.739726 and a 31-day
+	first row.
+	"""
+	booked = cint(asset.get("opening_number_of_booked_depreciations"))
+	if not booked or not flt(asset.get("opening_accumulated_depreciation")):
+		return 0
+	fb = frappe.db.get_value(
+		"Asset Finance Book", {"parent": asset.name}, "frequency_of_depreciation"
+	)
+	months = booked * (cint(fb) or 1)
+	return int(round(months / 12 * 365))
+
+
 def build_daily_rate_rows(
 	depreciable_base,
 	start_date,
@@ -647,7 +679,7 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 	asset = frappe.get_doc("Asset", asset_name)
 	# nothing posted -> regenerate from the start basis itself
 	as_of = getdate(last_posted) if last_posted else add_days(
-		getdate(asset.available_for_use_date), -1
+		add_days(getdate(asset.available_for_use_date), opening_booked_days(asset)), -1
 	)
 	if getdate(end_of_life) <= as_of:
 		return None
@@ -663,7 +695,7 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 		fb_start = frappe.db.get_value(
 			"Asset Finance Book", fb_filters, "depreciation_start_date"
 		)
-		basis = getdate(asset.available_for_use_date)
+		basis = add_days(getdate(asset.available_for_use_date), opening_booked_days(asset))
 		if fb_start and getdate(fb_start) > get_last_day(basis):
 			first_posting = getdate(fb_start)
 
@@ -1001,6 +1033,14 @@ def enable_depreciation(
 	if first_posting and first_posting < life_anchor:
 		life_anchor = first_posting
 	basis = getdate(depreciation_basis_date) if depreciation_basis_date else life_anchor
+	# An EXISTING asset resumes charging after the periods its opening
+	# balance already paid for (see opening_booked_days). An explicit
+	# depreciation_basis_date still wins — the reclassification path sets
+	# it deliberately.
+	if not depreciation_basis_date:
+		booked_days = opening_booked_days(asset)
+		if booked_days:
+			basis = add_days(life_anchor, booked_days)
 	if first_posting and first_posting < basis:
 		basis = first_posting
 	start = basis

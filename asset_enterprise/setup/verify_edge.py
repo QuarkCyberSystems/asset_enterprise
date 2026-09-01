@@ -303,6 +303,66 @@ def e15():
 	)
 
 
+# ============================== the client's own reference workbook (2026-09-01)
+# "Existing Asset Depreciation Calculation.xlsx", keyed to
+# ACC-ASS-2026-00248. Their formulas, reproduced here so a regression
+# shows up as a diff against THEIR arithmetic and not against ours:
+#
+#   booked days   = 12/12 x 365 =   365      NBV        = 3,000 - 1,000 = 2,000
+#   total days    = 36/12 x 365 = 1,095      remaining  = 1,095 - 365   =   730
+#   rate          = 2,000 / 730 = 2.739726 per day
+#   row amount    = DAY(EOMONTH) x rate      24 rows, 2026-01-31 .. 2027-12-31
+
+
+@case("E-16", "client workbook 01/09", "an existing asset resumes over its REMAINING life")
+def e16():
+	import calendar
+
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+	asset = make_test_asset(company, gross=3_000, submit=False)
+	asset.available_for_use_date = "2025-01-01"
+	asset.purchase_date = "2025-01-01"
+	asset.opening_accumulated_depreciation = 1_000
+	asset.opening_number_of_booked_depreciations = 12
+	asset.flags.ignore_permissions = True
+	asset.save()
+	asset.submit()
+
+	from asset_enterprise.depreciation import enable_depreciation
+
+	enable_depreciation(
+		asset.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+		depreciation_start_date="2026-01-31",
+	)
+	rows = _rows(asset.name)
+
+	rate = 2_000 / 730.0
+	expected, d = [], getdate("2026-01-31")
+	for _i in range(24):
+		days = calendar.monthrange(d.year, d.month)[1]
+		expected.append((d, days, flt(days * rate, 2)))
+		nxt = getdate(f"{d.year + (d.month // 12)}-{(d.month % 12) + 1:02d}-01")
+		d = getdate(f"{nxt.year}-{nxt.month:02d}-{calendar.monthrange(nxt.year, nxt.month)[1]}")
+
+	first_ok = bool(rows) and int(rows[0].days_in_period or 0) == 31
+	rate_ok = bool(rows) and abs(flt(rows[0].daily_rate) - rate) < 0.000001
+	# every row but the last, which absorbs §4.10 drift
+	body_ok = len(rows) == 24 and all(
+		abs(flt(rows[i].depreciation_amount) - expected[i][2]) < 0.01 for i in range(23)
+	)
+	total_ok = abs(flt(sum(flt(r.depreciation_amount) for r in rows), 2) - 2_000) < 0.01
+	ok = first_ok and rate_ok and body_ok and total_ok
+	return ok, (
+		f"{len(rows)} rows (want 24); rate {flt(rows[0].daily_rate, 6) if rows else '-'} "
+		f"(want {rate:.6f}); first row {rows[0].days_in_period if rows else '-'}d "
+		f"{flt(rows[0].depreciation_amount, 2) if rows else '-'} (want 31d "
+		f"{expected[0][2]:,.2f}); rows match workbook={body_ok}; total "
+		f"{flt(sum(flt(r.depreciation_amount) for r in rows), 2):,.2f} (want 2,000.00)"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

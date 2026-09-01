@@ -290,9 +290,16 @@ def _run():
 		period_start = get_first_day(nowdate())
 		period_end = get_last_day(nowdate())
 		split = cost_centre_split(a1.name, period_start, period_end, 3100.0, company)
+		# The transfer is dated today. On the 1st that IS the period start,
+		# so there is no "before" inside the period and the old assertion
+		# contradicted the calendar — this suite went red every 1st of the
+		# month. Same family as the phase-10 ch08 bug: date-relative
+		# fixtures must be anchored to EACH OTHER, not to nowdate()
+		# independently.
+		before_move = period_start if day > 1 else add_days(period_start, -1)
 		g21_ok = (
 			# before the transfer date the OLD centre holds it
-			cost_centre_on(a1.name, period_start) == prior_cc
+			cost_centre_on(a1.name, before_move) == prior_cc
 			and cost_centre_on(a1.name, period_end) == cc2
 			and (len(split) == 2 if day > 1 else len(split) == 1)
 			and {cc for cc, _amt in split} <= {prior_cc, cc2}
