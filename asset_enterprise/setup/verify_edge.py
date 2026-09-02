@@ -510,6 +510,60 @@ def e18():
 	)
 
 
+@case("E-19", "client 02/09", "an existing asset whose BOOKED period spans a leap day")
+def e19():
+	"""ACC-ASS-2026-00272 — "in normal cases okay, but in existing asset
+	not".
+
+	Cost 3,000, opening 2,000, 24 of 36 booked, in service 2024-01-01.
+	The booked period 2024-01-01..2025-12-31 CONTAINS 29 Feb 2024, so it
+	is 731 days, not the 730 that months/12*365 gives. A day short means
+	charging resumes 2025-12-31, the first row covers 32 days instead of
+	31, and the remaining span is 366 days instead of 365.
+
+	Expected, from the client's own arithmetic: resume 2026-01-01,
+	NBV 1,000 over 365 days = 2.739726027/day, first row 31d = 84.93.
+	"""
+	company = _company()
+	for y in range(2024, 2028):
+		if not frappe.db.exists("Fiscal Year", {"year_start_date": f"{y}-01-01"}):
+			frappe.get_doc({
+				"doctype": "Fiscal Year", "year": f"AE Edge {y}",
+				"year_start_date": f"{y}-01-01", "year_end_date": f"{y}-12-31",
+			}).insert(ignore_permissions=True, ignore_if_duplicate=True)
+
+	from asset_enterprise.depreciation import enable_depreciation
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	asset = make_test_asset(company, gross=3_000, submit=False)
+	asset.purchase_date = asset.available_for_use_date = "2024-01-01"
+	asset.opening_accumulated_depreciation = 2_000
+	asset.opening_number_of_booked_depreciations = 24
+	asset.flags.ignore_permissions = True
+	asset.save()
+	asset.submit()
+	enable_depreciation(asset.name, total_number_of_depreciations=36,
+		frequency_of_depreciation=1, depreciation_start_date="2026-01-01")
+	rows = _rows(asset.name)
+
+	first = rows[0] if rows else None
+	ok = (
+		first
+		and int(first.days_in_period or 0) == 31
+		and abs(flt(first.daily_rate) - 1_000 / 365) < 0.000001
+		and abs(flt(first.depreciation_amount) - flt(31 * 1_000 / 365, 2)) < 0.01
+		and abs(flt(sum(flt(r.depreciation_amount) for r in rows), 2) - 1_000) < 0.01
+	)
+	return ok, (
+		f"first row {first and first.schedule_date} covers "
+		f"{first and first.days_in_period}d (want 31, NOT 32) at "
+		f"{flt(first.daily_rate, 9) if first else '-'} (want {1_000/365:.9f}, "
+		f"NOT the 366-day 2.732240437); amount "
+		f"{flt(first.depreciation_amount, 2) if first else '-'} (want 84.93, not 87.43); "
+		f"total {flt(sum(flt(r.depreciation_amount) for r in rows), 2):,.2f} (want 1,000.00)"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

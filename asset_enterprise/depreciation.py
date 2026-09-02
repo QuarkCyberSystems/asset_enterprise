@@ -90,7 +90,16 @@ def opening_booked_days(asset):
 		"Asset Finance Book", {"parent": asset.name}, "frequency_of_depreciation"
 	)
 	months = booked * (cint(fb) or 1)
-	return int(round(months / 12 * 365))
+	afu = getdate(asset.get("available_for_use_date"))
+	if not afu:
+		return int(round(months / 12 * 365))
+	# The booked period is measured the same way the rate denominator is
+	# (CH-12 as amended): real dates, so a 29 February inside it counts.
+	# months/12*365 was one day short whenever it did — the client's
+	# ACC-ASS-2026-00272 resumed on 2025-12-31 instead of 2026-01-01 and
+	# opened with a 32-day row (client, 02/09: "in normal cases okay, but
+	# in existing asset not").
+	return date_diff(add_months(afu, months), afu)
 
 
 def build_daily_rate_rows(
