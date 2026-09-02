@@ -24,7 +24,7 @@ rolled back, so a failure never poisons the next one.
 import traceback
 
 import frappe
-from frappe.utils import add_days, add_months, flt, get_first_day, get_last_day, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, flt, get_first_day, get_last_day, getdate, nowdate
 
 CASES = []
 
@@ -229,17 +229,23 @@ def e08():
 	# final row must sit within a day's rate of its neighbours rather than
 	# absorbing a whole leap day.
 	rate = flt(sorted(rates)[0]) if rates else 0
-	last, prev = (rows[-1], rows[-2]) if len(rows) > 1 else (None, None)
+	last = rows[-1] if rows else None
+	# The final row must be worth its OWN days and nothing more — that is
+	# what "the leap day is in the rate, not in the last row" means. It is
+	# also date-independent: comparing the last row to its neighbour broke
+	# the moment the calendar produced a one-day terminal stub.
+	priced = flt(rate * cint(last.days_in_period), 2) if last else 0
 	ok = (
 		spans_leap and len(rates) == 1
 		and feb and int(feb.days_in_period or 0) == 29
-		and last and abs(flt(last.depreciation_amount) - flt(prev.depreciation_amount)) <= rate + 0.02
+		and last and abs(flt(last.depreciation_amount) - priced) <= 0.02
 	)
 	return ok, (
 		f"{len(rows)} rows spanning Feb-2028={spans_leap}; one rate {sorted(rates)}; "
 		f"Feb-2028 charges {feb and feb.days_in_period}d (want 29); final row "
-		f"{flt(last.depreciation_amount, 2) if last else '-'} vs previous "
-		f"{flt(prev.depreciation_amount, 2) if prev else '-'} (want within one day's rate)"
+		f"{flt(last.depreciation_amount, 2) if last else '-'} over "
+		f"{last.days_in_period if last else '-'}d, priced at {priced:,.2f} "
+		f"(want them equal — no leap day absorbed)"
 	)
 
 
@@ -437,6 +443,70 @@ def e17():
 		f"{rows[0].days_in_period if rows else '-'}d "
 		f"{flt(rows[0].depreciation_amount, 2) if rows else '-'} (want 31d 84.93); "
 		f"total {total:,.2f} (want 2,000.00, NOT the 3,000 cost)"
+	)
+
+
+@case("E-18", "client workbook 02/09", "a leap-spanning life prices at the client's own rate")
+def e18():
+	"""ACC-ASS-2026-00263 — the client's second workbook, and their answer
+	to the leap-year question.
+
+	Their cell B5 reads `= B3*365 + 1`: three years of 365 days PLUS the
+	leap day, i.e. 1,096 — the ACTUAL calendar days. Their rate is
+	3,000/1,096 = 2.737226277, not the 3,000/1,095 = 2.739726027 the
+	signed CH-12 basis would give. They wrote the amendment themselves.
+	"""
+	import calendar
+
+	company = _company()
+	for y in range(2024, 2028):
+		if not frappe.db.exists("Fiscal Year", {"year_start_date": f"{y}-01-01"}):
+			frappe.get_doc({
+				"doctype": "Fiscal Year", "year": f"AE Edge {y}",
+				"year_start_date": f"{y}-01-01", "year_end_date": f"{y}-12-31",
+			}).insert(ignore_permissions=True, ignore_if_duplicate=True)
+
+	from asset_enterprise.depreciation import enable_depreciation
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	asset = make_test_asset(company, gross=3_000, submit=False)
+	asset.purchase_date = asset.available_for_use_date = "2024-01-01"
+	asset.flags.ignore_permissions = True
+	asset.save()
+	asset.submit()
+	enable_depreciation(asset.name, total_number_of_depreciations=36,
+		frequency_of_depreciation=1, depreciation_start_date="2024-01-31")
+	rows = _rows(asset.name)
+
+	def eomonth(d, add):
+		y, m = d.year + (d.month - 1 + add) // 12, (d.month - 1 + add) % 12 + 1
+		return getdate(f"{y}-{m:02d}-{calendar.monthrange(y, m)[1]}")
+
+	rate = 3_000 / (3 * 365 + 1)          # their B5/B6, verbatim
+	expected, frm = [], getdate("2024-01-01")
+	for i in range(36):
+		to = eomonth(frm, 0 if i == 0 else 1)
+		days = (to - frm).days + (1 if i == 0 else 0)
+		expected.append(flt(days * rate, 2))
+		frm = to
+
+	feb = next((r for r in rows if str(r.schedule_date) == "2024-02-29"), None)
+	ok = (
+		len(rows) == 36
+		and abs(flt(rows[0].daily_rate) - rate) < 0.000001
+		and feb and int(feb.days_in_period or 0) == 29
+		# every row but the last, which absorbs §4.10 drift their sheet leaves open
+		and all(abs(flt(rows[i].depreciation_amount) - expected[i]) < 0.01 for i in range(35))
+		and abs(flt(sum(flt(r.depreciation_amount) for r in rows), 2) - 3_000) < 0.01
+	)
+	return ok, (
+		f"rate {flt(rows[0].daily_rate, 9) if rows else '-'} (their 3,000/1,096 = "
+		f"{rate:.9f}; signed CH-12 basis would be {3_000/1_095:.9f}); 29-Feb-2024 charges "
+		f"{feb and feb.days_in_period}d = {flt(feb.depreciation_amount, 2) if feb else '-'} "
+		f"(their sheet 79.38); rows matching their sheet="
+		f"{sum(1 for i in range(35) if abs(flt(rows[i].depreciation_amount) - expected[i]) < 0.01)}/35; "
+		f"total {flt(sum(flt(r.depreciation_amount) for r in rows), 2):,.2f} (their per-row rounding "
+		f"leaves {sum(expected):,.2f})"
 	)
 
 
