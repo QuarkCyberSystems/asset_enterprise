@@ -24,7 +24,7 @@ rolled back, so a failure never poisons the next one.
 import traceback
 
 import frappe
-from frappe.utils import add_days, add_months, cint, flt, get_first_day, get_last_day, getdate, nowdate
+from frappe.utils import add_days, add_months, cint, date_diff, flt, get_first_day, get_last_day, getdate, nowdate
 
 CASES = []
 
@@ -561,6 +561,77 @@ def e19():
 		f"NOT the 366-day 2.732240437); amount "
 		f"{flt(first.depreciation_amount, 2) if first else '-'} (want 84.93, not 87.43); "
 		f"total {flt(sum(flt(r.depreciation_amount) for r in rows), 2):,.2f} (want 1,000.00)"
+	)
+
+
+@case("E-20", "client workbook 02/09", "the transfer day belongs to the OLD cost centre")
+def e20():
+	"""Belal's "Cost Center Transfer" workbook: 3,000 over 36 months at
+	2.739726/day, moved from CC#1 to CC#2 on 13 July 2026.
+
+	    01-13 July  13 days  35.616438  CC#1
+	    14-31 July  18 days  49.315068  CC#2
+	                31 days  84.931507  = one full month, one entry
+
+	§GAP-021 says "days before" and "days after" the transfer, which
+	leaves the transfer day in neither bucket — 30 of July's 31 days. The
+	client's sheet settles it: the day of transfer stays with the centre
+	giving the asset up.
+	"""
+	company = _company()
+	ccs = frappe.get_all(
+		"Cost Center", filters={"company": company, "is_group": 0}, limit=2, pluck="name"
+	)
+	if len(ccs) < 2:
+		return False, "need two cost centres in this company"
+	old_cc, new_cc = ccs
+
+	from asset_enterprise.depreciation import cost_centre_on, cost_centre_split
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	asset = make_test_asset(company, gross=3_000, submit=True)
+	frappe.db.set_value("Asset", asset.name, "cost_center", old_cc, update_modified=False)
+	# The fixture's own receipt movement lands today, so the transfer has
+	# to be dated on or after it — the 13th of a month at least a month out.
+	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
+	locations = frappe.get_all("Location", limit=2, pluck="name")
+	move = frappe.get_doc({
+		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+		"transaction_date": str(transfer),
+		"assets": [{
+			"asset": asset.name, "source_cost_center": old_cc, "target_cost_center": new_cc,
+			"source_location": frappe.db.get_value("Asset", asset.name, "location"),
+			"target_location": locations[-1],
+		}],
+	})
+	move.flags.ignore_permissions = True
+	move.insert()
+	move.submit()
+
+	period_start = get_first_day(transfer)
+	period_end = get_last_day(transfer)
+	days_in_month = cint(date_diff(period_end, period_start)) + 1
+	charge = 84.931506849
+	split = cost_centre_split(asset.name, period_start, period_end, charge, company)
+	by_cc = {cc: flt(amt) for cc, amt in split}
+	per_day = charge / days_in_month
+	old_days = round(by_cc.get(old_cc, 0) / per_day) if by_cc.get(old_cc) else 0
+	new_days = round(by_cc.get(new_cc, 0) / per_day) if by_cc.get(new_cc) else 0
+
+	ok = (
+		len(split) == 2
+		and old_days == 13                                   # 1..13 inclusive
+		and new_days == days_in_month - 13
+		and cost_centre_on(asset.name, transfer) == old_cc   # the day itself
+		and cost_centre_on(asset.name, add_days(transfer, 1)) == new_cc
+		and abs(sum(by_cc.values()) - charge) < 0.01         # still one month
+	)
+	return ok, (
+		f"transfer {transfer} in a {days_in_month}-day month: OLD {old_days}d "
+		f"{by_cc.get(old_cc, 0):,.2f} / NEW {new_days}d {by_cc.get(new_cc, 0):,.2f} "
+		f"(want 13 / {days_in_month - 13}); the transfer day belongs to "
+		f"{'OLD' if cost_centre_on(asset.name, transfer) == old_cc else 'NEW'} (want OLD); "
+		f"segments sum {sum(by_cc.values()):,.2f} (want {charge:,.2f})"
 	)
 
 

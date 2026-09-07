@@ -1736,16 +1736,28 @@ def _run():
 		mv11.flags.ignore_permissions = True
 		mv11.insert()
 		mv11.submit()
-		imp2 = frappe.get_doc({
-			"doctype": "Asset Value Adjustment", "asset": v3.name, "company": company,
-			"date": nowdate(), "transaction_type": "Initial Impairment",
-			"current_asset_value": 30_000, "new_asset_value": 28_000})
-		imp2.flags.ignore_permissions = True
-		imp2.insert()
-		t24b_ok = imp2.cost_center == ccs11[1]
+		# A transfer is effective at the END of its own day (client
+		# workbook 02/09): the centre giving the asset up keeps that day,
+		# and the receiving centre holds it from the following one. So an
+		# adjustment dated ON the transfer day belongs to the OLD centre,
+		# and one dated the day after to the NEW. Both are asserted, so
+		# the boundary cannot drift unnoticed in either direction.
+		def _impair(on_date, before, after):
+			doc = frappe.get_doc({
+				"doctype": "Asset Value Adjustment", "asset": v3.name, "company": company,
+				"date": on_date, "transaction_type": "Initial Impairment",
+				"current_asset_value": before, "new_asset_value": after})
+			doc.flags.ignore_permissions = True
+			doc.insert()
+			return doc
+
+		imp2 = _impair(nowdate(), 30_000, 28_000)
+		imp3 = _impair(add_days(getdate(nowdate()), 1), 28_000, 27_000)
+		t24b_ok = imp2.cost_center == ccs11[0] and imp3.cost_center == ccs11[1]
 		print(
-			f"t24b   adjustment cost centre from history: {imp2.cost_center} "
-			f"(want {ccs11[1]}, the centre holding it today) {'OK' if t24b_ok else 'FAIL'}"
+			f"t24b   adjustment cost centre from history: on the transfer day "
+			f"{imp2.cost_center} (want {ccs11[0]}, the centre giving it up); the day after "
+			f"{imp3.cost_center} (want {ccs11[1]}) {'OK' if t24b_ok else 'FAIL'}"
 		)
 		ok = ok and t24b_ok
 

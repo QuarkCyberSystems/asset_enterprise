@@ -1434,7 +1434,19 @@ def cost_centre_timeline(asset_name, fallback=None):
 	origin = moves[0].source_cost_center or fallback
 	timeline = [(None, origin)]
 	for move in moves:
-		timeline.append((getdate(move.transaction_date), move.target_cost_center))
+		# The transfer DAY ITSELF belongs to the centre giving the asset
+		# up; the receiving centre holds it from the following day. The
+		# client's "Cost Center Transfer" workbook (Belal, 02/09) splits a
+		# 13 July transfer as 1-13 July to the old centre (13 days) and
+		# 14-31 to the new (18) — §GAP-021 says "days before" and "days
+		# after" the transfer, which leaves the transfer day itself in
+		# neither bucket and accounts for only 30 of July's 31 days.
+		#
+		# Shifting the TIMELINE rather than the split arithmetic keeps
+		# cost_centre_on() and cost_centre_split() answering the same
+		# question the same way; fixing only the split would have left
+		# them disagreeing about who held the asset on the transfer date.
+		timeline.append((add_days(getdate(move.transaction_date), 1), move.target_cost_center))
 	return timeline
 
 
