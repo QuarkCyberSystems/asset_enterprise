@@ -84,7 +84,19 @@ class EnterpriseAsset(Asset):
 				frappe.throw(_("Available for use date is required (VR-002)."))
 			self._validate_tree_acyclic()
 			self._validate_pr_row_allocation()
+			self._capture_acquisition_cost_center()
 		super().validate()
+
+	def _capture_acquisition_cost_center(self):
+		"""Freeze where the gross cost was booked, once.
+
+		`cost_center` is the centre the asset sits in TODAY — Asset
+		Movement rewrites it on every transfer. The balance-sheet legs
+		need the centre the cost actually landed in, so it is captured
+		here while the two still agree and never rewritten afterwards.
+		"""
+		if not self.get("acquisition_cost_center") and self.get("cost_center"):
+			self.acquisition_cost_center = self.cost_center
 
 	def _validate_pr_row_allocation(self):
 		"""VR-004 (Phase 11b): over-allocation check at the Asset level —

@@ -318,6 +318,15 @@ def _post_disposal_je(
 	)
 	# An explicit cost centre wins: the Scrapping Type may allow the
 	# transaction to redirect the charge (client, 20/08).
+	#
+	# The CHARGE, and only the charge. GAP-019 is "GL Account per
+	# Scrapping Type — Disposal (account determination)", and its child
+	# row pairs `cost_center` with `gl_account`: the centre routes the
+	# expense the type determines, not the whole entry. Derecognising
+	# cost and accumulated depreciation elsewhere would leave the centre
+	# that actually holds the asset with a stranded balance and the
+	# override centre with a fixed asset it never had (V-08). Those two
+	# legs are attributed centrally, on Journal Entry validate.
 	cost_center = (
 		cost_center
 		or get_disposal_cost_center(asset.company, scrapping_type)
@@ -330,7 +339,6 @@ def _post_disposal_je(
 			{
 				"account": aca.accumulated_depreciation_account,
 				"debit_in_account_currency": flt(accum_debit),
-				"cost_center": cost_center,
 				"reference_type": "Asset",
 				"reference_name": asset.name,
 			}
@@ -349,7 +357,6 @@ def _post_disposal_je(
 		{
 			"account": aca.fixed_asset_account,
 			"credit_in_account_currency": flt(fa_credit),
-			"cost_center": cost_center,
 			"reference_type": "Asset",
 			"reference_name": asset.name,
 		}

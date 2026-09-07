@@ -1197,6 +1197,121 @@ def backfill_asset_dimension_from_references(company=None, asset=None, dry_run=1
 	return rows
 
 
+def backfill_acquisition_cost_center(company=None, asset=None, dry_run=1):
+	"""Capture where each asset's gross cost was booked.
+
+	New assets freeze this at validate, while `cost_center` still means
+	acquisition. Assets that predate the field have to be derived, and
+	the ledger is the authority: `cost_center` on the Asset today is
+	wherever the last transfer left it, so reading it for an asset that
+	has moved would record the wrong answer permanently.
+	"""
+	from asset_enterprise.gl_attribution import _derive_acquisition_cost_center
+
+	filters = {"docstatus": ("<", 2), "acquisition_cost_center": ("in", (None, ""))}
+	if company:
+		filters["company"] = company
+	if asset:
+		filters["name"] = asset
+	names = frappe.get_all("Asset", filters=filters, pluck="name", order_by="creation")
+
+	resolved, moved, unresolved = [], 0, []
+	for name in names:
+		doc = frappe.get_doc("Asset", name)
+		derived = _derive_acquisition_cost_center(doc)
+		if not derived:
+			unresolved.append(name)
+			continue
+		if derived != doc.get("cost_center"):
+			moved += 1
+		resolved.append((name, derived))
+
+	print(f"{len(names)} asset(s) without an acquisition cost centre:")
+	print(f"  {len(resolved)} derived, of which {moved} differ from the asset's CURRENT "
+	      f"centre (these are the ones a naive backfill would have got wrong)")
+	if unresolved:
+		print(f"  {len(unresolved)} could not be derived — no cost leg, no movement, "
+		      f"no cost centre: {unresolved[:10]}")
+	if not dry_run:
+		for name, derived in resolved:
+			frappe.db.set_value(
+				"Asset", name, "acquisition_cost_center", derived, update_modified=False
+			)
+		frappe.db.commit()
+	print(f"  {len(resolved)} written{' (dry run — nothing written)' if dry_run else ''}")
+	return resolved
+
+
+def find_misattributed_balance_sheet_rows(company=None, asset=None):
+	"""Posted rows on an asset's fixed-asset or accumulated-depreciation
+	account whose cost centre is NOT the asset's acquisition centre.
+
+	The invariant: a contra-asset leg carries the dimension of the asset
+	leg it contras, so cost and accumulated depreciation net to a real
+	book value at one centre. A row that breaks it puts a fixed asset —
+	usually a negative one — on a centre that never held it, while the
+	company total stays right, which is why nothing else catches it.
+
+	This REPORTS only. Rewriting `cost_center` on posted rows against
+	submitted documents would break the immutable-ledger principle the
+	build rests on and invalidate signed period closes, and no aggregate
+	moves, so there is no misstatement to correct. Genuine mismatches are
+	corrected prospectively, in an open period, or left.
+	"""
+	conditions, values = [
+		"gle.is_cancelled = 0",
+		"ifnull(gle.asset, '') <> ''",
+		"aca.company_name = gle.company",
+		"gle.account in (aca.fixed_asset_account, aca.accumulated_depreciation_account)",
+		"ifnull(gle.cost_center, '') <> ifnull(a.acquisition_cost_center, '')",
+		"ifnull(a.acquisition_cost_center, '') <> ''",
+	], {}
+	if company:
+		conditions.append("gle.company = %(company)s")
+		values["company"] = company
+	if asset:
+		conditions.append("gle.asset = %(asset)s")
+		values["asset"] = asset
+	return frappe.db.sql(
+		f"""
+		select gle.name as gl_row, gle.asset, gle.account, gle.cost_center as posted_to,
+		       a.acquisition_cost_center as belongs_to, gle.debit, gle.credit,
+		       gle.voucher_type, gle.voucher_no, gle.posting_date
+		from `tabGL Entry` gle
+		join `tabAsset` a on a.name = gle.asset
+		join `tabAsset Category Account` aca on aca.parent = a.asset_category
+		where {" and ".join(conditions)}
+		order by gle.posting_date, gle.creation
+		""",
+		values,
+		as_dict=True,
+	)
+
+
+def report_balance_sheet_attribution(company=None, asset=None):
+	"""Read-only summary of the above — what each centre is holding that
+	it should not be, and for which assets."""
+	rows = find_misattributed_balance_sheet_rows(company=company, asset=asset)
+	if not rows:
+		print("every asset balance-sheet row sits on its acquisition cost centre")
+		return rows
+	by_centre = {}
+	for row in rows:
+		key = (row.posted_to or "(blank)", row.belongs_to)
+		bucket = by_centre.setdefault(key, {"rows": 0, "net": 0.0, "assets": set()})
+		bucket["rows"] += 1
+		bucket["net"] += flt(row.debit) - flt(row.credit)
+		bucket["assets"].add(row.asset)
+	print(f"{len(rows)} misattributed row(s):")
+	for (posted_to, belongs_to), bucket in sorted(
+		by_centre.items(), key=lambda kv: -abs(kv[1]["net"])
+	):
+		print(f"  posted to {posted_to:<26} belongs to {belongs_to:<26} "
+		      f"{bucket['rows']:>5} row(s)  net {bucket['net']:>16,.2f}  "
+		      f"{len(bucket['assets'])} asset(s)")
+	return rows
+
+
 def _legacy_acquisition_candidates(company=None):
 	"""Older acquisition rows carry no `voucher_detail_no`, so nothing on
 	the row links it to a receipt line (MAT-PRE-2026-00284's 13,500,000

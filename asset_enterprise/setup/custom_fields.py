@@ -97,12 +97,21 @@ CUSTOM_FIELDS = {
 			"description": "Groups this asset under a parent in the Asset Tree. No GL impact.",
 		},
 		{
+			"fieldname": "acquisition_cost_center",
+			"fieldtype": "Link",
+			"label": "Acquisition Cost Center",
+			"options": "Cost Center",
+			"read_only": 1,
+			"insert_after": "parent_asset",
+			"description": "The cost centre the asset's gross cost was booked to. Fixed for life — a transfer moves depreciation expense, never the balance-sheet position.",
+		},
+		{
 			"fieldname": "replacement_of_asset",
 			"fieldtype": "Link",
 			"label": "Replacement Of Asset",
 			"options": "Asset",
 			"read_only": 1,
-			"insert_after": "parent_asset",
+			"insert_after": "acquisition_cost_center",
 			"description": "Set when this Asset was created via Create Replacement Asset on a disposed Asset.",
 		},
 		{

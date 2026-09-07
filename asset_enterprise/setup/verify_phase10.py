@@ -227,6 +227,20 @@ def _run():
 		# now permit the change and prove it reaches the ledger
 		frappe.db.set_value("Scrapping Type", "Damage", "allow_cost_center_override", 1)
 		s4 = make_test_asset(company, gross=30_000, submit=True)
+		# The asset is acquired in a THIRD centre — not the override
+		# target and not the company default — or the check cannot tell a
+		# working policy from frappe's `:Company` default filling the leg.
+		acq_name = f"ch09cc Acq - {frappe.db.get_value('Company', company, 'abbr')}"
+		if not frappe.db.exists("Cost Center", acq_name):
+			frappe.get_doc({
+				"doctype": "Cost Center", "cost_center_name": "ch09cc Acq", "company": company,
+				"is_group": 0,
+				"parent_cost_center": frappe.db.get_value(
+					"Cost Center", {"company": company, "is_group": 1}, "name"
+				),
+			}).insert(ignore_permissions=True)
+		for field in ("cost_center", "acquisition_cost_center"):
+			frappe.db.set_value("Asset", s4.name, field, acq_name, update_modified=False)
 		free = frappe.get_doc({
 			"doctype": "Scrap Transaction", "asset": s4.name, "company": company,
 			"transaction_date": nowdate(), "scrap_type": "Partial Scrap",
@@ -236,14 +250,44 @@ def _run():
 		free.flags.ignore_permissions = True
 		free.insert()
 		free.submit()
-		je_ccs = set(frappe.get_all(
-			"Journal Entry Account", filters={"parent": free.journal_entry}, pluck="cost_center"
-		))
-		d_ok = locked_ok and free.cost_center == other_cc and je_ccs == {other_cc}
+		# GAP-019 is "GL Account per Scrapping Type — Disposal (account
+		# determination)", and its child row pairs cost_center WITH
+		# gl_account: the override routes the charge the type determines.
+		# The balance-sheet legs are not the type's to move — derecognise
+		# cost and accumulated depreciation anywhere but where the asset
+		# is carried and the two centres stop netting (V-08).
+		acq_cc = frappe.db.get_value("Asset", s4.name, "acquisition_cost_center")
+		aca = frappe.db.get_value(
+			"Asset Category Account",
+			{"parent": frappe.db.get_value("Asset", s4.name, "asset_category"),
+			 "company_name": company},
+			["fixed_asset_account", "accumulated_depreciation_account"],
+			as_dict=True,
+		)
+		legs = frappe.get_all(
+			"Journal Entry Account", filters={"parent": free.journal_entry},
+			fields=["account", "cost_center"],
+		)
+		charge_ccs = {
+			r.cost_center for r in legs
+			if r.account not in (aca.fixed_asset_account, aca.accumulated_depreciation_account)
+		}
+		sheet_ccs = {
+			r.cost_center for r in legs
+			if r.account in (aca.fixed_asset_account, aca.accumulated_depreciation_account)
+		}
+		d_ok = (
+			locked_ok
+			and free.cost_center == other_cc
+			and charge_ccs == {other_cc}
+			and sheet_ccs == {acq_cc}
+		)
 		print(
 			f"ch09cc cost centre locked to type={locked.cost_center} (want {type_cc}), "
 			f"account={locked.disposal_account}; override allowed -> doc={free.cost_center} "
-			f"JE={sorted(je_ccs)} (want {other_cc}) {'OK' if d_ok else 'FAIL'}"
+			f"charge legs {sorted(charge_ccs)} (want {other_cc}), balance-sheet legs "
+			f"{sorted(c or '(blank)' for c in sheet_ccs)} (want the acquisition centre "
+			f"{acq_cc}) {'OK' if d_ok else 'FAIL'}"
 		)
 		ok = ok and d_ok
 

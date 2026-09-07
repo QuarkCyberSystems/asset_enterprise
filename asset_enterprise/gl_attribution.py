@@ -50,6 +50,152 @@ _ITEM_DOCTYPE = {
 }
 
 
+def acquisition_cost_center(asset):
+	"""The centre the asset's GROSS COST sits in — fixed for its life.
+
+	GAP-021 attributes depreciation EXPENSE to the centre that held the
+	asset during the period: expense answers "who consumed it". The
+	balance sheet answers a different question — "what is this asset
+	carried at" — and is attributed differently:
+
+	    a contra-asset leg carries the dimension of the asset leg it
+	    contras.
+
+	So the Fixed Asset and Accumulated Depreciation legs both take the
+	acquisition centre and net to a real book value there, while the
+	expense legs follow the movement history. Attributing the contra any
+	other way strands it: an asset bought under Plant A and transferred
+	to HQ books its cost at Plant A and its accumulated depreciation
+	somewhere else, so HQ reports a negative fixed asset and Plant A an
+	overstated one — company totals stay right, which is why nothing
+	catches it, but no centre's balance sheet reconciles.
+
+	`Asset.cost_center` is NOT this value: Asset Movement mutates it in
+	place on transfer (overrides/asset_movement.py). Reading it here
+	would reintroduce the defect silently, with no test failure — hence
+	the captured field, derived once for assets that predate it.
+	"""
+	if isinstance(asset, str):
+		asset = frappe.get_doc("Asset", asset)
+	captured = asset.get("acquisition_cost_center")
+	if captured:
+		return captured
+	derived = _derive_acquisition_cost_center(asset)
+	if derived and not asset.get("__islocal"):
+		asset.db_set("acquisition_cost_center", derived, update_modified=False)
+	return derived
+
+
+def _derive_acquisition_cost_center(asset):
+	"""Where the gross cost actually landed, for an asset capitalized
+	before the field existed. The ledger is the authority; the movement
+	trail and the current field are fallbacks for assets whose cost leg
+	we cannot see (no GL, or a core-posted leg with no dimension)."""
+	fa_account = frappe.db.get_value(
+		"Asset Category Account",
+		{"parent": asset.asset_category, "company_name": asset.company},
+		"fixed_asset_account",
+	)
+	if fa_account:
+		booked = frappe.db.sql(
+			"""select cost_center from `tabGL Entry`
+			   where is_cancelled = 0 and asset = %s and account = %s
+			   order by posting_date, creation limit 1""",
+			(asset.name, fa_account),
+		)
+		if booked and booked[0][0]:
+			return booked[0][0]
+	# No attributable cost leg: the earliest transfer records what the
+	# asset was moved AWAY from, which is where it was acquired.
+	moved_from = frappe.db.sql(
+		"""select ami.source_cost_center
+		   from `tabAsset Movement Item` ami
+		   join `tabAsset Movement` am on am.name = ami.parent
+		   where am.docstatus = 1 and ami.asset = %s
+		     and ifnull(ami.source_cost_center, '') <> ''
+		   order by am.transaction_date, am.creation limit 1""",
+		asset.name,
+	)
+	if moved_from and moved_from[0][0]:
+		return moved_from[0][0]
+	# Never moved, so the current field is still the acquisition centre.
+	return asset.get("cost_center")
+
+
+def apply_asset_cost_centre_policy(doc, method=None):
+	"""One rule, one place, for every entry the module posts.
+
+	Depreciation, disposal, merge, reclassification and the opening
+	booking each build their own journal entry, and each was choosing a
+	cost centre for the balance-sheet legs on its own — so the same
+	question had five answers, and a sixth posting path would have
+	invented a seventh. The rule belongs here, at the choke point that
+	already fills the `asset` dimension (GAP-023), not in the builders:
+
+	    a balance-sheet leg carries the asset's ACQUISITION centre;
+	    the P&L legs keep what the builder computed from movement
+	    history (GAP-021 — expense follows use).
+
+	Cost and accumulated depreciation therefore always net to a real
+	book value at ONE centre, and no centre ever reports a fixed asset
+	it does not hold.
+
+	This assigns rather than fills a blank, because it cannot fill one:
+	frappe applies the `:Company` default in `_set_defaults()` BEFORE
+	`validate` runs (document.py), so by the time any hook sees the row
+	the centre is already the company's — which is precisely the defect
+	(UAT ACC-ASS-2026-00185 booked its cost to Plant A and every
+	depreciation credit to Main, leaving Main 410,000 short of an asset
+	it never held). Only rows that name an Asset AND land on that
+	asset's own fixed-asset or accumulated-depreciation account are
+	touched; everything else, including a manual entry elsewhere in the
+	chart, is left exactly as written.
+	"""
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled():
+		return
+
+	category_accounts, centres = {}, {}
+	for row in doc.get("accounts") or []:
+		asset_name = row.get("asset") or (
+			row.get("reference_name") if row.get("reference_type") == "Asset" else None
+		)
+		if not asset_name or not row.get("account"):
+			continue
+		asset = frappe.db.get_value(
+			"Asset",
+			asset_name,
+			["name", "asset_category", "company", "cost_center", "acquisition_cost_center"],
+			as_dict=True,
+		)
+		if not asset:
+			continue
+		key = (asset.asset_category, asset.company)
+		if key not in category_accounts:
+			category_accounts[key] = frappe.db.get_value(
+				"Asset Category Account",
+				{"parent": asset.asset_category, "company_name": asset.company},
+				["fixed_asset_account", "accumulated_depreciation_account"],
+				as_dict=True,
+			)
+		aca = category_accounts[key]
+		if not aca or row.account not in (
+			aca.fixed_asset_account,
+			aca.accumulated_depreciation_account,
+		):
+			continue  # expense, gain, loss, clearing, suspense — not ours
+		if asset_name not in centres:
+			# Captured at validate for every asset created since the field
+			# existed, so the common path costs nothing beyond the row
+			# already read; only pre-field assets pay for a derivation.
+			centres[asset_name] = asset.acquisition_cost_center or acquisition_cost_center(
+				asset_name
+			)
+		if centres[asset_name]:
+			row.cost_center = centres[asset_name]
+
+
 def _asset_line(doctype, detail_name):
 	"""The receipt/invoice line behind a gl row, when it is a fixed-asset
 	line. Returns (item_row, asset_link_field) or (None, None)."""

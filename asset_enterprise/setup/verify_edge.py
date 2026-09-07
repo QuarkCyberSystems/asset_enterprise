@@ -635,6 +635,103 @@ def e20():
 	)
 
 
+@case("E-21", "GAP-021 boundary / ruling 07/09", "the contra follows the COST, the expense follows use")
+def e21():
+	"""E-20 proves the expense split; this proves what the entry actually
+	POSTS — the two are separate failures and only the second reaches the
+	balance sheet.
+
+	Depreciation expense answers "which centre consumed the asset", so it
+	splits across a transfer. Accumulated depreciation is a valuation
+	account attached to one asset balance and answers "what is this
+	carried at", so it stays with the gross cost. Attribute it any other
+	way and the centres stop reconciling: cost 3,000 at Plant A with the
+	contra at Head Office leaves Head Office holding a fixed asset it
+	does not have, at a negative amount, while the company total — the
+	only figure anything else checks — stays right.
+
+	The centres here are deliberately NOT the company default, or the
+	defect under test (frappe's `:Company` default filling the leg) would
+	look identical to the fix.
+	"""
+	from asset_enterprise.depreciation import post_schedule_entries
+
+	company = _company()
+	default_cc = frappe.db.get_value("Company", company, "cost_center")
+	made = []
+	for label in ("E21 Source", "E21 Target"):
+		name = f"{label} - {frappe.db.get_value('Company', company, 'abbr')}"
+		if not frappe.db.exists("Cost Center", name):
+			frappe.get_doc({
+				"doctype": "Cost Center", "cost_center_name": label, "company": company,
+				"parent_cost_center": frappe.db.get_value(
+					"Cost Center", {"company": company, "is_group": 1}, "name"
+				),
+				"is_group": 0,
+			}).insert(ignore_permissions=True)
+		made.append(name)
+	old_cc, new_cc = made
+	if old_cc == default_cc or new_cc == default_cc:
+		return False, "test centres must differ from the company default to be meaningful"
+
+	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
+	asset = _asset(company, gross=3_000, months=36, start=get_last_day(transfer))
+	frappe.db.set_value("Asset", asset, "cost_center", old_cc, update_modified=False)
+	frappe.db.set_value("Asset", asset, "acquisition_cost_center", old_cc, update_modified=False)
+
+	locations = frappe.get_all("Location", limit=2, pluck="name")
+	move = frappe.get_doc({
+		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+		"transaction_date": str(transfer),
+		"assets": [{
+			"asset": asset, "source_cost_center": old_cc, "target_cost_center": new_cc,
+			"source_location": frappe.db.get_value("Asset", asset, "location"),
+			"target_location": locations[-1],
+		}],
+	})
+	move.flags.ignore_permissions = True
+	move.insert()
+	move.submit()
+
+	schedule = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset, "status": "Active", "docstatus": 1}, "name"
+	)
+	post_schedule_entries(schedule, date=get_last_day(transfer))
+	je = frappe.db.get_value(
+		"Depreciation Schedule",
+		{"parent": schedule, "schedule_date": get_last_day(transfer)},
+		"journal_entry",
+	)
+	if not je:
+		return False, "the transfer-month row did not post — nothing to inspect"
+
+	accum_account = frappe.db.get_value(
+		"Asset Category Account",
+		{"parent": frappe.db.get_value("Asset", asset, "asset_category"), "company_name": company},
+		"accumulated_depreciation_account",
+	)
+	legs = frappe.db.sql(
+		"""select account, cost_center, debit, credit from `tabGL Entry`
+		   where is_cancelled = 0 and voucher_no = %s""",
+		je,
+		as_dict=True,
+	)
+	contra = [r for r in legs if r.account == accum_account]
+	expense_ccs = {r.cost_center for r in legs if r.account != accum_account and flt(r.debit)}
+
+	ok = (
+		len(contra) == 1
+		and contra[0].cost_center == old_cc
+		and expense_ccs == {old_cc, new_cc}
+	)
+	return ok, (
+		f"contra on {contra[0].cost_center if contra else 'no leg'} "
+		f"(want the acquisition centre {old_cc}; company default is {default_cc}); "
+		f"expense across {sorted(c or '(blank)' for c in expense_ccs)} "
+		f"(want both {old_cc} and {new_cc})"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

@@ -365,10 +365,18 @@ def _apply_fully_depreciated_treatment(cap_doc, target, total_nbv, posting_date)
 						),
 						"debit_in_account_currency": total_nbv,
 						"cost_center": target.get("cost_center"),
+						"reference_type": "Asset",
+						"reference_name": target.name,
 					},
 					{
 						"account": accounts.accumulated_depreciation_account,
 						"credit_in_account_currency": total_nbv,
+						# Named so the row carries the asset dimension
+						# (V-04) and the cost-centre policy can see it at
+						# all — this was the one asset posting in the
+						# module that declared neither.
+						"reference_type": "Asset",
+						"reference_name": target.name,
 					},
 				],
 			}

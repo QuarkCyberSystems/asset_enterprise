@@ -83,7 +83,14 @@ doc_events = {
 		# row's own Asset reference so the General Ledger can be filtered
 		# and grouped by asset. Rows pointing at an already-cancelled
 		# asset are left alone — the dimension is a Link field.
-		"validate": "asset_enterprise.invoice_diff.stamp_asset_dimension",
+		# The balance-sheet legs of an asset entry carry the asset's
+		# acquisition cost centre, so cost and accumulated depreciation
+		# always net at one centre (GAP-021 boundary). One rule here
+		# rather than one per posting builder.
+		"validate": [
+			"asset_enterprise.invoice_diff.stamp_asset_dimension",
+			"asset_enterprise.gl_attribution.apply_asset_cost_centre_policy",
+		],
 	},
 	"Purchase Invoice": {
 		"validate": "asset_enterprise.invoice_diff.pi_validate",
