@@ -50,6 +50,52 @@ _ITEM_DOCTYPE = {
 }
 
 
+def dimension_fields(doctype):
+	"""Registered accounting dimensions `doctype` can carry.
+
+	`asset` is excluded everywhere this is used: on an Asset Movement row
+	that fieldname is the LINK to the asset being moved rather than a
+	dimension anyone chose, and on a journal row `stamp_asset_dimension`
+	already owns it (GAP-023).
+
+	Cached per request — the answer cannot change inside one, and the
+	depreciation timeline asks for it once per schedule row.
+	"""
+	cache = getattr(frappe.local, "_ae_dimension_fields", None)
+	if cache is None:
+		cache = frappe.local._ae_dimension_fields = {}
+	if doctype not in cache:
+		from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+			get_accounting_dimensions,
+		)
+
+		meta = frappe.get_meta(doctype)
+		cache[doctype] = [
+			fieldname
+			for fieldname in (get_accounting_dimensions() or [])
+			if fieldname != "asset" and meta.has_field(fieldname)
+		]
+	return cache[doctype]
+
+
+def acquisition_dimensions(asset_name):
+	"""The dimensions the asset was ACQUIRED under.
+
+	The Asset's own dimension fields mean acquisition, in the same sense
+	`acquisition_cost_center` does — core's `make_asset` copies them from
+	the purchase receipt row, and nothing rewrites them afterwards. A
+	transfer deliberately does NOT touch them: where an asset went later
+	is the movement trail's answer (`attribution_timeline`), and writing
+	it here would destroy the only record of where it started, exactly as
+	writing `cost_center` in place did for the centre.
+	"""
+	fields = dimension_fields("Asset")
+	if not fields:
+		return {}
+	values = frappe.db.get_value("Asset", asset_name, fields, as_dict=True) or {}
+	return {field: values.get(field) for field in fields}
+
+
 def acquisition_cost_center(asset, persist=False):
 	"""The centre the asset's GROSS COST sits in — fixed for its life.
 
@@ -171,13 +217,29 @@ def apply_asset_cost_centre_policy(doc, method=None):
 	invented a seventh. The rule belongs here, at the choke point that
 	already fills the `asset` dimension (GAP-023), not in the builders:
 
-	    a balance-sheet leg carries the asset's ACQUISITION centre;
+	    a balance-sheet leg carries the asset's ACQUISITION centre
+	    AND its acquisition dimensions;
 	    the P&L legs keep what the builder computed from movement
 	    history (GAP-021 — expense follows use).
 
 	Cost and accumulated depreciation therefore always net to a real
 	book value at ONE centre, and no centre ever reports a fixed asset
 	it does not hold.
+
+	V-08 says "a contra-asset leg carries the dimension of the asset leg
+	it contras" — dimension, not cost centre, and the two axes have to
+	move together or the invariant holds on one and breaks on the other.
+	They did break apart: core's `get_gl_dict` copies the receipt row's
+	dimensions onto the Fixed Asset cost leg, while our accumulated-
+	depreciation credit carried none, so a project bought an asset and
+	then showed its gross cost with no accumulated depreciation against
+	it. Both legs now take the same answer from the same place.
+
+	Note what this does NOT do: an asset that joined a project by
+	TRANSFER was not acquired under it, so its cost leg carries no
+	project and its contra gets none either. Only the expense follows the
+	transfer (GAP-021). That is the difference between "who is using
+	this" and "whose balance sheet is it on".
 
 	This assigns rather than fills a blank, because it cannot fill one:
 	frappe applies the `:Company` default in `_set_defaults()` BEFORE
@@ -195,7 +257,7 @@ def apply_asset_cost_centre_policy(doc, method=None):
 	if not enterprise_enabled():
 		return
 
-	category_accounts, centres = {}, {}
+	category_accounts, centres, dimensions = {}, {}, {}
 	for row in doc.get("accounts") or []:
 		asset_name = row.get("asset") or (
 			row.get("reference_name") if row.get("reference_type") == "Asset" else None
@@ -231,8 +293,16 @@ def apply_asset_cost_centre_policy(doc, method=None):
 			centres[asset_name] = asset.acquisition_cost_center or acquisition_cost_center(
 				asset_name
 			)
+			dimensions[asset_name] = acquisition_dimensions(asset_name)
 		if centres[asset_name]:
 			row.cost_center = centres[asset_name]
+		for field, value in dimensions[asset_name].items():
+			# Assigned, not filled: an Accounting Dimension may carry a
+			# per-company default that frappe has already put on the row,
+			# and a blank acquisition dimension is a real answer — this
+			# asset was not bought under a project — so it has to be able
+			# to CLEAR an inherited one, not merely decline to set it.
+			row.set(field, value)
 
 
 def _asset_line(doctype, detail_name):

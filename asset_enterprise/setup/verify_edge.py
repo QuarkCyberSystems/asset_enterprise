@@ -845,6 +845,77 @@ def e22():
 	)
 
 
+@case("E-24", "V-08 / ruling 07-08/09", "the contra carries the ACQUISITION dimension, both axes")
+def e24():
+	"""V-08 says a contra-asset leg carries the dimension of the asset leg
+	it contras — dimension, not cost centre. The two axes have to move
+	together: core's `get_gl_dict` puts the receipt row's dimensions on
+	the Fixed Asset cost leg, so a contra carrying none left a project
+	showing gross cost with no accumulated depreciation against it.
+
+	The distinction this proves is the one that makes the whole scheme
+	coherent. An asset ACQUIRED under a project keeps that project on
+	both balance-sheet legs for life. An asset that merely joined one by
+	TRANSFER carries it on the expense only — it is being used by the
+	project, it is not owned by it — so the contra must come back empty
+	even while the period's expense is split onto the project.
+	"""
+	from asset_enterprise.depreciation import post_schedule_entries
+	from asset_enterprise.gl_attribution import acquisition_dimensions, dimension_fields
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	fields = dimension_fields("Asset")
+	field = next((f for f in fields if f == "project_accounting"), fields[0] if fields else None)
+	if not field:
+		return True, "no registered dimension on Asset — nothing to contra (skipped)"
+	value = frappe.get_all(
+		frappe.get_meta("Asset").get_field(field).options, limit=1, pluck="name"
+	)
+	if not value:
+		return True, f"no {field} record (skipped)"
+
+	company = _company()
+	asset = make_test_asset(company, gross=3_000, submit=True, with_depreciation=True)
+	# Acquired UNDER the project, as core's make_asset would leave it.
+	frappe.db.set_value("Asset", asset.name, field, value[0], update_modified=False)
+
+	schedule = frappe.get_all(
+		"Asset Depreciation Schedule",
+		filters={"asset": asset.name, "status": "Active", "docstatus": 1}, pluck="name",
+	)
+	if not schedule:
+		return False, "no active schedule"
+	row = frappe.get_all(
+		"Depreciation Schedule", filters={"parent": schedule[0]},
+		fields=["name", "schedule_date"], order_by="schedule_date", limit=1,
+	)[0]
+	post_schedule_entries(schedule[0], date=str(row["schedule_date"]))
+	je = frappe.db.get_value("Depreciation Schedule", row["name"], "journal_entry")
+	if not je:
+		return False, "nothing posted"
+
+	gl = frappe.db.sql(
+		"""select account, debit, credit, `{0}` as dim from `tabGL Entry`
+		   where voucher_no = %s and is_cancelled = 0""".format(field),
+		je, as_dict=True,
+	)
+	credits = [g for g in gl if flt(g.credit)]
+	debits = [g for g in gl if flt(g.debit)]
+	ok = (
+		bool(credits)
+		and all(g.dim == value[0] for g in credits)   # contra follows the cost
+		and all(g.dim == value[0] for g in debits)    # never moved: expense agrees
+		and acquisition_dimensions(asset.name).get(field) == value[0]
+	)
+	return ok, (
+		f"acquired under {field}={value[0]}: contra "
+		+ ", ".join(f"{flt(g.credit):.2f}/{g.dim or 'none'}" for g in credits)
+		+ " (want the project on it); expense "
+		+ ", ".join(f"{flt(g.debit):.2f}/{g.dim or 'none'}" for g in debits)
+		+ "; E-22 proves the transferred-in case leaves the contra empty"
+	)
+
+
 @case("E-23", "GAP-021 / V-08", "a transfer from a BLANK cost centre keeps its history")
 def e23():
 	"""`source_cost_center` is captured from `Asset.cost_center`, which is

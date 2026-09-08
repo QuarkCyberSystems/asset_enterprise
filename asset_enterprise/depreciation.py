@@ -1415,20 +1415,13 @@ def movement_dimension_fields():
 	got a depreciation entry with the columns empty (UAT
 	ACC-JV-2026-02277 / ACC-ASM-2026-02725, 08/09).
 
-	`asset` is excluded: on this child table that fieldname is the LINK
-	to the asset being moved, not a dimension anyone chose, and the
-	entry already gets it from `stamp_asset_dimension` (GAP-023).
+	Which fields those are is `gl_attribution.dimension_fields`, shared
+	with the balance-sheet policy so the two sides of an entry can never
+	disagree about what counts as a dimension.
 	"""
-	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
-		get_accounting_dimensions,
-	)
+	from asset_enterprise.gl_attribution import dimension_fields
 
-	meta = frappe.get_meta("Asset Movement Item")
-	return [
-		fieldname
-		for fieldname in (get_accounting_dimensions() or [])
-		if fieldname != "asset" and meta.has_field(fieldname)
-	]
+	return dimension_fields("Asset Movement Item")
 
 
 def _origin_cost_centre(asset_name, first_move, fallback):
@@ -1550,13 +1543,18 @@ def _asset_dimensions(asset_name, fields):
 	An asset capitalized under a project carries the dimension from its
 	receipt line (core's `make_asset` copies every registered dimension
 	from the PR row), so its depreciation should carry it from day one
-	without needing a movement to say so.
+	without needing a movement to say so. These are the same acquisition
+	dimensions the balance-sheet legs take, which is why the two share
+	one accessor: the expense simply diverges from them at a transfer,
+	and the contra never does.
 	"""
-	on_asset = [f for f in fields if frappe.get_meta("Asset").has_field(f)]
-	if not on_asset:
-		return {}
-	values = frappe.db.get_value("Asset", asset_name, on_asset, as_dict=True) or {}
-	return {f: v for f, v in values.items() if v}
+	from asset_enterprise.gl_attribution import acquisition_dimensions
+
+	return {
+		field: value
+		for field, value in acquisition_dimensions(asset_name).items()
+		if value and field in fields
+	}
 
 
 def cost_centre_timeline(asset_name, fallback=None):
