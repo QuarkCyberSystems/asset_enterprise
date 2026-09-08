@@ -148,6 +148,7 @@ class EnterpriseAssetMovement(AssetMovement):
 		super().on_submit()
 		if not self._enterprise():
 			return
+		from asset_enterprise.gl_attribution import acquisition_cost_center
 		from asset_enterprise.tcc import add_snapshot_activity
 
 		for d in self.assets:
@@ -177,12 +178,36 @@ class EnterpriseAssetMovement(AssetMovement):
 				)
 			if d.get("target_cost_center"):
 				prior = frappe.db.get_value("Asset", d.asset, "cost_center")
+				# `cost_center` is not a mandatory field, so `prior` can be
+				# empty — and an asset with no centre of its own still HELD
+				# one for accounting: the one its earlier depreciation
+				# actually posted to. Resolving that HERE, once, is what
+				# keeps the history honest. Left unresolved, the movement
+				# recorded a target and no source, and every later reader
+				# fell through to the asset's own `cost_center` — which
+				# this method is about to overwrite with the target, so the
+				# pre-transfer days inherited the centre the asset had not
+				# joined yet (UAT ACC-JV-2026-02277).
+				effective_prior = prior or acquisition_cost_center(d.asset)
 				if not d.get("source_cost_center"):
-					d.db_set("source_cost_center", prior, update_modified=False)
+					d.db_set("source_cost_center", effective_prior, update_modified=False)
+				if effective_prior and not frappe.db.get_value(
+					"Asset", d.asset, "acquisition_cost_center"
+				):
+					# The last moment the answer is knowable from the asset
+					# itself: after the line below, `cost_center` means the
+					# target and the derivation has nothing left to read.
+					frappe.db.set_value(
+						"Asset",
+						d.asset,
+						"acquisition_cost_center",
+						effective_prior,
+						update_modified=False,
+					)
 				frappe.db.set_value(
 					"Asset", d.asset, "cost_center", d.target_cost_center, update_modified=False
 				)
-				self._announce_depreciation_effect(d, prior)
+				self._announce_depreciation_effect(d, effective_prior)
 
 	def _announce_depreciation_effect(self, d, prior):
 		"""The transfer posts no GL of its own, so its only visible effect

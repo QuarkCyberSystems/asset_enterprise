@@ -275,7 +275,15 @@ def movement_cost_centre_impact(
 		days = cint(r.days_in_period) or 1
 		start = add_days(end, -(days - 1))
 		if start <= on <= end:
-			before = max(0, date_diff(on, start))
+			# The transfer DAY ITSELF belongs to the centre giving the
+			# asset up, so it counts INSIDE the "before" bucket — the same
+			# rule `cost_centre_timeline` applies by starting the receiving
+			# centre the following day (ruling 07/09, client workbook
+			# 02/09). Without the +1 this preview promised 12/19 for a
+			# 13th-of-the-month transfer while the entry posted 13/18, so
+			# the dialog and the permanent "Effect on depreciation" comment
+			# contradicted the ledger they were describing.
+			before = min(days, max(0, date_diff(on, start) + 1))
 			after = days - before
 			old_part = fa_module_round(flt(r.depreciation_amount) * before / days, company)
 			out["split"] = {

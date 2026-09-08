@@ -50,7 +50,7 @@ _ITEM_DOCTYPE = {
 }
 
 
-def acquisition_cost_center(asset):
+def acquisition_cost_center(asset, persist=False):
 	"""The centre the asset's GROSS COST sits in — fixed for its life.
 
 	GAP-021 attributes depreciation EXPENSE to the centre that held the
@@ -74,6 +74,14 @@ def acquisition_cost_center(asset):
 	place on transfer (overrides/asset_movement.py). Reading it here
 	would reintroduce the defect silently, with no test failure — hence
 	the captured field, derived once for assets that predate it.
+
+	`persist` is off by default because the callers are mostly READ
+	paths — the whitelisted movement preview, the attribution timeline,
+	reports — and a read that writes turns a derivation made under
+	incomplete information into a permanent fact. Capture belongs to the
+	paths that own the moment the answer is known: `EnterpriseAsset
+	.validate`, the movement's own `on_submit` (before it overwrites
+	`cost_center`), and `repair.backfill_acquisition_cost_center`.
 	"""
 	if isinstance(asset, str):
 		asset = frappe.get_doc("Asset", asset)
@@ -81,9 +89,26 @@ def acquisition_cost_center(asset):
 	if captured:
 		return captured
 	derived = _derive_acquisition_cost_center(asset)
-	if derived and not asset.get("__islocal"):
+	if derived and persist and not asset.get("__islocal"):
 		asset.db_set("acquisition_cost_center", derived, update_modified=False)
 	return derived
+
+
+def _has_moved(asset_name):
+	"""Whether a submitted transfer has already rewritten this asset's
+	`cost_center`. Once one has, that field is the CURRENT centre and can
+	no longer stand in for the acquisition one."""
+	return bool(
+		frappe.db.sql(
+			"""select 1
+			   from `tabAsset Movement Item` ami
+			   join `tabAsset Movement` am on am.name = ami.parent
+			   where am.docstatus = 1 and ami.asset = %s
+			     and ifnull(ami.target_cost_center, '') <> ''
+			   limit 1""",
+			asset_name,
+		)
+	)
 
 
 def _derive_acquisition_cost_center(asset):
@@ -118,6 +143,20 @@ def _derive_acquisition_cost_center(asset):
 	)
 	if moved_from and moved_from[0][0]:
 		return moved_from[0][0]
+	if _has_moved(asset.name):
+		# Nothing recorded where the asset started, and its own field no
+		# longer says: a transfer overwrote it with the target. Returning
+		# it here would name the receiving centre as the ACQUISITION one
+		# — the asset would book its cost, its accumulated depreciation
+		# and its pre-transfer expense to a centre it joined later, and
+		# the captured field would make that permanent (reproduced on a
+		# legacy-shaped asset: acquisition_cost_center came back as the
+		# transfer target). The company default is where such an asset's
+		# earlier depreciation demonstrably posted, frappe having filled
+		# the blank leg with it at `_set_defaults`.
+		from erpnext import get_default_cost_center
+
+		return get_default_cost_center(asset.get("company"))
 	# Never moved, so the current field is still the acquisition centre.
 	return asset.get("cost_center")
 

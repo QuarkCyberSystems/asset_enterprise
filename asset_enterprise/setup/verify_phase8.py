@@ -396,6 +396,31 @@ def _run():
 			   and content like '%%Effect on depreciation%%' limit 1""",
 			mv3.name,
 		)
+		# The preview must not merely EXIST — it must agree with what the
+		# entry will post. It kept its own day arithmetic and promised
+		# 12/19 for a 13th-of-the-month transfer while the ledger posted
+		# 13/18, so the dialog contradicted the entry it described.
+		from asset_enterprise.depreciation import cost_centre_split
+
+		pv = preview.get("split") or {}
+		period_end = getdate(pv.get("period_end")) if pv.get("period_end") else None
+		posted = (
+			cost_centre_split(
+				warn_asset.name,
+				add_days(period_end, -(cint(pv.get("days_before")) + cint(pv.get("days_after")) - 1)),
+				period_end,
+				flt(pv.get("old_amount")) + flt(pv.get("new_amount")),
+				company,
+			)
+			if period_end
+			else []
+		)
+		posted_by_cc = {cc: flt(amt) for cc, amt in posted}
+		preview_matches = (
+			len(posted) == 2
+			and abs(posted_by_cc.get(prior_cc, 0) - flt(pv.get("old_amount"))) < 0.01
+			and abs(posted_by_cc.get(cc2, 0) - flt(pv.get("new_amount"))) < 0.01
+		)
 		g21d_ok = (
 			preview.get("old_cost_center") == prior_cc
 			and preview.get("new_cost_center") == cc2
@@ -403,6 +428,14 @@ def _run():
 			and bool(preview.get("split"))
 			and len(preview.get("earlier_unposted") or []) >= 1
 			and bool(note)
+			and preview_matches
+		)
+		print(
+			f"gap021d preview vs ledger: preview {pv.get('days_before')}d "
+			f"{flt(pv.get('old_amount')):,.2f} / {pv.get('days_after')}d "
+			f"{flt(pv.get('new_amount')):,.2f}; posted "
+			f"{[(cc, round(a, 2)) for cc, a in posted]} "
+			f"{'OK' if preview_matches else 'FAIL'}"
 		)
 		print(
 			f"gap021d pre-submit warning: preview {prior_cc} -> {cc2}, "

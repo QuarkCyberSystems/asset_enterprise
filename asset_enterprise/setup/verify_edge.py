@@ -769,9 +769,10 @@ def e22():
 		return False, "need two cost centres in this company"
 	old_cc, new_cc = ccs
 
+	from asset_enterprise.depreciation import post_schedule_entries
 	from asset_enterprise.setup.test_fixtures import make_test_asset
 
-	asset = make_test_asset(company, gross=3_000, submit=True)
+	asset = make_test_asset(company, gross=3_000, submit=True, with_depreciation=True)
 	frappe.db.set_value("Asset", asset.name, "cost_center", old_cc, update_modified=False)
 	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
 	locations = frappe.get_all("Location", limit=2, pluck="name")
@@ -793,17 +794,54 @@ def e22():
 	segments = attribution_split(asset.name, period_start, period_end, 84.931506849, company)
 	before = [s for s in segments if s[0] == old_cc]
 	after = [s for s in segments if s[0] == new_cc]
-	ok = (
+	split_ok = (
 		len(before) == 1
 		and len(after) == 1
 		and not before[0][1].get(field)      # 1-13: the project did not hold it
 		and after[0][1].get(field) == value[0]  # 14-end: it did
 	)
-	return ok, (
-		f"{field}={value[0]} set on the transfer of {transfer}: "
-		f"pre-transfer segment carries {before[0][1].get(field) if before else '—'} (want none), "
-		f"post-transfer segment carries {after[0][1].get(field) if after else '—'} "
-		f"(want {value[0]})"
+
+	# The split is only half the claim: prove the dimension reaches the
+	# ledger. A JE row can carry it while GL drops it, and GL is what
+	# every report and the client's own view actually read.
+	schedule = frappe.get_all(
+		"Asset Depreciation Schedule",
+		filters={"asset": asset.name, "status": "Active", "docstatus": 1}, pluck="name",
+	)
+	posted_ok, gl_detail = False, "no active schedule to post"
+	if schedule:
+		post_schedule_entries(schedule[0], date=str(period_end))
+		row = frappe.get_all(
+			"Depreciation Schedule",
+			filters={"parent": schedule[0],
+			         "schedule_date": ("between", [period_start, period_end])},
+			fields=["journal_entry"],
+		)
+		je = row[0]["journal_entry"] if row else None
+		gl = frappe.db.sql(
+			"""select debit, credit, {0} as dim from `tabGL Entry`
+			   where voucher_no = %s and is_cancelled = 0""".format(f"`{field}`"),
+			je, as_dict=True,
+		) if je else []
+		debits = [g for g in gl if flt(g.debit)]
+		credits = [g for g in gl if flt(g.credit)]
+		posted_ok = (
+			len(debits) == 2
+			and {bool(g.dim) for g in debits} == {True, False}   # one segment each
+			and all(g.dim == value[0] for g in debits if g.dim)
+			and credits and not any(g.dim for g in credits)      # contra stays clean (V-08)
+		)
+		gl_detail = (
+			f"GL {je}: debits "
+			+ ", ".join(f"{flt(g.debit):.2f}/{g.dim or 'none'}" for g in debits)
+			+ "; credit " + ", ".join(f"{flt(g.credit):.2f}/{g.dim or 'none'}" for g in credits)
+		)
+
+	return (split_ok and posted_ok), (
+		f"{field}={value[0]} on the transfer of {transfer}: "
+		f"pre-transfer segment {before[0][1].get(field) if before else '—'} (want none), "
+		f"post-transfer segment {after[0][1].get(field) if after else '—'} (want {value[0]}); "
+		+ gl_detail
 	)
 
 
@@ -839,12 +877,20 @@ def e23():
 		return False, "need a second cost centre in this company"
 
 	asset = make_test_asset(company, gross=3_000, submit=True)
-	# The condition under test: no cost centre on the asset at all, so the
-	# movement has nothing to capture as its source.
-	frappe.db.set_value("Asset", asset.name, "cost_center", None, update_modified=False)
+	# The condition under test, in full: no cost centre on the asset, no
+	# captured acquisition centre, and an opening cost leg with no `asset`
+	# dimension — the legacy shape, whose cost core booked before GAP-023
+	# registered the dimension. Seeding `acquisition_cost_center` here
+	# instead would hand the derivation the answer and prove nothing: the
+	# first version of this case did exactly that and passed while a
+	# legacy asset still took the transfer target for its origin.
 	frappe.db.set_value(
-		"Asset", asset.name, "acquisition_cost_center", acq_cc, update_modified=False
+		"Asset",
+		asset.name,
+		{"cost_center": None, "acquisition_cost_center": None},
+		update_modified=False,
 	)
+	frappe.db.sql("update `tabGL Entry` set asset = NULL where asset = %s", asset.name)
 	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
 	locations = frappe.get_all("Location", limit=2, pluck="name")
 	move = frappe.get_doc({
@@ -863,15 +909,25 @@ def e23():
 	captured = frappe.db.get_value(
 		"Asset Movement Item", {"parent": move.name}, "source_cost_center"
 	)
+	stamped = frappe.db.get_value("Asset", asset.name, "acquisition_cost_center")
 	split = cost_centre_split(
 		asset.name, get_first_day(transfer), get_last_day(transfer), 84.931506849, company
 	)
 	by_cc = {cc: flt(amt) for cc, amt in split}
-	ok = len(split) == 2 and acq_cc in by_cc and new_cc in by_cc
+	ok = (
+		len(split) == 2
+		and acq_cc in by_cc
+		and new_cc in by_cc
+		# the transfer resolved the blank rather than leaving it, and
+		# resolved it to the acquisition centre and not to its own target
+		and captured == acq_cc
+		and stamped == acq_cc
+	)
 	return ok, (
-		f"captured source={captured or 'none'}; split {[(cc, round(a, 2)) for cc, a in split]} "
-		f"(want the pre-transfer days on the acquisition centre {acq_cc}, "
-		f"not on {new_cc})"
+		f"captured source={captured or 'none'} (want {acq_cc}); "
+		f"acquisition_cost_center={stamped or 'none'} (want {acq_cc}, never {new_cc}); "
+		f"split {[(cc, round(a, 2)) for cc, a in split]} "
+		f"(want the pre-transfer days on {acq_cc}, not on {new_cc})"
 	)
 
 
