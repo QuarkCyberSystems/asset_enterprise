@@ -850,6 +850,9 @@ def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transact
 		frappe.throw(
 			_("Asset Category Account missing for {0} / {1}").format(asset.asset_category, asset.company)
 		)
+	held_cc, held_dims = attribution_on(
+		asset.name, posting_date, fallback=asset.get("cost_center")
+	)
 	je = frappe.get_doc(
 		{
 			"doctype": "Journal Entry",
@@ -866,12 +869,13 @@ def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transact
 					# Attribution follows the movement history at the posting
 					# date, never the asset's mutable cost_center field — the
 					# same rule every other depreciation posting obeys since
-					# the 24/08 redesign (client, TC-035).
-					"cost_center": cost_centre_on(
-						asset.name, posting_date, fallback=asset.get("cost_center")
-					),
+					# the 24/08 redesign (client, TC-035). This entry covers
+					# one instant rather than a period, so it takes the state
+					# in force that day whole, with no split.
+					"cost_center": held_cc,
 					"reference_type": "Asset",
 					"reference_name": asset.name,
+					**held_dims,
 				},
 				{
 					"account": aca.accumulated_depreciation_account,
@@ -1398,42 +1402,130 @@ def _split_row_by_fiscal_year(row, posting_date, company):
 	return prior_amount, fa_module_round(amount - prior_amount, company)
 
 
-def cost_centre_timeline(asset_name, fallback=None):
-	"""Who held this asset, and from when — built from its MOVEMENTS.
+def movement_dimension_fields():
+	"""Registered accounting dimensions a transfer row can carry.
 
-	Returns [(from_date | None, cost_centre), ...] oldest first; the first
-	entry's date is None, meaning "since the beginning".
+	Core lists `Asset Movement Item` in its `accounting_dimension_doctypes`
+	hook, so registering any dimension puts that field on the transfer
+	row — which is how Project Accounting and WBS Element came to be
+	fillable on a movement without anyone adding them. Core then never
+	reads them back: a movement posts no GL of its own, so the values
+	sat on the document and reached nothing. The client transferred an
+	asset to a project, saw the dimension accepted on the transfer, and
+	got a depreciation entry with the columns empty (UAT
+	ACC-JV-2026-02277 / ACC-ASM-2026-02725, 08/09).
 
-	This is the single source of truth for cost-centre attribution. The
+	`asset` is excluded: on this child table that fieldname is the LINK
+	to the asset being moved, not a dimension anyone chose, and the
+	entry already gets it from `stamp_asset_dimension` (GAP-023).
+	"""
+	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+		get_accounting_dimensions,
+	)
+
+	meta = frappe.get_meta("Asset Movement Item")
+	return [
+		fieldname
+		for fieldname in (get_accounting_dimensions() or [])
+		if fieldname != "asset" and meta.has_field(fieldname)
+	]
+
+
+def _origin_cost_centre(asset_name, first_move, fallback):
+	"""The centre the asset sat in before its FIRST transfer.
+
+	`source_cost_center` is the captured truth and wins whenever it has a
+	value. It can legitimately be empty: the capture reads the asset's
+	`cost_center`, which is not a mandatory field, and 82 UAT assets
+	carry none — for those the movement records a target and no source.
+
+	The fallback may not be the asset's own `cost_center` in that case.
+	By the time anything reads the timeline the transfer has already
+	overwritten that field, so an empty source made the pre-transfer days
+	inherit the centre the asset was moved TO — the exact defect the
+	captured field exists to prevent, reached through the one path that
+	captures nothing (UAT ACC-JV-2026-02277: 43.79 for 1-8 Sep booked to
+	the project centre the asset only joined on the 9th).
+
+	The acquisition centre answers it instead: it is derived from the
+	ledger leg that actually carried the cost, never mutated by a
+	transfer, and for an asset with no cost centre of its own it is where
+	the earlier depreciation demonstrably posted.
+	"""
+	if first_move.source_cost_center:
+		return first_move.source_cost_center
+	captured = frappe.db.get_value("Asset", asset_name, "acquisition_cost_center")
+	if captured:
+		return captured
+	from asset_enterprise.gl_attribution import acquisition_cost_center
+
+	return acquisition_cost_center(asset_name) or fallback
+
+
+def attribution_timeline(asset_name, fallback=None):
+	"""Who held this asset, from when, and under which dimensions.
+
+	Returns [(from_date | None, cost_centre, dimensions), ...] oldest
+	first; the first entry's date is None, meaning "since the beginning".
+
+	This is the single source of truth for depreciation attribution. The
 	asset's own `cost_center` field is the CURRENT holder and nothing
 	more: it is overwritten by every transfer, so reading it while
 	posting attributes history to wherever the asset happens to sit now.
 	That is how periods entirely BEFORE a transfer came to be expensed to
 	the new centre whenever they posted late (client, TC-035, 20/08).
 
+	Dimensions travel the same way, and for the same reason: a project
+	that took the asset in September did not hold it in August, so only
+	the segments from the day after the transfer carry it (Vivek,
+	08/09 — "only post transfer"). A movement leaving a dimension blank
+	changes nothing about it, matching how VR-026 already treats a blank
+	target location or custodian; the asset's own values open the
+	timeline, so an asset that was created under a project keeps it.
+
 	Cancelled movements are excluded, so reversing a transfer restores
 	the attribution by itself — GAP-021: "restores prior CC for future
 	depreciation only".
 	"""
-	moves = frappe.db.sql(
-		"""select am.transaction_date, ami.target_cost_center, ami.source_cost_center
-		   from `tabAsset Movement Item` ami
-		   join `tabAsset Movement` am on am.name = ami.parent
-		   where ami.asset = %s and am.docstatus = 1
-		     and ifnull(ami.target_cost_center, '') != ''
-		   order by am.transaction_date, am.creation""",
-		asset_name,
-		as_dict=True,
+	fields = movement_dimension_fields()
+	ami = frappe.qb.DocType("Asset Movement Item")
+	am = frappe.qb.DocType("Asset Movement")
+	query = (
+		frappe.qb.from_(ami)
+		.join(am)
+		.on(am.name == ami.parent)
+		.select(am.transaction_date, ami.target_cost_center, ami.source_cost_center)
+		.where((ami.asset == asset_name) & (am.docstatus == 1))
+		.orderby(am.transaction_date)
+		.orderby(am.creation)
 	)
+	for fieldname in fields:
+		query = query.select(ami[fieldname])
+	# A movement may change dimensions WITHOUT changing the cost centre,
+	# so unlike the pre-dimension query this cannot filter on a target
+	# centre; rows that change neither are dropped below instead.
+	moves = [
+		move
+		for move in query.run(as_dict=True)
+		if move.target_cost_center or any(move.get(f) for f in fields)
+	]
+
 	if fallback is None:
 		fallback = frappe.db.get_value("Asset", asset_name, "cost_center")
+	opening = _asset_dimensions(asset_name, fields)
 	if not moves:
-		return [(None, fallback)]
+		return [(None, fallback, opening)]
+
 	# The centre the asset started in is the FIRST transfer's source; the
 	# asset's own field cannot supply it once a transfer has happened.
-	origin = moves[0].source_cost_center or fallback
-	timeline = [(None, origin)]
+	current_cc = _origin_cost_centre(asset_name, moves[0], fallback)
+	current_dims = dict(opening)
+	timeline = [(None, current_cc, dict(current_dims))]
 	for move in moves:
+		current_cc = move.target_cost_center or current_cc
+		for fieldname in fields:
+			if move.get(fieldname):
+				current_dims[fieldname] = move.get(fieldname)
 		# The transfer DAY ITSELF belongs to the centre giving the asset
 		# up; the receiving centre holds it from the following day. The
 		# client's "Cost Center Transfer" workbook (Belal, 02/09) splits a
@@ -1446,24 +1538,59 @@ def cost_centre_timeline(asset_name, fallback=None):
 		# cost_centre_on() and cost_centre_split() answering the same
 		# question the same way; fixing only the split would have left
 		# them disagreeing about who held the asset on the transfer date.
-		timeline.append((add_days(getdate(move.transaction_date), 1), move.target_cost_center))
+		timeline.append(
+			(add_days(getdate(move.transaction_date), 1), current_cc, dict(current_dims))
+		)
 	return timeline
 
 
-def cost_centre_on(asset_name, on_date, fallback=None):
-	"""The cost centre that held the asset on `on_date`."""
-	held = None
-	for start, cc in cost_centre_timeline(asset_name, fallback=fallback):
+def _asset_dimensions(asset_name, fields):
+	"""The asset's own dimension values — the timeline's opening state.
+
+	An asset capitalized under a project carries the dimension from its
+	receipt line (core's `make_asset` copies every registered dimension
+	from the PR row), so its depreciation should carry it from day one
+	without needing a movement to say so.
+	"""
+	on_asset = [f for f in fields if frappe.get_meta("Asset").has_field(f)]
+	if not on_asset:
+		return {}
+	values = frappe.db.get_value("Asset", asset_name, on_asset, as_dict=True) or {}
+	return {f: v for f, v in values.items() if v}
+
+
+def cost_centre_timeline(asset_name, fallback=None):
+	"""Cost-centre-only view of `attribution_timeline`, kept for the
+	callers that ask nothing about dimensions."""
+	return [(start, cc) for start, cc, _dims in attribution_timeline(asset_name, fallback=fallback)]
+
+
+def attribution_on(asset_name, on_date, fallback=None):
+	"""(cost centre, dimensions) in force on `on_date`."""
+	held = (None, {})
+	for start, cc, dims in attribution_timeline(asset_name, fallback=fallback):
 		if start is None or getdate(start) <= getdate(on_date):
-			held = cc
+			held = (cc, dims)
 		else:
 			break
 	return held
 
 
-def cost_centre_split(asset_name, start_date, end_date, amount, company, fallback=None):
-	"""Split `amount` across the centres that held the asset between
-	`start_date` and `end_date`, by days.
+def cost_centre_on(asset_name, on_date, fallback=None):
+	"""The cost centre that held the asset on `on_date`."""
+	return attribution_on(asset_name, on_date, fallback=fallback)[0]
+
+
+def dimensions_on(asset_name, on_date, fallback=None):
+	"""The accounting dimensions in force on `on_date`."""
+	return attribution_on(asset_name, on_date, fallback=fallback)[1]
+
+
+def attribution_split(asset_name, start_date, end_date, amount, company, fallback=None):
+	"""Split `amount` across the centres AND dimensions that held the
+	asset between `start_date` and `end_date`, by days.
+
+	Returns [(cost_centre, dimensions, amount), ...].
 
 	GAP-021 posts ONE entry per period with a debit per centre:
 	    DR Depreciation Expense (Old CC)  [days before transfer / total]
@@ -1475,41 +1602,56 @@ def cost_centre_split(asset_name, start_date, end_date, amount, company, fallbac
 	if total_days <= 0:
 		return []
 
-	timeline = cost_centre_timeline(asset_name, fallback=fallback)
-	# Boundaries inside the period, plus the centre in force when it began.
+	timeline = attribution_timeline(asset_name, fallback=fallback)
+	# Boundaries inside the period, plus the state in force when it began.
 	boundaries = []
-	current = cost_centre_on(asset_name, start, fallback=fallback)
+	current = attribution_on(asset_name, start, fallback=fallback)
 	cursor = start
-	for change, cc in timeline:
+	for change, cc, dims in timeline:
 		if change is None or getdate(change) <= start or getdate(change) > end:
 			continue
 		days = date_diff(getdate(change), cursor)
 		if days > 0:
 			boundaries.append((current, days))
-		current = cc
+		current = (cc, dims)
 		cursor = getdate(change)
 	remaining = date_diff(end, cursor) + 1
 	if remaining > 0:
 		boundaries.append((current, remaining))
 
 	out, allocated = [], 0.0
-	for idx, (cc, seg_days) in enumerate(boundaries):
+	for idx, ((cc, dims), seg_days) in enumerate(boundaries):
 		if idx == len(boundaries) - 1:
 			part = fa_module_round(flt(amount) - allocated, company)
 		else:
 			part = fa_module_round(flt(amount) * seg_days / total_days, company)
 		allocated = flt(allocated + part)
-		out.append((cc, part))
-	return [(cc, part) for cc, part in out if flt(part)]
+		out.append((cc, dims, part))
+	return [(cc, dims, part) for cc, dims, part in out if flt(part)]
+
+
+def cost_centre_split(asset_name, start_date, end_date, amount, company, fallback=None):
+	"""Cost-centre-only view of `attribution_split` — [(centre, amount)]."""
+	return [
+		(cc, part)
+		for cc, _dims, part in attribution_split(
+			asset_name, start_date, end_date, amount, company, fallback=fallback
+		)
+	]
 
 
 def cost_center_segments(asset, row):
 	"""GAP-021 / TC-035: the period's debit split across the centres that
-	held the asset DURING it — never the one it happens to carry now."""
+	held the asset DURING it — never the one it happens to carry now.
+
+	Returns [(cost_centre, dimensions, amount)]: the dimensions ride the
+	same segmentation, so the project that received the asset mid-period
+	is debited for its days and no others.
+	"""
 	end = getdate(row.schedule_date)
 	days = cint(row.days_in_period) or 1
 	start = add_days(end, -(days - 1))
-	return cost_centre_split(
+	return attribution_split(
 		row.asset,
 		start,
 		end,
@@ -1534,6 +1676,7 @@ def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount,
 				"cost_center": segments[0][0] if segments else cost_center,
 				"reference_type": "Asset",
 				"reference_name": asset.name,
+				**(segments[0][1] if segments else {}),
 			}
 		)
 	if flt(current_amount):
@@ -1541,8 +1684,8 @@ def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount,
 		# in the same proportion the segmentation produced.
 		total = flt(row.depreciation_amount) or flt(current_amount)
 		allocated = 0.0
-		usable = segments or [(cost_center, flt(current_amount))]
-		for idx, (cc, part) in enumerate(usable):
+		usable = segments or [(cost_center, {}, flt(current_amount))]
+		for idx, (cc, dims, part) in enumerate(usable):
 			if idx == len(usable) - 1:
 				amount = fa_module_round(flt(current_amount) - allocated, asset.company)
 			else:
@@ -1556,6 +1699,10 @@ def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount,
 						"cost_center": cc,
 						"reference_type": "Asset",
 						"reference_name": asset.name,
+						# Expense follows use, and so does the dimension it
+						# was used under: only the segments from the day
+						# after a transfer carry the receiving project.
+						**dims,
 					}
 				)
 	legs.append(

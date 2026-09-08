@@ -732,6 +732,149 @@ def e21():
 	)
 
 
+@case("E-22", "GAP-021 / ruling 08/09", "a transfer's DIMENSIONS bind only the days after it")
+def e22():
+	"""The client moved an asset to a project and the depreciation entry
+	came back with the Project Accounting and WBS columns empty (UAT
+	ACC-JV-2026-02277 / ACC-ASM-2026-02725, 08/09).
+
+	Core lists `Asset Movement Item` in `accounting_dimension_doctypes`,
+	so registering a dimension makes it fillable on a transfer; nothing
+	then read it back, because a movement posts no GL of its own. The
+	dimension now rides the same day-split the cost centre already used:
+	a project that took the asset on the 9th is debited for the 9th
+	onward and for nothing before it (Vivek, 08/09 — "only post
+	transfer").
+
+	Skipped rather than failed where no dimension is registered on the
+	movement row: this app registers only `Asset`, which is excluded by
+	design, so the case is live only on a site that also has PA.
+	"""
+	from asset_enterprise.depreciation import attribution_split, movement_dimension_fields
+
+	fields = movement_dimension_fields()
+	if not fields:
+		return True, "no registered dimension on Asset Movement Item — nothing to bind (skipped)"
+	field = fields[0]
+	value = frappe.get_all(frappe.get_meta("Asset Movement Item").get_field(field).options,
+	                       limit=1, pluck="name")
+	if not value:
+		return True, f"no {field} record to transfer to (skipped)"
+
+	company = _company()
+	ccs = frappe.get_all(
+		"Cost Center", filters={"company": company, "is_group": 0}, limit=2, pluck="name"
+	)
+	if len(ccs) < 2:
+		return False, "need two cost centres in this company"
+	old_cc, new_cc = ccs
+
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	asset = make_test_asset(company, gross=3_000, submit=True)
+	frappe.db.set_value("Asset", asset.name, "cost_center", old_cc, update_modified=False)
+	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
+	locations = frappe.get_all("Location", limit=2, pluck="name")
+	move = frappe.get_doc({
+		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+		"transaction_date": str(transfer),
+		"assets": [{
+			"asset": asset.name, "source_cost_center": old_cc, "target_cost_center": new_cc,
+			"source_location": frappe.db.get_value("Asset", asset.name, "location"),
+			"target_location": locations[-1],
+			field: value[0],
+		}],
+	})
+	move.flags.ignore_permissions = True
+	move.insert()
+	move.submit()
+
+	period_start, period_end = get_first_day(transfer), get_last_day(transfer)
+	segments = attribution_split(asset.name, period_start, period_end, 84.931506849, company)
+	before = [s for s in segments if s[0] == old_cc]
+	after = [s for s in segments if s[0] == new_cc]
+	ok = (
+		len(before) == 1
+		and len(after) == 1
+		and not before[0][1].get(field)      # 1-13: the project did not hold it
+		and after[0][1].get(field) == value[0]  # 14-end: it did
+	)
+	return ok, (
+		f"{field}={value[0]} set on the transfer of {transfer}: "
+		f"pre-transfer segment carries {before[0][1].get(field) if before else '—'} (want none), "
+		f"post-transfer segment carries {after[0][1].get(field) if after else '—'} "
+		f"(want {value[0]})"
+	)
+
+
+@case("E-23", "GAP-021 / V-08", "a transfer from a BLANK cost centre keeps its history")
+def e23():
+	"""`source_cost_center` is captured from `Asset.cost_center`, which is
+	not a mandatory field — 82 UAT assets carry none, so their transfers
+	record a target and no source.
+
+	The origin then fell through to the asset's own `cost_center`, which
+	the transfer had already overwritten, and the pre-transfer days
+	inherited the centre the asset was moved TO: the precise defect the
+	captured field exists to prevent, reached through the one path that
+	captures nothing (UAT ACC-JV-2026-02277 booked 1-8 September to a
+	project centre the asset joined on the 9th).
+
+	The acquisition centre answers instead — derived from the ledger leg
+	that carried the cost, and never mutated by a transfer.
+	"""
+	from asset_enterprise.depreciation import cost_centre_split
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+	acq_cc = frappe.db.get_value("Company", company, "cost_center")
+	new_cc = next(
+		iter(frappe.get_all(
+			"Cost Center",
+			filters={"company": company, "is_group": 0, "name": ("!=", acq_cc)},
+			limit=1, pluck="name",
+		)), None,
+	)
+	if not new_cc:
+		return False, "need a second cost centre in this company"
+
+	asset = make_test_asset(company, gross=3_000, submit=True)
+	# The condition under test: no cost centre on the asset at all, so the
+	# movement has nothing to capture as its source.
+	frappe.db.set_value("Asset", asset.name, "cost_center", None, update_modified=False)
+	frappe.db.set_value(
+		"Asset", asset.name, "acquisition_cost_center", acq_cc, update_modified=False
+	)
+	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
+	locations = frappe.get_all("Location", limit=2, pluck="name")
+	move = frappe.get_doc({
+		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+		"transaction_date": str(transfer),
+		"assets": [{
+			"asset": asset.name, "target_cost_center": new_cc,
+			"source_location": frappe.db.get_value("Asset", asset.name, "location"),
+			"target_location": locations[-1],
+		}],
+	})
+	move.flags.ignore_permissions = True
+	move.insert()
+	move.submit()
+
+	captured = frappe.db.get_value(
+		"Asset Movement Item", {"parent": move.name}, "source_cost_center"
+	)
+	split = cost_centre_split(
+		asset.name, get_first_day(transfer), get_last_day(transfer), 84.931506849, company
+	)
+	by_cc = {cc: flt(amt) for cc, amt in split}
+	ok = len(split) == 2 and acq_cc in by_cc and new_cc in by_cc
+	return ok, (
+		f"captured source={captured or 'none'}; split {[(cc, round(a, 2)) for cc, a in split]} "
+		f"(want the pre-transfer days on the acquisition centre {acq_cc}, "
+		f"not on {new_cc})"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 
