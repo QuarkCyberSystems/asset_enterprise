@@ -179,21 +179,56 @@ def register_asset_accounting_dimension():
 	"""GAP-023 (Phase 11c D5, recommended option): ship "Asset" as an
 	Accounting Dimension so GL entries can be filtered/grouped by
 	asset. Idempotent; dimension creation adds the `asset` dimension
-	field across GL-mapped doctypes."""
+	field across GL-mapped doctypes.
+
+	The field creation has to be driven from here. Core's
+	AccountingDimension.on_update only ENQUEUES
+	make_dimension_in_accounting_doctypes outside tests, so on a fresh
+	site — or on any bench whose workers are down at install time — that
+	job never runs and the dimension is left registered with its fields
+	on nothing. That half-state is worse than no dimension at all: the
+	budget controller selects every registered dimension's own column out
+	of `tabBudget` (erpnext/controllers/budget_controller.py, reached from
+	make_gl_entries), so with the Accounting Dimension row present and the
+	column absent EVERY GL posting on the site dies with
+	"Unknown column 'asset' in 'SELECT'".
+
+	Calling the framework's own builder synchronously — as
+	project_accounting does for its four dimensions — closes that window,
+	and re-running it on each migrate both repairs sites already in the
+	broken state and picks up any doctype ERPNext later adds to the
+	dimension framework. The builder skips every doctype that already
+	carries the field, so the repeat run is a no-op."""
+	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+		make_dimension_in_accounting_doctypes,
+	)
+
 	try:
-		if frappe.db.exists("Accounting Dimension", {"document_type": "Asset"}):
-			return
-		dim = frappe.get_doc(
-			{"doctype": "Accounting Dimension", "document_type": "Asset"}
-		)
-		dim.flags.ignore_permissions = True
-		dim.insert()
+		name = frappe.db.get_value("Accounting Dimension", {"document_type": "Asset"})
+		if name:
+			dim = frappe.get_doc("Accounting Dimension", name)
+		else:
+			dim = frappe.get_doc(
+				{"doctype": "Accounting Dimension", "document_type": "Asset"}
+			)
+			dim.flags.ignore_permissions = True
+			dim.insert()
+			print("asset_enterprise: registered 'Asset' as Accounting Dimension (GAP-023)")
+		make_dimension_in_accounting_doctypes(doc=dim)
 		frappe.db.commit()
-		print("asset_enterprise: registered 'Asset' as Accounting Dimension (GAP-023)")
 	except Exception:
+		# Everything else in this module can fail quietly and leave a
+		# usable site; this one cannot. A dimension without its fields
+		# blocks all GL posting, so say so on the install/migrate console
+		# as well as in the error log.
+		trace = frappe.get_traceback()
+		print(
+			"asset_enterprise ERROR: 'Asset' Accounting Dimension registration failed. "
+			"GL posting will fail until this is resolved.\n" + trace
+		)
 		frappe.log_error(
 			title="asset_enterprise: Accounting Dimension registration failed",
-			message=frappe.get_traceback(),
+			message=trace,
 		)
 
 

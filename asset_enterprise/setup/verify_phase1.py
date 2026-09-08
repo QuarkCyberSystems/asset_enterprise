@@ -79,7 +79,38 @@ def run():
 	)
 	ok = ok and bool(visible)
 
-	# 6. Account resolution chain smoke (expect controlled throw, not crash)
+	# 6. GAP-023 Asset accounting dimension — registered AND fielded.
+	# Core only enqueues the field creation, so a dimension row with no
+	# fields is a real install outcome, and it breaks every GL posting:
+	# the budget controller selects `asset` out of tabBudget.
+	dim = frappe.db.get_value(
+		"Accounting Dimension", {"document_type": "Asset"}, ["name", "fieldname"], as_dict=True
+	)
+	print(f"dim     Accounting Dimension 'Asset' -> {dim and dim.name} {'OK' if dim else 'MISSING'}")
+	ok = ok and bool(dim)
+	if dim:
+		# every doctype the framework claims the dimension for must carry
+		# the field — asked of the meta, since a few Asset doctypes supply
+		# `asset` natively and so get no Custom Field of their own
+		from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+			get_doctypes_with_dimensions,
+		)
+
+		doctypes = get_doctypes_with_dimensions()
+		missing = [dt for dt in doctypes if not frappe.get_meta(dt).has_field(dim.fieldname)]
+		print(
+			f"dim     {dim.fieldname} field on {len(doctypes) - len(missing)}/{len(doctypes)} "
+			f"dimension doctypes {'OK' if not missing else 'MISSING on ' + ', '.join(missing[:6])}"
+		)
+		ok = ok and not missing
+		# and the column itself, not just the Custom Field row — this is
+		# what budget_controller.get_budget_records() selects on every GL
+		# posting, so its absence takes the whole ledger down
+		in_table = dim.fieldname in frappe.db.get_table_columns("Budget")
+		print(f"dim     tabBudget column {dim.fieldname:33s} {'OK' if in_table else 'MISSING'}")
+		ok = ok and in_table
+
+	# 7. Account resolution chain smoke (expect controlled throw, not crash)
 	from asset_enterprise.accounts import get_disposal_account, get_last_period_tolerance
 
 	from asset_enterprise.setup.test_fixtures import pick_company
