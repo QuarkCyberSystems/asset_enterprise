@@ -310,7 +310,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 			last_posted = last_posted_schedule_date(self.asset)
 			supersede_and_regenerate(
 				self.asset,
-				as_of_date=getdate(last_posted) if last_posted else self.date,
+				as_of_date=getdate(last_posted) if last_posted else None,
 				end_of_life_override=new_end,
 				rate_change_date=getdate(self.date) if last_posted else None,
 				reason=_("Useful Life Adjustment via {0} ({1:+} months, {2:+} days)").format(

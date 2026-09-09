@@ -242,7 +242,7 @@ def partial_scrap_asset(
 	try:
 		supersede_and_regenerate(
 			asset.name,
-			as_of_date=getdate(last_posted) if last_posted else scrap_date,
+			as_of_date=getdate(last_posted) if last_posted else None,
 			rate_change_date=getdate(scrap_date) if last_posted else None,
 			reason=_("Partial scrap via {0}").format(je),
 		)

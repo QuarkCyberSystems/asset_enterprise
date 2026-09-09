@@ -379,6 +379,50 @@ def split_period_for_cc_change(row_amount, days_in_period, change_day_offset, co
 # --------------------------------------------------------------------------
 
 
+def resume_basis_date(asset_name, finance_book=None):
+	"""The date a regenerated schedule resumes FROM — rows are built for
+	the day AFTER it.
+
+	Every event that re-prices a schedule (partial scrap, useful-life
+	adjustment, repair reversal, restore, disposal) must resume from the
+	last POSTED period, never from the event's own date: the days between
+	the last posting and the event are exactly what the next row has to
+	charge. Anchoring on the event date leaves them with no row at all.
+
+	When nothing is posted yet, that argument does not weaken — it gets
+	stronger, because then EVERY day since the asset went into service is
+	uncharged. Resume from the day before the schedule's own start basis:
+	the first row's `days_in_period` gives it
+	(`schedule_date - (days - 1)`), which is where charging actually
+	began. `available_for_use_date` is NOT that — GAP-011 enablement can
+	start charging later (`depreciation_start_date`) and a
+	reclassification earlier, so AFU would re-anchor the stub and the
+	rate on the wrong day. It is the last resort only.
+	"""
+	last_posted = last_posted_schedule_date(asset_name, finance_book)
+	if last_posted:
+		return getdate(last_posted)
+	basis_row = frappe.db.sql(
+		"""
+		select ds.schedule_date, ifnull(ds.days_in_period, 0) as days_in_period
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		order by ds.schedule_date, ds.idx
+		limit 1
+		""",
+		asset_name,
+		as_dict=True,
+	)
+	if basis_row and basis_row[0].days_in_period > 0:
+		basis_date = add_days(
+			getdate(basis_row[0].schedule_date), -(basis_row[0].days_in_period - 1)
+		)
+		return add_days(getdate(basis_date), -1)
+	afu = frappe.db.get_value("Asset", asset_name, "available_for_use_date")
+	return add_days(getdate(afu), -1) if afu else None
+
+
 def supersede_and_regenerate(
 	asset_name,
 	finance_book=None,
@@ -406,43 +450,16 @@ def supersede_and_regenerate(
 
 	Returns the new Asset Depreciation Schedule doc.
 	"""
-	# A disposal resumes from the last POSTED period, not from the
-	# disposal date — the days in between are exactly what the final
-	# prorated row has to charge.
-	if disposal_date and not as_of_date:
-		last_posted = last_posted_schedule_date(asset_name, finance_book)
-		if last_posted:
-			as_of_date = getdate(last_posted)
-		else:
-			# No EFFECTIVE posted row (e.g. a merge-time straddle reversal
-			# removed the only posting — A6). Resume from the day before
-			# the schedule's own start basis: the first row's
-			# `days_in_period` carries it (schedule_date - (days - 1)),
-			# which is where charging actually began. available_for_use_date
-			# is NOT that: GAP-011 enablement can start charging later
-			# (depreciation_start_date), and a reclassification earlier —
-			# using AFU re-anchors the stub and rate on the wrong day.
-			basis_row = frappe.db.sql(
-				"""
-				select ds.schedule_date, ifnull(ds.days_in_period, 0) as days_in_period
-				from `tabDepreciation Schedule` ds
-				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-				where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
-				order by ds.schedule_date, ds.idx
-				limit 1
-				""",
-				asset_name,
-				as_dict=True,
-			)
-			basis_date = None
-			if basis_row and basis_row[0].days_in_period > 0:
-				basis_date = add_days(
-					getdate(basis_row[0].schedule_date), -(basis_row[0].days_in_period - 1)
-				)
-			as_of_date = add_days(getdate(basis_date), -1) if basis_date else None
-			if not as_of_date:
-				afu = frappe.db.get_value("Asset", asset_name, "available_for_use_date")
-				as_of_date = add_days(getdate(afu), -1) if afu else None
+	# ANY regeneration resumes from the last posted period, never from
+	# the triggering event's own date — see resume_basis_date. This was
+	# gated on `disposal_date` and so applied only to merges and full
+	# disposals; every other caller compensated with its own
+	# `... if last_posted else <event date>` fallback, which silently
+	# dropped the days before the event whenever nothing was posted yet
+	# (client, 09/09: a building bought 01/03 and partially scrapped
+	# 15/03 charged its first 16 days only, losing 01–15 March).
+	if not as_of_date:
+		as_of_date = resume_basis_date(asset_name, finance_book)
 	as_of_date = getdate(as_of_date or nowdate())
 
 	filters = {"asset": asset_name, "status": "Active", "docstatus": 1}

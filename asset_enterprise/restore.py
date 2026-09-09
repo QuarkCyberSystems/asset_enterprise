@@ -107,7 +107,7 @@ def restore_asset(asset_name):
 	try:
 		supersede_and_regenerate(
 			asset.name,
-			as_of_date=getdate(last_posted) if last_posted else nowdate(),
+			as_of_date=getdate(last_posted) if last_posted else None,
 			end_of_life_override=schedule_horizon_from_life(asset.name),
 			reason=_("Restored via {0}").format(mirror),
 		)

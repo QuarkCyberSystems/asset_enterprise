@@ -230,7 +230,7 @@ class EnterpriseAssetRepair(AssetRepair):
 		try:
 			supersede_and_regenerate(
 				self.asset,
-				as_of_date=getdate(last_posted) if last_posted else reversal_date,
+				as_of_date=getdate(last_posted) if last_posted else None,
 				rate_change_date=reversal_date if last_posted else None,
 				# The life the source repair granted goes back with the
 				# value — otherwise the cost was reversed but the asset

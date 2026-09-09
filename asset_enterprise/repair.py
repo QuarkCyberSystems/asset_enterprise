@@ -1312,6 +1312,108 @@ def report_balance_sheet_attribution(company=None, asset=None):
 	return rows
 
 
+def find_truncated_first_rows(company=None, asset=None):
+	"""Assets whose schedule lost the days between going into service and
+	a value event that landed before anything was posted.
+
+	A partial scrap, useful-life adjustment, repair reversal or restore
+	used to anchor the rebuild on its own date whenever no row had been
+	posted, so the days already in service got no row at all — the total
+	still landed on NBV, only the timing was wrong, which is why nothing
+	else reports it (client, 09/09: ACC-ASS-2026-00289 charged 16 days of
+	March for an asset in service from the 1st).
+
+	The discriminator is the EVENT, not the dates alone: a schedule may
+	legitimately start after `available_for_use_date` when GAP-011
+	enablement begins charging later. Only a first row whose start is
+	preceded by a submitted value event, with nothing posted, is this
+	defect.
+	"""
+	conditions, values = ["a.docstatus = 1", "ads.status = 'Active'", "ads.docstatus = 1"], {}
+	if company:
+		conditions.append("a.company = %(company)s")
+		values["company"] = company
+	if asset:
+		conditions.append("a.name = %(asset)s")
+		values["asset"] = asset
+	rows = frappe.db.sql(
+		f"""
+		select a.name as asset, a.available_for_use_date as afu, ads.name as schedule,
+		       ds.schedule_date, ifnull(ds.days_in_period, 0) as days_in_period
+		from `tabAsset` a
+		join `tabAsset Depreciation Schedule` ads on ads.asset = a.name
+		join `tabDepreciation Schedule` ds on ds.parent = ads.name
+		where {" and ".join(conditions)}
+		  and ds.idx = 1
+		  and ifnull(a.available_for_use_date, '') <> ''
+		  and not exists (
+		        select 1 from `tabDepreciation Schedule` p
+		        where p.parent = ads.name and ifnull(p.journal_entry, '') <> '')
+		""",
+		values,
+		as_dict=True,
+	)
+	out = []
+	for r in rows:
+		if not cint(r.days_in_period):
+			continue
+		first_start = add_days(getdate(r.schedule_date), -(cint(r.days_in_period) - 1))
+		if first_start <= getdate(r.afu):
+			continue  # starts at (or before) service — nothing lost
+		event = frappe.db.sql(
+			"""select name, transaction_date from `tabScrap Transaction`
+			   where docstatus = 1 and asset = %(a)s
+			     and transaction_date >= %(afu)s and transaction_date < %(start)s
+			   union all
+			   select name, date from `tabAsset Value Adjustment`
+			   where docstatus = 1 and asset = %(a)s
+			     and date >= %(afu)s and date < %(start)s
+			   limit 1""",
+			{"a": r.asset, "afu": getdate(r.afu), "start": first_start},
+		)
+		if not event:
+			continue  # a later start with no event behind it is by design
+		r.first_start = first_start
+		r.lost_days = cint(date_diff(first_start, getdate(r.afu)))
+		r.caused_by = event[0][0]
+		out.append(r)
+	return out
+
+
+def repair_truncated_first_rows(company=None, asset=None, dry_run=1):
+	"""Re-anchor the schedule at the in-service date.
+
+	`resume_basis_date` cannot be used here: it reads the ACTIVE
+	schedule's own first row, and on these assets that row is the damaged
+	one — it would resume from the truncated start and change nothing.
+	The repair passes the day before `available_for_use_date` explicitly.
+
+	Safe because nothing is posted on these schedules by definition, so
+	no journal entry is re-anchored and no ledger value moves; only the
+	unposted rows are re-spread over the days actually in service.
+	"""
+	from asset_enterprise.depreciation import supersede_and_regenerate
+
+	rows = find_truncated_first_rows(company=company, asset=asset)
+	print(f"{len(rows)} asset(s) whose first row starts after they went into service:")
+	for r in rows:
+		print(f"  {r.asset}: in service {r.afu}, first row {r.schedule_date} starts "
+		      f"{r.first_start} ({r.days_in_period}d) — {r.lost_days} day(s) lost, "
+		      f"caused by {r.caused_by}")
+	if not dry_run:
+		for r in rows:
+			supersede_and_regenerate(
+				r.asset,
+				as_of_date=add_days(getdate(r.afu), -1),
+				reason=_("Re-anchored at in-service date {0} ({1} day(s) recovered)").format(
+					r.afu, r.lost_days
+				),
+			)
+		frappe.db.commit()
+	print(f"  {len(rows)} regenerated{' (dry run — nothing written)' if dry_run else ''}")
+	return rows
+
+
 def _legacy_acquisition_candidates(company=None):
 	"""Older acquisition rows carry no `voucher_detail_no`, so nothing on
 	the row links it to a receipt line (MAT-PRE-2026-00284's 13,500,000

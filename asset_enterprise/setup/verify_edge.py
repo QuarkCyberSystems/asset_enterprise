@@ -1002,6 +1002,63 @@ def e23():
 	)
 
 
+@case("E-25", "client 09/09", "an event BEFORE any posting keeps the days already in service")
+def e25():
+	"""Ruba's ABC - Bulding: 1,200 available for use 01/03, partially
+	scrapped for 200 on 15/03, nothing posted yet. The rebuilt schedule
+	charged its first row for 16 days — 01–15 March had no row at all,
+	and the surviving 1,000 was squeezed into 350 days instead of 365.
+
+	The total still landed on 1,000, which is why nothing caught it. Only
+	the timing was wrong: no expense in the first fortnight of service,
+	too much in every day after.
+
+	A regeneration resumes from the last POSTED period. With nothing
+	posted that argument gets stronger, not weaker — every day since the
+	asset went into service is uncharged, so the rebuild must resume at
+	the schedule's start basis, not at the event's own date.
+	"""
+	from asset_enterprise import disposal
+	from asset_enterprise.depreciation import enable_depreciation
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+	# First of a month at least a month out — the fixture's own receipt
+	# movement lands today, so the scrap has to be dated after it.
+	afu = get_first_day(add_months(nowdate(), 1))
+	asset = make_test_asset(company, gross=1_200, submit=False)
+	asset.available_for_use_date = str(afu)
+	asset.purchase_date = str(afu)
+	asset.save(ignore_permissions=True)
+	asset.submit()
+	enable_depreciation(
+		asset.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+		depreciation_start_date=get_last_day(afu), expected_value_after_useful_life=0,
+	)
+	disposal.partial_scrap_asset(
+		asset.name, scrap_date=add_days(afu, 14), scrap_value=200, scrapping_type="Damage"
+	)
+
+	rows = _rows(asset.name)
+	if not rows:
+		return False, "no schedule after the partial scrap"
+	first = rows[0]
+	month_days = cint(date_diff(get_last_day(afu), afu)) + 1
+	total = flt(sum(flt(r.depreciation_amount) for r in rows))
+	# The first row must cover the whole month the asset entered service,
+	# not just the part after the scrap.
+	ok = (
+		cint(first.days_in_period) == month_days
+		and abs(total - 1_000) < 0.05
+	)
+	return ok, (
+		f"asset in service {afu}, scrapped {add_days(afu, 14)} with nothing posted: "
+		f"first row {first.schedule_date} covers {first.days_in_period} day(s) "
+		f"(want {month_days} — the full month from {afu}); "
+		f"schedule totals {total:,.2f} (want 1,000.00 = 1,200 less the 200 scrapped)"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 
