@@ -166,6 +166,25 @@ class EnterpriseAVA(AssetValueAdjustment):
 
 	# ------------------------------------------------------------- submit
 	def on_submit(self):
+		# VR-043 (client, 10/09): an impairment or revaluation is measured
+		# FROM the carrying amount, so periods left unposted make it a
+		# measurement against a value the asset stopped having months ago.
+		# Unlike a full scrap there is no proration step to make it
+		# current, so the periods have to be booked first.
+		#
+		# A REVERSAL is exempt: its amount is fixed by the document it
+		# mirrors, not derived from today's carrying amount, so stale
+		# periods cannot misstate it — and blocking one would trap a user
+		# who needs to undo an entry before posting anything further
+		# (TC-044b).
+		if (
+			self._enterprise()
+			and not self.get("reversal_of_ava")
+			and frappe.db.get_value("Asset", self.asset, "calculate_depreciation")
+		):
+			from asset_enterprise.depreciation import assert_depreciation_current
+
+			assert_depreciation_current(self.asset, getdate(self.date), _("this adjustment"))
 		# UL-only adjustments (difference = 0) post no revaluation JE —
 		# core's make_asset_revaluation_entry crashes on a zero
 		# difference (credit_entry unbound), and the reschedule is ours

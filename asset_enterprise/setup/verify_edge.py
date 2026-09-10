@@ -1059,6 +1059,75 @@ def e25():
 	)
 
 
+@case("E-26", "VR-043 / client 10/09", "a partial scrap over unposted periods is blocked, not re-spread")
+def e26():
+	"""Ruba's ACC-ASS-2026-00291: 3,600 in service 01/01, partially
+	scrapped for 1,000 on 01/03 with January and February never posted.
+	§12.9 relieves accumulated depreciation by the disposal ratio, so it
+	assumes accumulated is current — with nothing posted it relieved
+	zero and wrote the entire 1,000 to loss.
+
+	Re-spreading the missing periods afterwards is not a repair: it
+	prices January at the 2,600 base the asset only acquires in March.
+	The periods must be booked first, so the scrap blocks.
+
+	The second half matters as much as the first: an asset disposed of in
+	the month it entered service owes NOTHING, and must still go through.
+	That is the case fixed on 09/09, and a gate keyed on dates rather
+	than on due periods would break it.
+	"""
+	from asset_enterprise import disposal
+	from asset_enterprise.depreciation import enable_depreciation
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+
+	def _asset_from(afu, gross=3_600):
+		a = make_test_asset(company, gross=gross, submit=False)
+		a.available_for_use_date = str(afu)
+		a.purchase_date = str(afu)
+		a.save(ignore_permissions=True)
+		a.submit()
+		for m in frappe.get_all("Asset Movement Item", filters={"asset": a.name}, pluck="parent"):
+			frappe.db.set_value("Asset Movement", m, "transaction_date", str(afu),
+			                    update_modified=False)
+		enable_depreciation(
+			a.name, total_number_of_depreciations=36, frequency_of_depreciation=1,
+			depreciation_start_date=get_last_day(afu), expected_value_after_useful_life=0,
+		)
+		return a.name
+
+	# (1) periods outstanding -> blocked
+	stale_afu = get_first_day(add_months(nowdate(), -2))
+	stale = _asset_from(stale_afu)
+	stale_scrap = get_first_day(nowdate())
+	from asset_enterprise.depreciation import due_unposted_rows
+
+	owed = len(due_unposted_rows(stale, stale_scrap))
+	blocked = False
+	try:
+		disposal.partial_scrap_asset(stale, scrap_value=1_000, scrapping_type="Damage",
+		                             scrap_date=stale_scrap)
+	except frappe.ValidationError:
+		blocked = True
+
+	# (2) nothing owed (same month as service) -> must still proceed
+	fresh_afu = get_first_day(add_months(nowdate(), 1))
+	fresh = _asset_from(fresh_afu, gross=1_200)
+	allowed = True
+	try:
+		disposal.partial_scrap_asset(fresh, scrap_value=200, scrapping_type="Damage",
+		                             scrap_date=add_days(fresh_afu, 14))
+	except frappe.ValidationError:
+		allowed = False
+
+	ok = blocked and owed >= 2 and allowed
+	return ok, (
+		f"{owed} period(s) outstanding at {stale_scrap}: scrap blocked={blocked} (want True); "
+		f"asset scrapped in its own first month owes nothing: proceeded={allowed} (want True)"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

@@ -3279,6 +3279,12 @@ def tc044b():
 	asset = _depreciating_asset(
 		company, cat, "TC-044b AVA + Depr", 1_200_000, "2026-05-31", 36, "2026-05-01"
 	)
+	# May belongs to the asset before the revaluation and is posted here,
+	# as a user would: VR-043 blocks a value event over periods the asset
+	# already owes, because the revaluation is measured from a carrying
+	# amount those periods have not yet reduced. The test case's steps
+	# never asked for May to be left open — the fixture simply skipped it.
+	_post_through(asset.name, "2026-05-31")
 	ava = frappe.get_doc(
 		{
 			"doctype": "Asset Value Adjustment",

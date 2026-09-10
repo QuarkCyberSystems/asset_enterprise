@@ -464,8 +464,13 @@ def _run():
 			and cint(prorated[0].days_in_period) == want_days
 			and mlog
 			and flt(mlog.accumulated_depreciation_at_merge) == want_amount
-			and flt(mlog.net_book_value_at_merge) == nbv_after
-			and tgt_hav == flt(60_000 + nbv_after)
+			# Money to the cent, never raw float equality: `nbv_after` is
+			# a subtraction done here (36,500 - 1,448.02 = 35,051.98000...3)
+			# while the stored figure is rounded, so `==` turned on which
+			# day the fixture happened to run — green on a 30-day straddle,
+			# red on a 29-day one (method note 2 of the invariant register).
+			and abs(flt(mlog.net_book_value_at_merge) - nbv_after) < 0.01
+			and abs(tgt_hav - flt(60_000 + nbv_after)) < 0.01
 		)
 		print(
 			f"f6     straddling row reversed at merge: flagged-rows={reversed_row} "

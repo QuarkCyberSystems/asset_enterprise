@@ -22,7 +22,17 @@ from datetime import date, timedelta
 
 import frappe
 from frappe import _
-from frappe.utils import add_days, add_months, cint, date_diff, flt, get_last_day, getdate, nowdate
+from frappe.utils import (
+	add_days,
+	add_months,
+	cint,
+	date_diff,
+	flt,
+	formatdate,
+	get_last_day,
+	getdate,
+	nowdate,
+)
 
 from asset_enterprise.rounding import fa_module_round, final_row_amount
 
@@ -377,6 +387,70 @@ def split_period_for_cc_change(row_amount, days_in_period, change_day_offset, co
 # --------------------------------------------------------------------------
 # Schedule supersession (GAP-031 / GAP-032)
 # --------------------------------------------------------------------------
+
+
+def due_unposted_rows(asset_name, as_of_date, finance_book=None):
+	"""Active-schedule rows whose period ENDED before `as_of_date` and
+	carry no journal entry — depreciation the asset has already incurred
+	but never booked.
+
+	A row dated inside the event's own period is NOT due: a scrap on
+	01/03 does not owe the 31/03 row. That distinction is what lets an
+	asset bought and disposed of in the same month proceed untouched.
+	"""
+	filters = {"asset": asset_name, "status": "Active", "docstatus": 1}
+	if finance_book:
+		filters["finance_book"] = finance_book
+	schedule = frappe.db.get_value("Asset Depreciation Schedule", filters, "name")
+	if not schedule:
+		return []
+	return frappe.db.sql(
+		"""select schedule_date, depreciation_amount
+		   from `tabDepreciation Schedule`
+		   where parent = %s and ifnull(journal_entry, '') = ''
+		     and schedule_date < %s
+		   order by schedule_date""",
+		(schedule, getdate(as_of_date)),
+		as_dict=True,
+	)
+
+
+def assert_depreciation_current(asset_name, as_of_date, action, finance_book=None):
+	"""VR-043: a value event may not be booked over depreciation the
+	asset already owes.
+
+	Disposal, impairment, revaluation and life adjustment are all
+	computed FROM the carrying amount. Left unposted, earlier periods
+	make that carrying amount stale, so the event is measured against a
+	value the asset has not had for months — the client's
+	ACC-ASS-2026-00291 scrapped 1,000 of cost on 01/03 with January and
+	February unposted, writing the whole 1,000 to loss when 53.83 of it
+	was accumulated depreciation that should have been relieved.
+
+	Re-spreading those periods afterwards does not repair it: it prices
+	January at a base the asset only acquired in March. The periods have
+	to be booked first, which is why this blocks rather than fixes up
+	(GAP-027's block-and-error principle — no auto-cascade).
+
+	A closed period is no obstacle and needs no override: VR-029 already
+	requires frozen-period depreciation to be accumulated and posted on
+	the first unfrozen date, with the frozen portion routed to PYA
+	(GAP-025, TC-040). The demand this makes is always satisfiable.
+	"""
+	due = due_unposted_rows(asset_name, as_of_date, finance_book)
+	if not due:
+		return
+	periods = ", ".join(formatdate(r.schedule_date) for r in due[:6])
+	if len(due) > 6:
+		periods += _(" and {0} more").format(len(due) - 6)
+	frappe.throw(
+		_(
+			"Depreciation is not up to date for {0}. Post the entries for {1} "
+			"before {2} on {3} — {4} is measured from the asset's carrying "
+			"amount, which those periods have not yet reduced (VR-043)."
+		).format(asset_name, periods, action, formatdate(as_of_date), action),
+		title=_("Depreciation Outstanding"),
+	)
 
 
 def resume_basis_date(asset_name, finance_book=None):

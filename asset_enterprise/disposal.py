@@ -172,6 +172,24 @@ def partial_scrap_asset(
 			)
 		)
 	assert_fully_invoiced(asset)  # GAP-010 / VR-011
+	# VR-043 (client, 10/09): §12.9 relieves accumulated depreciation by
+	# the disposal ratio, so it assumes accumulated is CURRENT at the
+	# scrap date. A full scrap guarantees that by prorating to the date
+	# (depreciate_asset, above); a partial scrap has no such step, so an
+	# asset with periods outstanding measured the scrap against a stale
+	# carrying amount and wrote the whole scrap value to loss.
+	#
+	# Blocked rather than prorated automatically: a partial scrap leaves
+	# the asset alive, so booking months of catch-up depreciation is a
+	# decision the user must take deliberately (GAP-027, no auto-cascade)
+	# — and re-spreading those periods afterwards cannot repair it, since
+	# it prices them at a base the asset only acquires at the scrap.
+	if asset.calculate_depreciation:
+		from asset_enterprise.depreciation import assert_depreciation_current
+
+		assert_depreciation_current(
+			asset_name, getdate(scrap_date or today()), _("partial scrap")
+		)
 
 	if composite_component:
 		# Child tables must be queried with their parent doctype named —
