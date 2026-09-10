@@ -1128,6 +1128,73 @@ def e26():
 	)
 
 
+@case("E-27", "§4.11 / TC-031", "a partial scrap takes effect at the START of its date")
+def e27():
+	"""Derecognition ceases depreciation on the removed portion from the
+	scrap date (IAS 16.55). So the old rate stops the day BEFORE the
+	scrap and the scrap day itself is already at the post-scrap rate —
+	TC-031's arithmetic and the client's 10/09 workbook both say so.
+	Additions, adjustments and transfers stay end-of-day; only this path
+	differs, and it must differ by exactly one day.
+
+	A mid-month scrap with the prior month posted: the scrap month is one
+	row, split at the boundary. Expected = (days before the scrap) x old
+	rate + (scrap day onward) x new rate. One day the other way moves
+	the row by (old - new) x 1, well above the tolerance.
+	"""
+	from asset_enterprise import disposal
+	from asset_enterprise.depreciation import post_schedule_entries
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+	afu = get_first_day(add_months(nowdate(), 1))
+	asset = make_test_asset(company, gross=36_500, submit=False)
+	asset.available_for_use_date = str(afu)
+	asset.purchase_date = str(afu)
+	asset.save(ignore_permissions=True)
+	asset.submit()
+	from asset_enterprise.depreciation import enable_depreciation
+
+	enable_depreciation(
+		asset.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+		depreciation_start_date=get_last_day(afu), expected_value_after_useful_life=0,
+	)
+	sched = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"
+	)
+	rows = _rows(asset.name)
+	old_rate = flt(rows[0].daily_rate)
+	post_schedule_entries(sched, date=str(get_last_day(afu)))  # month 1 posted
+	posted = flt(rows[0].depreciation_amount)
+
+	month2 = get_first_day(add_months(afu, 1))
+	scrap_day = add_days(month2, 14)  # the 15th
+	disposal.partial_scrap_asset(
+		asset.name, scrap_date=str(scrap_day), scrap_value=3_650, scrapping_type="Damage"
+	)
+
+	after = _rows(asset.name)
+	row = next((r for r in after if getdate(r.schedule_date) == get_last_day(month2)), None)
+	if row is None:
+		return False, "no row for the scrap month"
+	# 14 days (1st..14th) at the old rate; from the 15th at the new rate
+	relief = flt(3_650 / 36_500 * posted, 2)
+	nbv_after = flt(36_500 - 3_650 - (posted - relief), 2)
+	a_part = flt(old_rate * 14, 2)
+	remaining = cint(date_diff(add_months(afu, 12), scrap_day))  # scrap day .. end of life
+	new_rate = (nbv_after - a_part) / remaining
+	month_days = cint(date_diff(get_last_day(month2), month2)) + 1
+	want = flt(a_part + new_rate * (month_days - 14), 2)
+	drift = abs(flt(row.depreciation_amount) - want)
+	one_day_wrong = abs(old_rate - new_rate)  # what the other convention would move
+	ok = drift < 0.05 and cint(row.days_in_period) == month_days
+	return ok, (
+		f"scrap on {scrap_day}: row {row.schedule_date} = {flt(row.depreciation_amount):,.2f} "
+		f"(want {want:,.2f} = 14d x {old_rate:.4f} + {month_days - 14}d x {new_rate:.4f}); "
+		f"drift {drift:.2f}, the other convention would show {one_day_wrong:.2f}"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

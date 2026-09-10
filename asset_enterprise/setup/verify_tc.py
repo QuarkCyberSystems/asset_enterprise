@@ -2415,18 +2415,47 @@ def tc029():
 # =============================================================== TC-031
 @tc("TC-031", "Partial Scrap by Value with Proportional Accum")
 def tc031():
+	"""The test case's own numbers carry a rule nobody had written down:
+	"partial scrap on day 832, accumulated depreciation at scrap date =
+	1,517,808.22" — and 1,517,808.22 is exactly 831 days at 2,000,000 /
+	1,095. Depreciation stops the day BEFORE the scrap; the scrap day is
+	already at the post-scrap rate (§4.11).
+
+	The earlier fixture hard-coded the 1,517,808.22 as an opening balance
+	and so proved the 5% arithmetic without ever depreciating a single
+	day — the boundary it implies was never exercised, and the build was
+	one day the other way for a year without this case noticing.
+
+	Now the asset really is depreciated for 831 days. AFU is chosen so
+	that day 832 is the first of a month and the 36-month span holds no
+	leap day, so the daily rate is the document's 1,826.484018 exactly
+	and the posted rows land on 1,517,808.22 to the cent.
+	"""
+	from asset_enterprise import disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import post_schedule_entries
+
+	_ensure_fiscal_years(2024, 2027)
 	company = _company()
 	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
 	frappe.db.set_single_value("Asset Settings", "prevent_disposal_before_full_invoicing", 0)
 	loss = _plain(company, "Expense")
 	_scrapping_type("Damage", company, loss)
-	asset = _plain_asset(company, cat, "TC-031 Partial Value", 2_000_000,
-	                     opening_accumulated_depreciation=1_517_808.22)
-	asset.submit()
-	from asset_enterprise import disposal
-	from asset_enterprise.asset_values import recalculate_asset_values
 
-	disposal.partial_scrap_asset(asset.name, scrap_value=100_000, scrapping_type="Damage")
+	afu, scrap_day = "2024-03-22", "2026-07-01"  # day 832; 2024-03-22 + 36m = 1,095 days
+	asset = _depreciating_asset(
+		company, cat, "TC-031 Partial Value", 2_000_000, "2024-03-31", 36, afu
+	)
+	sched, rows = _rows(asset.name)
+	for r in rows:
+		if getdate(r.schedule_date) < getdate(scrap_day):
+			post_schedule_entries(sched, date=str(r.schedule_date))
+	before = recalculate_asset_values(asset.name, save=False)
+	accum_at_scrap = flt(before["accumulated_depreciation_value"], 2)
+
+	disposal.partial_scrap_asset(
+		asset.name, scrap_value=100_000, scrapping_type="Damage", scrap_date=scrap_day
+	)
 	ft = frappe.db.get_value(
 		"Financial Treatment",
 		{"asset": asset.name, "transaction_type": ("like", "%Partial%"), "status": "Posted"},
@@ -2439,16 +2468,36 @@ def tc031():
 		(_account(company, "Fixed Asset"), 0.00, 100_000.00),
 	}
 	values = recalculate_asset_values(asset.name, save=False)
+
+	# The boundary: July is the scrap month and NOTHING in it is at the
+	# old rate — 31 days at the post-scrap rate, NBV 458,082.19 over the
+	# 264 days left of the original 1,095.
+	_s, after = _rows(asset.name)
+	july = next((r for r in after if str(r.schedule_date) == "2026-07-31"), None)
+	new_rate = 458_082.19 / 264
+	want_july = flt(new_rate * 31, 2)
+	# The document's 1,517,808.22 is 831 x rate unrounded; the ledger
+	# is 28 rows each rounded to the cent (§4.10), so the two may differ
+	# by up to half a cent per row. The boundary assertion on the July
+	# row is what discriminates — one day at the old rate moves it by
+	# ~81 — so the accumulation tolerance can be honest without being
+	# weak.
+	rounding = 0.005 * sum(1 for r in rows if getdate(r.schedule_date) < getdate(scrap_day))
 	ok = (
-		legs == want
+		abs(accum_at_scrap - 1_517_808.22) <= rounding
+		and legs == want
 		and flt(values["historical_asset_value"], 2) == 1_900_000.00
-		and flt(values["accumulated_depreciation_value"], 2) == 1_441_917.81
+		and abs(flt(values["accumulated_depreciation_value"], 2) - 1_441_917.81) <= rounding
+		and july is not None
+		and abs(flt(july.depreciation_amount) - want_july) < 0.05
 	)
 	return (
 		("PASS" if ok else "FAIL"),
-		f"JE {ft}: {sorted(legs)}; HAV {flt(values['historical_asset_value']):,.2f} "
-		f"(want 1,900,000) accum {flt(values['accumulated_depreciation_value']):,.2f} "
-		f"(want 1,441,917.81)",
+		f"831 days posted -> accum {accum_at_scrap:,.2f} (want 1,517,808.22); JE {ft}: "
+		f"{sorted(legs)}; HAV {flt(values['historical_asset_value']):,.2f} (want 1,900,000) "
+		f"accum {flt(values['accumulated_depreciation_value']):,.2f} (want 1,441,917.81); "
+		f"scrap-month row {flt(july.depreciation_amount) if july else 0:,.2f} "
+		f"(want {want_july:,.2f} = 31 days x {new_rate:,.4f}, none at the old rate)",
 	)
 
 
