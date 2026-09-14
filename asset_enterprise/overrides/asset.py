@@ -2,6 +2,8 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate
 
+from asset_enterprise.overrides.asset_category import is_control_category
+
 from erpnext.assets.doctype.asset.asset import Asset
 
 
@@ -526,7 +528,10 @@ class EnterpriseAsset(Asset):
 				"voucher_type": "Journal Entry",
 				# opening-style booking: excluded from the Fixed Asset
 				# Register's adjustment map (it is not a revaluation)
-				"is_opening": "Yes",
+				# A control category's booking IS the expense charge, not an
+				# opening balance — and core refuses P&L accounts in an
+				# Opening Entry (GAP-037, found by E-28).
+				"is_opening": "No" if is_control_category(self.asset_category) else "Yes",
 				"company": self.company,
 				"posting_date": self.get("available_for_use_date") or frappe.utils.nowdate(),
 				"user_remark": _("Existing-Asset Opening for {0} (GAP-001)").format(self.name),

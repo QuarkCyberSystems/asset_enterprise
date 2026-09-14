@@ -19,6 +19,8 @@ override_doctype_class = {
 	"Asset Capitalization": "asset_enterprise.overrides.asset_capitalization.EnterpriseAssetCapitalization",
 	"Asset Depreciation Schedule": "asset_enterprise.overrides.schedule.EnterpriseSchedule",
 	"Asset Movement": "asset_enterprise.overrides.asset_movement.EnterpriseAssetMovement",
+	# GAP-037: the Control Category flag inverts core's account-type rule.
+	"Asset Category": "asset_enterprise.overrides.asset_category.EnterpriseAssetCategory",
 }
 
 # GA-0005-01 v2.14 — endpoint replacements (build plan §2.2, Phase 6).

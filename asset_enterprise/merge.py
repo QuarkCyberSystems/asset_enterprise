@@ -31,6 +31,7 @@ from frappe import _
 from frappe.utils import add_days, add_months, cint, date_diff, flt, getdate, nowdate
 
 from asset_enterprise.accounts import get_enterprise_account
+from asset_enterprise.overrides.asset_category import is_control_category
 from asset_enterprise.rounding import fa_module_round
 
 
@@ -825,8 +826,16 @@ def reclassify(cap_doc):
 			"doctype": "Journal Entry",
 			"voucher_type": "Journal Entry",
 			# opening-style booking under the new category — not a
-			# revaluation for the Fixed Asset Register's adjustment map
-			"is_opening": "Yes",
+			# revaluation for the Fixed Asset Register's adjustment map.
+			# Unless either side is a control category (GAP-037): then the
+			# entry carries P&L legs, which core refuses in an Opening
+			# Entry, and the move is a charge or a release, not a balance.
+			"is_opening": (
+				"No"
+				if is_control_category(source.asset_category)
+				or is_control_category(target.asset_category)
+				else "Yes"
+			),
 			"company": source.company,
 			"posting_date": posting_date,
 			"user_remark": _("Reclassification of {0} to category {1} via {2}").format(

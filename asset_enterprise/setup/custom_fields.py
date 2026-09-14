@@ -224,6 +224,18 @@ CUSTOM_FIELDS = {
 			"insert_after": "calculate_from_receiving_date",
 			"description": "Reporting flag only — no automatic GL impact.",
 		},
+		# GAP-037 (client, 14/09/2026): assets tracked for control but
+		# never capitalised. Every account on the category — including
+		# the fixed asset and accumulated depreciation accounts — must be
+		# an expense account, so nothing in the category ever reaches the
+		# balance sheet.
+		{
+			"fieldname": "is_control_category",
+			"fieldtype": "Check",
+			"label": "Control Category",
+			"insert_after": "subject_to_impairment_review",
+			"description": "Assets in this category are expensed, not capitalised. All accounts below — Fixed Asset and Accumulated Depreciation included — must be Expense accounts. Locked once the category has a submitted asset.",
+		},
 	],
 	# ---------------------------------------------------- Asset Capitalization
 	"Asset Capitalization": [

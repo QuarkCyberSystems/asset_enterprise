@@ -1414,6 +1414,55 @@ def repair_truncated_first_rows(company=None, asset=None, dry_run=1):
 	return rows
 
 
+def find_category_side_violations(company=None):
+	"""M-06: a category is wholly on the balance sheet or wholly in P&L.
+
+	A Control Category (GAP-037) must carry Expense accounts on every
+	field; an ordinary category must carry Asset-side accounts on the
+	fixed-asset and accumulated-depreciation fields. The validate rule
+	prevents new violations; this reports any that predate it or slipped
+	past it, so a mixed category — cost in P&L, contra on the balance
+	sheet — is never silently allowed to post.
+	"""
+	rows = frappe.db.sql(
+		"""
+		select aca.parent as category, ac.is_control_category, aca.company_name as company,
+		       aca.fixed_asset_account, aca.accumulated_depreciation_account,
+		       aca.depreciation_expense_account, aca.capital_work_in_progress_account
+		from `tabAsset Category Account` aca
+		join `tabAsset Category` ac on ac.name = aca.parent
+		""",
+		as_dict=True,
+	)
+	out = []
+	for r in rows:
+		if company and r.company != company:
+			continue
+		fields = (
+			("fixed_asset_account", "accumulated_depreciation_account",
+			 "depreciation_expense_account", "capital_work_in_progress_account")
+			if cint(r.is_control_category)
+			else ("fixed_asset_account", "accumulated_depreciation_account")
+		)
+		want = "Expense" if cint(r.is_control_category) else "Asset"
+		for f in fields:
+			account = r.get(f)
+			if not account:
+				continue
+			root = frappe.db.get_value("Account", account, "root_type")
+			if root != want:
+				out.append(frappe._dict(
+					category=r.category, company=r.company, field=f, account=account,
+					root_type=root, want=want,
+					control=bool(cint(r.is_control_category)),
+				))
+	print(f"{len(out)} category account(s) on the wrong side:")
+	for v in out:
+		print(f"  {v.category} ({'control' if v.control else 'ordinary'}) {v.field} = "
+		      f"{v.account} is {v.root_type}, want {v.want}")
+	return out
+
+
 def _legacy_acquisition_candidates(company=None):
 	"""Older acquisition rows carry no `voucher_detail_no`, so nothing on
 	the row links it to a receipt line (MAT-PRE-2026-00284's 13,500,000

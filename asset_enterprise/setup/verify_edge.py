@@ -1195,6 +1195,114 @@ def e27():
 	)
 
 
+@case("E-28", "GAP-037 / client 14/09", "a control category never touches the balance sheet")
+def e28():
+	"""Control Category: tracked for control, expensed on purchase. Every
+	account on the category is an expense account — the fixed-asset and
+	accumulated-depreciation accounts included — so the opening booking,
+	each depreciation entry, a partial scrap and the final scrap all land
+	in P&L, and no GL row for the asset ever carries an Asset-side
+	account.
+
+	Three assertions, because the feature is three rules:
+	  1. the flag ENFORCES expense accounts — a Fixed Asset-type account
+	     on a control category is refused;
+	  2. the whole life cycle posts to P&L only;
+	  3. the flag LOCKS once a submitted asset exists.
+	"""
+	from asset_enterprise import disposal
+	from asset_enterprise.depreciation import enable_depreciation, post_schedule_entries
+	from asset_enterprise.setup.test_fixtures import pick_plain_account
+	from asset_enterprise.setup.verify_tc import _item, _location
+
+	company = _company()
+	expense = pick_plain_account(company, "Expense")
+	fixed_asset_type = frappe.db.get_value(
+		"Account", {"company": company, "account_type": "Fixed Asset", "is_group": 0}, "name"
+	)
+	name = "E28 Control Tools"
+	if frappe.db.exists("Asset Category", name):
+		frappe.delete_doc("Asset Category", name, force=True, ignore_permissions=True)
+
+	# 1. enforcement — a balance-sheet account on a control category is refused
+	cat = frappe.get_doc({"doctype": "Asset Category", "asset_category_name": name,
+	                      "is_control_category": 1})
+	cat.append("accounts", {
+		"company_name": company,
+		"fixed_asset_account": fixed_asset_type,          # wrong side
+		"accumulated_depreciation_account": expense,
+		"depreciation_expense_account": expense,
+		"asset_suspense_account": pick_plain_account(company, "Liability"),
+	})
+	cat.flags.ignore_permissions = True
+	refused = False
+	try:
+		cat.insert()
+	except frappe.ValidationError:
+		refused = True
+	if not refused:
+		return False, "a Fixed Asset-type account was accepted on a control category"
+
+	# now all-expense: accepted
+	cat.accounts[0].fixed_asset_account = expense
+	cat.insert()
+
+	# 2. life cycle
+	item = _item(name, "E28-CTRL-ITEM")
+	asset = frappe.get_doc({
+		"doctype": "Asset", "company": company, "asset_name": "E28 control asset",
+		"asset_category": name, "item_code": item, "location": _location(),
+		"purchase_amount": 12_000, "net_purchase_amount": 12_000,
+		"available_for_use_date": get_first_day(add_months(nowdate(), -1)),
+		"purchase_date": get_first_day(add_months(nowdate(), -1)),
+		"asset_type": "Existing Asset", "calculate_depreciation": 0,
+	})
+	asset.flags.ignore_permissions = True
+	asset.insert()
+	asset.submit()
+	enable_depreciation(
+		asset.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+		depreciation_start_date=get_last_day(asset.available_for_use_date),
+		expected_value_after_useful_life=0,
+	)
+	sched = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"
+	)
+	post_schedule_entries(sched, date=str(get_last_day(asset.available_for_use_date)))
+	disposal.partial_scrap_asset(
+		asset.name, scrap_value=2_000, scrapping_type="Damage", scrap_date=nowdate()
+	)
+	disposal.scrap_asset(asset.name, scrap_date=nowdate(), scrapping_type="Damage")
+
+	legs = frappe.db.sql(
+		"""select gle.account, acc.root_type, gle.debit, gle.credit
+		   from `tabGL Entry` gle join `tabAccount` acc on acc.name = gle.account
+		   where gle.is_cancelled = 0 and gle.asset = %s""",
+		asset.name, as_dict=True,
+	)
+	on_balance_sheet = [r for r in legs if r.root_type in ("Asset",)]
+	vouchers = frappe.db.sql(
+		"select count(distinct voucher_no) from `tabGL Entry` where is_cancelled=0 and asset=%s",
+		asset.name,
+	)[0][0]
+
+	# 3. lock
+	cat.reload()
+	cat.is_control_category = 0
+	locked = False
+	try:
+		cat.save()
+	except frappe.ValidationError:
+		locked = True
+
+	ok = refused and legs and not on_balance_sheet and vouchers >= 4 and locked
+	return ok, (
+		f"balance-sheet account refused={refused} (want True); {vouchers} voucher(s) / "
+		f"{len(legs)} GL rows over the life cycle, {len(on_balance_sheet)} on an Asset-side "
+		f"account (want 0); flag locked after use={locked} (want True)"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 
