@@ -210,6 +210,22 @@ CUSTOM_FIELDS = {
 	],
 	# ---------------------------------------------------------- Asset Category
 	"Asset Category": [
+		# Client, 14/09/2026: a stable identifier for the category. The
+		# record is keyed by its NAME, so a rename is a re-key of every
+		# asset, item and filter that points at it; the number survives
+		# that, sorts sensibly, and carries a legacy asset-class code.
+		# Reference and reporting only — it plays no part in asset
+		# numbering or posting.
+		{
+			"fieldname": "category_number",
+			"fieldtype": "Data",
+			"label": "Category Number",
+			"unique": 1,
+			"in_list_view": 1,
+			"in_standard_filter": 1,
+			"insert_after": "asset_category_name",
+			"description": "Stable code for reference and reporting (e.g. the legacy asset-class number). Text, so leading zeros and letters are kept.",
+		},
 		{
 			"fieldname": "calculate_from_receiving_date",
 			"fieldtype": "Check",
