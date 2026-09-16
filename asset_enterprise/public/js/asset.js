@@ -12,6 +12,74 @@ frappe.ui.form.on("Asset", {
 		frm.trigger("toggle_reference_doc");
 	},
 
+	// The Depreciation tab is core's own five-column table, not the
+	// schedule grid, so a column added to the grid never reached the one
+	// place the finance team actually reads (client, 16/09: "we need to
+	// make it visible to the user"). Core calls frm.events.<this> from
+	// its fetch callback and frappe binds the LAST handler registered
+	// under a name, so defining it here replaces core's renderer with one
+	// that also shows Days, the effective daily rate and — on a row an
+	// event split — the rates actually used, one entry per stretch.
+	render_depreciation_schedule_view(frm, asset_depr_schedule_doc) {
+		const wrapper = $(frm.fields_dict["depreciation_schedule_view"].wrapper).empty();
+		const money = (v) =>
+			frappe.format(v, { fieldtype: "Currency", options: "Company:company:default_currency" });
+		const split_rows = asset_depr_schedule_doc.depreciation_schedule.some((s) => s.rate_breakdown);
+
+		const data = asset_depr_schedule_doc.depreciation_schedule.map((sch) => {
+			const row = [
+				sch.idx,
+				frappe.format(sch.schedule_date, { fieldtype: "Date" }),
+				sch.days_in_period || "",
+				sch.daily_rate ? frappe.format(sch.daily_rate, { fieldtype: "Float", precision: 6 }) : "",
+				money(sch.depreciation_amount),
+				money(sch.accumulated_depreciation_amount),
+				sch.journal_entry || "",
+			];
+			if (split_rows) row.push(sch.rate_breakdown || "");
+			if (asset_depr_schedule_doc.shift_based) row.push(sch.shift);
+			return row;
+		});
+
+		const columns = [
+			{ name: __("No."), editable: false, resizable: false, format: (v) => v, width: 50 },
+			{ name: __("Schedule Date"), editable: false, resizable: false, width: 110 },
+			{ name: __("Days"), editable: false, resizable: false, width: 60 },
+			{ name: __("Daily Rate (Effective)"), editable: false, resizable: false, width: 140 },
+			{ name: __("Depreciation Amount"), editable: false, resizable: false, width: 150 },
+			{ name: __("Accumulated Depreciation Amount"), editable: false, resizable: false, width: 170 },
+			{
+				name: __("Journal Entry"),
+				editable: false,
+				resizable: false,
+				format: (v) => (v ? `<a href="/app/journal-entry/${v}">${v}</a>` : ""),
+				width: 180,
+			},
+		];
+		if (split_rows) {
+			columns.push({
+				name: __("Rate Breakdown"),
+				editable: false,
+				resizable: true,
+				format: (v) => v,
+				width: 460,
+			});
+		}
+		if (asset_depr_schedule_doc.shift_based) {
+			columns.push({ name: __("Shift"), editable: false, resizable: false, width: 59 });
+		}
+
+		const datatable = new frappe.DataTable(wrapper.get(0), {
+			columns,
+			data,
+			layout: "fluid",
+			serialNoColumn: false,
+			checkboxColumn: false,
+			cellHeight: 35,
+		});
+		datatable.style.setStyle(".dt-scrollable", { "overflow-y": "hidden" });
+	},
+
 	refresh(frm) {
 		if (frm.doc.docstatus !== 1) return;
 
