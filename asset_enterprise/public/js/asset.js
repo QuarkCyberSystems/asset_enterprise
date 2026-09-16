@@ -69,6 +69,30 @@ frappe.ui.form.on("Asset", {
 			columns.push({ name: __("Shift"), editable: false, resizable: false, width: 59 });
 		}
 
+		// The generation's own basis — asset value, accumulated, NBV,
+		// remaining days, rate — above the rows it produced (client,
+		// 16/09: "there is no NBV and remaining days"). The stamp lives
+		// on the schedule document; the table lives here.
+		const d = asset_depr_schedule_doc;
+		if (d.basis_daily_rate) {
+			const fmt = (v) => money(v);
+			const rate = frappe.format(d.basis_daily_rate, { fieldtype: "Float", precision: 6 });
+			const from = frappe.format(d.repriced_from, { fieldtype: "Date" });
+			const eol = frappe.format(d.basis_end_of_life, { fieldtype: "Date" });
+			$(`<div class="ae-generation-basis" style="margin:0 0 10px 0;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-light-gray);font-size:var(--text-md);line-height:1.8">
+				<div style="font-weight:600;margin-bottom:2px">${__("Generation Basis")} — ${d.name}
+					<span style="font-weight:400;color:var(--text-muted)"> · ${__("re-priced from")} ${from} · ${__("end of life")} ${eol}</span></div>
+				<div><b>${__("Asset Value")}</b> ${fmt(d.basis_hav)}
+					&nbsp;−&nbsp; <b>${__("Accumulated")}</b> ${fmt(d.basis_accumulated)}
+					&nbsp;=&nbsp; <b>${__("NBV")}</b> ${fmt(d.basis_nbv)}
+					${d.basis_salvage ? `&nbsp;−&nbsp; <b>${__("Salvage")}</b> ${fmt(d.basis_salvage)}` : ""}
+					&nbsp;=&nbsp; <b>${__("Depreciable Base")}</b> ${fmt(d.basis_depreciable_base)}</div>
+				<div><b>${__("Remaining Days")}</b> ${d.basis_remaining_days}
+					&nbsp;→&nbsp; <b>${__("Daily Rate")}</b> ${rate}
+					<span style="color:var(--text-muted)"> (${fmt(d.basis_depreciable_base)} ÷ ${d.basis_remaining_days})</span></div>
+			</div>`).appendTo(wrapper);
+		}
+
 		const datatable = new frappe.DataTable(wrapper.get(0), {
 			columns,
 			data,
