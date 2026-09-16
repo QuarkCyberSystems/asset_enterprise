@@ -223,8 +223,47 @@ def build_prospective_rows(nbv_base, as_of_date, end_of_life_date, company, firs
 	)
 
 
+def stamp_generation_basis(
+	doc, asset_name, company, basis_date, repriced_from, end_of_life,
+	depreciable_base, salvage, pre_accrual=0.0,
+):
+	"""Record the numbers a generation was priced from, on the
+	generation itself (client, 16/09): asset value, accumulated
+	depreciation, NBV, salvage, depreciable base, remaining days, daily
+	rate, end of life. Stamped by the engine at generation time so they
+	cannot drift from the rows; `rate x remaining days = base` lets the
+	finance team check a generation in one multiplication, and every
+	figure maps to a cell of their own worksheet.
+
+	`pre_accrual` is depreciation already accrued between the basis
+	date and the day before re-pricing — the days a mid-period event
+	leaves at the previous rate — so "accumulated at basis" reads as the
+	worksheet does: through the day before the new rate applies.
+	"""
+	if not doc.meta.has_field("basis_daily_rate"):
+		return
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	values = recalculate_asset_values(asset_name, save=False)
+	hav = flt(values["historical_asset_value"])
+	accumulated = fa_module_round(flt(values["accumulated_depreciation_value"]) + flt(pre_accrual), company)
+	repriced_from = getdate(repriced_from)
+	end_of_life = getdate(end_of_life)
+	remaining = max(0, date_diff(end_of_life, repriced_from) + 1)
+	doc.basis_date = getdate(basis_date) if basis_date else None
+	doc.repriced_from = repriced_from
+	doc.basis_hav = hav
+	doc.basis_accumulated = accumulated
+	doc.basis_nbv = fa_module_round(hav - accumulated, company)
+	doc.basis_salvage = flt(salvage)
+	doc.basis_depreciable_base = fa_module_round(flt(depreciable_base), company)
+	doc.basis_remaining_days = remaining
+	doc.basis_daily_rate = flt(flt(depreciable_base) / remaining, 9) if remaining else 0.0
+	doc.basis_end_of_life = end_of_life
+
+
 def build_rows_after_rate_change(
-	unposted_rows, nbv_base, as_of_date, rate_change_date, end_of_life, company
+	unposted_rows, nbv_base, as_of_date, rate_change_date, end_of_life, company, basis_out=None
 ):
 	"""§4.3 read faithfully: a value change re-prices the schedule only
 	AFTER its date (client, Ruba 18/08: an 18/08 capitalization must not
@@ -282,6 +321,15 @@ def build_rows_after_rate_change(
 	) if pre_segments else 0.0
 
 	seg_b_base = fa_module_round(nbv_base - copied_total - a_part, company)
+	if basis_out is not None:
+		# What this generation prices from: everything already charged
+		# up to the boundary (verbatim rows plus the pre-event stub) is
+		# accrued; the rest is spread from the day after the boundary.
+		basis_out.update(
+			repriced_from=add_days(rate_change, 1),
+			pre_accrual=flt(copied_total + a_part),
+			depreciable_base=seg_b_base,
+		)
 	seg_b = (
 		build_prospective_rows(seg_b_base, rate_change, end_of_life, company)
 		if getdate(end_of_life) > rate_change and seg_b_base > 0
@@ -669,6 +717,8 @@ def supersede_and_regenerate(
 	nbv_base = fa_module_round(flt(values["net_book_value"]) - salvage, company)
 
 	future_rows = None
+	# the numbers this generation is priced from (stamped below)
+	basis = {"repriced_from": add_days(as_of_date, 1), "pre_accrual": 0.0, "depreciable_base": nbv_base}
 	# rate_change_date (Ruba, 18/08): a value change re-prices rows only
 	# AFTER its date — pre-event unposted periods are preserved verbatim.
 	if (
@@ -678,7 +728,8 @@ def supersede_and_regenerate(
 		and nbv_base > 0
 	):
 		future_rows = build_rows_after_rate_change(
-			unposted, nbv_base, as_of_date, rate_change_date, end_of_life, company
+			unposted, nbv_base, as_of_date, rate_change_date, end_of_life, company,
+			basis_out=basis,
 		)
 	if future_rows is None:
 		future_rows = (
@@ -714,6 +765,12 @@ def supersede_and_regenerate(
 		new.triggered_by_doctype = getattr(triggered_by, "doctype", None)
 		new.triggered_by = getattr(triggered_by, "name", None)
 	new.set("depreciation_schedule", [])
+	stamp_generation_basis(
+		new, asset_name, company,
+		basis_date=as_of_date, repriced_from=basis["repriced_from"], end_of_life=end_of_life,
+		depreciable_base=basis["depreciable_base"], salvage=salvage,
+		pre_accrual=basis["pre_accrual"],
+	)
 	accumulated = 0.0
 	for r in posted:
 		accumulated = flt(accumulated + flt(r.depreciation_amount))
@@ -1335,6 +1392,11 @@ def enable_depreciation(
 				"period_end_date": row.get("period_end_date") or row["schedule_date"],
 			},
 		)
+	stamp_generation_basis(
+		ads, asset.name, asset.company,
+		basis_date=add_days(start, -1), repriced_from=start, end_of_life=end_of_life,
+		depreciable_base=base, salvage=flt(expected_value_after_useful_life),
+	)
 	ads.flags.ignore_permissions = True
 	ads.insert()
 	ads.submit()  # core on_submit sets status Active

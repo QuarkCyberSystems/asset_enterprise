@@ -1385,6 +1385,90 @@ def e29():
 	)
 
 
+@case("E-30", "client 16/09", "a generation carries the numbers it was priced from")
+def e30():
+	"""Every generation is stamped with asset value, accumulated
+	depreciation, NBV, salvage, depreciable base, remaining days, daily
+	rate and end of life — the cells of the finance team's worksheet —
+	at the moment it is built. Two checks that cannot be satisfied by
+	copying numbers around:
+
+	  1. rate x remaining days = depreciable base, on the stamp itself;
+	  2. the stamp agrees with the ROWS: the first row priced at the new
+	     rate carries that rate, and the rows from Re-priced From onward
+	     add up to the depreciable base.
+
+	Run on a mid-month event so the pre-event stub is in play: the
+	stamped accumulated must include the days before the event.
+	"""
+	from asset_enterprise import disposal
+	from asset_enterprise.depreciation import enable_depreciation, post_schedule_entries
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+	afu = get_first_day(add_months(nowdate(), 1))
+	asset = make_test_asset(company, gross=36_500, submit=False)
+	asset.available_for_use_date = str(afu)
+	asset.purchase_date = str(afu)
+	asset.save(ignore_permissions=True)
+	asset.submit()
+	enable_depreciation(
+		asset.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+		depreciation_start_date=get_last_day(afu), expected_value_after_useful_life=500,
+	)
+
+	def _gen():
+		name = frappe.db.get_value(
+			"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"
+		)
+		return frappe.get_doc("Asset Depreciation Schedule", name)
+
+	g0 = _gen()
+	ok0 = (
+		abs(flt(g0.basis_daily_rate) * cint(g0.basis_remaining_days) - flt(g0.basis_depreciable_base)) < 0.01
+		and abs(flt(g0.basis_depreciable_base) - (36_500 - 500)) < 0.01
+		and getdate(g0.repriced_from) == afu
+	)
+
+	post_schedule_entries(g0.name, date=str(get_last_day(afu)))
+	month2 = get_first_day(add_months(afu, 1))
+	disposal.partial_scrap_asset(
+		asset.name, scrap_date=str(add_days(month2, 14)), scrap_value=3_650, scrapping_type="Damage"
+	)
+	g1 = _gen()
+	rows = g1.get("depreciation_schedule")
+	after = [r for r in rows if getdate(r.schedule_date) > get_last_day(month2)]
+	first_new = after[0] if after else None
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	# ledger accumulated, not the sum of posted rows: the scrap relieved
+	# its share of October, and the stamp reads the ledger
+	ledger_accum = flt(recalculate_asset_values(asset.name, save=False)["accumulated_depreciation_value"])
+	# rows priced from Re-priced From: the composed month-2 row less its
+	# pre-event stub, plus every later row
+	stub = flt(g1.basis_accumulated) - ledger_accum
+	from_repriced = sum(flt(r.depreciation_amount) for r in rows if not r.journal_entry) - stub
+	ok1 = (
+		getdate(g1.repriced_from) == add_days(month2, 14)
+		and abs(flt(g1.basis_daily_rate) * cint(g1.basis_remaining_days) - flt(g1.basis_depreciable_base)) < 0.01
+		and abs(flt(g1.basis_nbv) - (flt(g1.basis_hav) - flt(g1.basis_accumulated))) < 0.01
+		and abs(flt(g1.basis_depreciable_base) - (flt(g1.basis_nbv) - flt(g1.basis_salvage))) < 0.01
+		and first_new is not None
+		and abs(flt(first_new.daily_rate) - flt(g1.basis_daily_rate)) < 1e-6
+		and abs(from_repriced - flt(g1.basis_depreciable_base)) < 0.05
+		and stub > 0
+	)
+	return ok0 and ok1, (
+		f"initial: rate {flt(g0.basis_daily_rate):.6f} x {g0.basis_remaining_days}d = "
+		f"{flt(g0.basis_daily_rate) * cint(g0.basis_remaining_days):,.2f} (base {flt(g0.basis_depreciable_base):,.2f}); "
+		f"after scrap on {add_days(month2, 14)}: re-priced from {g1.repriced_from} (want {add_days(month2, 14)}), "
+		f"HAV {flt(g1.basis_hav):,.2f} − accum {flt(g1.basis_accumulated):,.2f} (incl. {stub:,.2f} accrued before the scrap) "
+		f"= NBV {flt(g1.basis_nbv):,.2f}; base {flt(g1.basis_depreciable_base):,.2f} over {g1.basis_remaining_days}d "
+		f"@ {flt(g1.basis_daily_rate):.6f}; first re-priced row @ {flt(first_new.daily_rate) if first_new else 0:.6f}; "
+		f"rows from re-priced date sum {from_repriced:,.2f}"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

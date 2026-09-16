@@ -577,6 +577,102 @@ CUSTOM_FIELDS = {
 			"insert_after": "triggered_by_doctype",
 			"depends_on": "eval:doc.triggered_by",
 		},
+		# Client, 16/09/2026: the numbers this generation was priced from,
+		# stamped by the engine at the moment it generates so they can
+		# never drift from the rows. Each maps to a cell of the finance
+		# team's own worksheet (Asset Value / Accumulated / NBV /
+		# Remaining Useful Life / Depreciation Per Day), and
+		#     daily rate x remaining days = depreciable base
+		# checks a generation in one multiplication.
+		{
+			"fieldname": "generation_basis_section",
+			"fieldtype": "Section Break",
+			"label": "Generation Basis",
+			"insert_after": "triggered_by",
+			"collapsible": 0,
+		},
+		{
+			"fieldname": "basis_date",
+			"fieldtype": "Date",
+			"label": "Basis Date",
+			"read_only": 1,
+			"insert_after": "generation_basis_section",
+			"description": "Last day priced by the previous generation. Rows are re-priced from the day after.",
+		},
+		{
+			"fieldname": "repriced_from",
+			"fieldtype": "Date",
+			"label": "Re-priced From",
+			"read_only": 1,
+			"insert_after": "basis_date",
+			"description": "First day charged at this generation's daily rate.",
+		},
+		{
+			"fieldname": "basis_hav",
+			"fieldtype": "Currency",
+			"label": "Asset Value at Basis",
+			"read_only": 1,
+			"insert_after": "repriced_from",
+		},
+		{
+			"fieldname": "basis_accumulated",
+			"fieldtype": "Currency",
+			"label": "Accumulated Depreciation at Basis",
+			"read_only": 1,
+			"insert_after": "basis_hav",
+			"description": "Posted accumulated depreciation plus the days accrued up to the day before Re-priced From.",
+		},
+		{
+			"fieldname": "basis_nbv",
+			"fieldtype": "Currency",
+			"label": "NBV at Basis",
+			"read_only": 1,
+			"insert_after": "basis_accumulated",
+		},
+		{
+			"fieldname": "generation_basis_cb",
+			"fieldtype": "Column Break",
+			"insert_after": "basis_nbv",
+		},
+		{
+			"fieldname": "basis_salvage",
+			"fieldtype": "Currency",
+			"label": "Salvage Value",
+			"read_only": 1,
+			"insert_after": "generation_basis_cb",
+		},
+		{
+			"fieldname": "basis_depreciable_base",
+			"fieldtype": "Currency",
+			"label": "Depreciable Base",
+			"read_only": 1,
+			"insert_after": "basis_salvage",
+			"description": "NBV at Basis less Salvage — what the rows from Re-priced From add up to.",
+		},
+		{
+			"fieldname": "basis_remaining_days",
+			"fieldtype": "Int",
+			"label": "Remaining Days",
+			"read_only": 1,
+			"insert_after": "basis_depreciable_base",
+			"description": "Re-priced From through End of Life, inclusive.",
+		},
+		{
+			"fieldname": "basis_daily_rate",
+			"fieldtype": "Float",
+			"label": "Daily Rate",
+			"precision": "9",
+			"read_only": 1,
+			"insert_after": "basis_remaining_days",
+			"description": "Depreciable Base ÷ Remaining Days.",
+		},
+		{
+			"fieldname": "basis_end_of_life",
+			"fieldtype": "Date",
+			"label": "End of Life",
+			"read_only": 1,
+			"insert_after": "basis_daily_rate",
+		},
 	],
 	# ------------------------------------------- Depreciation Schedule (child)
 	"Depreciation Schedule": [
