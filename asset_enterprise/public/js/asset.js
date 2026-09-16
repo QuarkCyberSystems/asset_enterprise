@@ -68,11 +68,11 @@ frappe.ui.form.on("Asset", {
 
 		// The generation's own basis — asset value, accumulated, NBV,
 		// remaining days, rate — above the rows it produced (client,
-		// 16/09: "there is no NBV and remaining days"). The stamp lives
-		// on the schedule document; the table lives here. Amounts are
-		// formatted inline: the default Currency formatter wraps each value
-		// in a right-aligned block, which broke every figure onto its own
-		// line (client, 16/09: "rendered so ugly").
+		// 16/09: "there is no NBV and remaining days"). Laid out as a small
+		// two-column HTML table with the figures in a right-aligned numeric
+		// column, the way a finance working looks (client, 16/09: "use html
+		// to position the data correctly"). Amounts are formatted inline —
+		// the default Currency formatter wraps each in a block of its own.
 		const d = asset_depr_schedule_doc;
 		if (d.basis_daily_rate) {
 			const amt = (v) =>
@@ -82,42 +82,45 @@ frappe.ui.form.on("Asset", {
 					{ inline: true }
 				);
 			const date = (v) => frappe.format(v, { fieldtype: "Date" });
-			const cell = (label, value, op) => `
-				<div class="ae-basis-cell">
-					<div class="ae-basis-label">${op ? `<span class="ae-basis-op">${op}</span>` : ""}${label}</div>
-					<div class="ae-basis-value">${value}</div>
-				</div>`;
-			const cells = [
-				cell(__("Asset Value"), amt(d.basis_hav)),
-				cell(__("Accumulated"), amt(d.basis_accumulated), "−"),
-				cell(__("NBV"), amt(d.basis_nbv), "="),
+			const left = [
+				["", __("Asset Value"), amt(d.basis_hav)],
+				["−", __("Accumulated Depreciation"), amt(d.basis_accumulated)],
+				["=", __("Net Book Value"), amt(d.basis_nbv), "sum"],
 			];
-			if (flt(d.basis_salvage)) cells.push(cell(__("Salvage"), amt(d.basis_salvage), "−"));
-			cells.push(cell(__("Depreciable Base"), amt(d.basis_depreciable_base), "="));
-			const cells2 = [
-				cell(__("Remaining Days"), cint(d.basis_remaining_days).toLocaleString()),
-				cell(__("Daily Rate"), frappe.format(d.basis_daily_rate, { fieldtype: "Float", precision: 6 }), "→"),
-				cell(__("Re-priced From"), date(d.repriced_from)),
-				cell(__("End of Life"), date(d.basis_end_of_life)),
+			if (flt(d.basis_salvage)) left.push(["−", __("Salvage Value"), amt(d.basis_salvage)]);
+			left.push(["=", __("Depreciable Base"), amt(d.basis_depreciable_base), "sum total"]);
+			const right = [
+				[__("Schedule"), `<a href="/app/asset-depreciation-schedule/${d.name}">${d.name}</a>`],
+				[__("Re-priced From"), date(d.repriced_from)],
+				[__("End of Life"), date(d.basis_end_of_life)],
+				[__("Remaining Days"), cint(d.basis_remaining_days).toLocaleString()],
+				[__("Daily Rate"), frappe.format(d.basis_daily_rate, { fieldtype: "Float", precision: 6 }, { inline: true }), "total"],
 			];
+			const tr = (op, label, value, cls = "") =>
+				`<tr class="${cls}"><td class="op">${op}</td><td class="lbl">${label}</td><td class="num">${value}</td></tr>`;
+			const tr2 = (label, value, cls = "") =>
+				`<tr class="${cls}"><td class="lbl">${label}</td><td class="num">${value}</td></tr>`;
 			$(`
 			<style>
-				.ae-generation-basis { margin: 0 0 12px 0; padding: 10px 14px 12px; border: 1px solid var(--border-color); border-radius: var(--border-radius-md, 8px); background: var(--subtle-fg, var(--bg-light-gray)); }
-				.ae-basis-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; font-size: var(--text-sm); color: var(--text-muted); }
-				.ae-basis-head b { color: var(--text-color); font-weight: 600; }
-				.ae-basis-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 18px; }
-				.ae-basis-row + .ae-basis-row { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-color); }
-				.ae-basis-label { font-size: var(--text-xs); color: var(--text-muted); text-transform: uppercase; letter-spacing: .02em; white-space: nowrap; }
-				.ae-basis-op { display: inline-block; min-width: 1.6em; color: var(--text-light); font-weight: 600; }
-				.ae-basis-value { font-size: var(--text-md); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-color); }
+				.ae-basis { display: flex; flex-wrap: wrap; gap: 8px 40px; align-items: flex-start;
+					margin: 0 0 10px 0; padding: 8px 12px; border: 1px solid var(--border-color);
+					border-radius: var(--border-radius-md, 8px); background: var(--subtle-fg, var(--bg-light-gray));
+					font-size: 12px; line-height: 1.35; color: var(--text-color); }
+				.ae-basis table { border-collapse: collapse; }
+				.ae-basis td { padding: 1px 0; white-space: nowrap; vertical-align: baseline; }
+				.ae-basis td.op { width: 14px; color: var(--text-light); text-align: center; }
+				.ae-basis td.lbl { color: var(--text-muted); padding-right: 14px; }
+				.ae-basis td.num { text-align: right; font-variant-numeric: tabular-nums; min-width: 120px; }
+				.ae-basis tr.sum td { border-top: 1px solid var(--border-color); padding-top: 3px; }
+				.ae-basis tr.total td.num, .ae-basis tr.total td.lbl { font-weight: 600; color: var(--text-color); }
+				.ae-basis .ae-basis-title { flex-basis: 100%; font-size: 11px; text-transform: uppercase;
+					letter-spacing: .03em; color: var(--text-muted); margin-bottom: 2px; }
+				.ae-basis .ae-basis-title span { float: right; text-transform: none; letter-spacing: 0; }
 			</style>
-			<div class="ae-generation-basis">
-				<div class="ae-basis-head">
-					<span><b>${__("Generation Basis")}</b> · <a href="/app/asset-depreciation-schedule/${d.name}">${d.name}</a></span>
-					<span>${__("rate = depreciable base ÷ remaining days")}</span>
-				</div>
-				<div class="ae-basis-row">${cells.join("")}</div>
-				<div class="ae-basis-row">${cells2.join("")}</div>
+			<div class="ae-basis ae-generation-basis">
+				<div class="ae-basis-title">${__("Generation Basis")}<span>${__("daily rate = depreciable base ÷ remaining days")}</span></div>
+				<table>${left.map((r) => tr(...r)).join("")}</table>
+				<table>${right.map((r) => tr2(...r)).join("")}</table>
 			</div>`).appendTo(wrapper);
 		}
 
@@ -152,7 +155,7 @@ frappe.ui.form.on("Asset", {
 			$(`
 			<style>
 				.ae-split-mark { color: var(--text-muted); font-size: 0.85em; margin-left: 2px; }
-				.ae-split-rows { margin-top: 10px; font-size: var(--text-sm); }
+				.ae-split-rows { margin-top: 8px; font-size: 12px; }
 				.ae-split-rows .ae-split-title { color: var(--text-muted); text-transform: uppercase; font-size: var(--text-xs); letter-spacing: .02em; margin-bottom: 4px; }
 				.ae-split-rows table { border-collapse: collapse; }
 				.ae-split-rows td { padding: 3px 14px 3px 0; vertical-align: top; white-space: nowrap; font-variant-numeric: tabular-nums; }
