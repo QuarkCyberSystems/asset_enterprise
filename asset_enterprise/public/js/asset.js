@@ -93,7 +93,12 @@ frappe.ui.form.on("Asset", {
 			</div>`).appendTo(wrapper);
 		}
 
-		const datatable = new frappe.DataTable(wrapper.get(0), {
+		// DataTable clears whatever element it is given before it renders,
+		// so the basis box above must live in a sibling, not the wrapper
+		// itself — appended there it was wiped the instant the table drew
+		// (found in headless Chromium: table present, box absent, no error).
+		const table_el = $('<div class="ae-schedule-table"></div>').appendTo(wrapper);
+		const datatable = new frappe.DataTable(table_el.get(0), {
 			columns,
 			data,
 			layout: "fluid",
