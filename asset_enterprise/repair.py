@@ -1668,6 +1668,115 @@ def backfill_rate_breakdown(company=None, asset=None, dry_run=1):
 	return rows
 
 
+def backfill_generation_basis(company=None, asset=None, dry_run=1):
+	"""Stamp Generation Basis on schedules generated before the field
+	existed (16/09), DERIVED from what each generation already records:
+
+	  basis date       superseded_on (the as-of date it resumed from), or
+	                   the day before the first row's period for an initial
+	                   generation
+	  re-priced from   the first day of the LAST rate segment on the row
+	                   that spans the basis, else basis + 1
+	  depreciable base sum of the rows from the basis, less the stub the
+	                   old rate accrued before re-pricing
+	  end of life      the last row's period end
+	  asset value      net purchase + every Addition/Disposal/Impairment/
+	                   Revaluation delta posted BEFORE this generation
+	  accumulated      ledger accumulated as of the generation, plus the
+	                   pre-repricing stub
+
+	Nothing is written unless the derivation is self-consistent —
+	rate x remaining days = base AND value - accumulated - salvage =
+	base, to the cent — so a generation whose history cannot be
+	reconstructed is reported, not guessed.
+	"""
+	from asset_enterprise.depreciation import _row_segments
+
+	filters = {"docstatus": 1, "basis_daily_rate": ("in", (0, None))}
+	if company:
+		filters["company"] = company
+	if asset:
+		filters["asset"] = asset
+	gens = frappe.get_all(
+		"Asset Depreciation Schedule", filters=filters,
+		fields=["name", "asset", "company", "status", "creation", "superseded_on"], order_by="creation",
+	)
+	written, skipped = [], []
+	for g in gens:
+		rows = frappe.get_all(
+			"Depreciation Schedule", filters={"parent": g.name},
+			fields=["schedule_date", "depreciation_amount", "days_in_period", "daily_rate",
+			        "period_end_date", "journal_entry", "rate_segments"], order_by="idx",
+		)
+		if not rows or not any(cint(r.days_in_period) for r in rows):
+			skipped.append((g.name, "no day-count metadata on rows"))
+			continue
+		first = rows[0]
+		first_start = add_days(getdate(first.schedule_date), -(cint(first.days_in_period) - 1))
+		basis_date = getdate(g.superseded_on) if g.superseded_on else add_days(first_start, -1)
+		after = [r for r in rows if getdate(r.schedule_date) > basis_date]
+		if not after:
+			skipped.append((g.name, "no rows after the basis date"))
+			continue
+		event_row = after[0]
+		segs = _row_segments(event_row)
+		row_start = add_days(getdate(event_row.schedule_date), -(cint(event_row.days_in_period) - 1))
+		# the stub is whatever the row accrues from its start up to the day
+		# before the last segment begins; a single-rate row has no stub
+		repriced_from = getdate(segs[-1]["from"]) if len(segs) > 1 else max(row_start, add_days(basis_date, 1))
+		stub = sum(
+			(date_diff(min(getdate(s["to"]), add_days(repriced_from, -1)), getdate(s["from"])) + 1) * flt(s["rate"])
+			for s in segs if getdate(s["from"]) < repriced_from
+		)
+		base = fa_module_round(sum(flt(r.depreciation_amount) for r in after) - stub, g.company)
+		end_of_life = getdate(rows[-1].period_end_date or rows[-1].schedule_date)
+		remaining = date_diff(end_of_life, repriced_from) + 1
+		if remaining <= 0 or base <= 0:
+			skipped.append((g.name, f"remaining {remaining} / base {base}"))
+			continue
+		rate = flt(base / remaining, 9)
+
+		net_purchase = flt(frappe.db.get_value("Asset", g.asset, "net_purchase_amount"))
+		hav_delta, accum_delta = frappe.db.sql(
+			"""select ifnull(sum(hav_delta), 0), ifnull(sum(accum_delta), 0)
+			   from `tabFinancial Treatment`
+			   where asset = %s and status = 'Posted' and creation < %s
+			     and transaction_category <> 'Depreciation'""",
+			(g.asset, g.creation),
+		)[0]
+		hav = fa_module_round(net_purchase + flt(hav_delta), g.company)
+		posted_before = sum(
+			flt(r.depreciation_amount) for r in rows if r.journal_entry and getdate(r.schedule_date) <= basis_date
+		)
+		accumulated = fa_module_round(posted_before + flt(accum_delta) + stub, g.company)
+		salvage = flt(frappe.db.get_value(
+			"Asset Finance Book", {"parent": g.asset}, "expected_value_after_useful_life") or 0)
+		nbv = fa_module_round(hav - accumulated, g.company)
+		if abs(rate * remaining - base) > 0.01 or abs(nbv - salvage - base) > 0.05:
+			skipped.append((g.name, f"inconsistent: rate x days {rate * remaining:,.2f} vs base {base:,.2f}; "
+			                        f"value-accum-salvage {nbv - salvage:,.2f}"))
+			continue
+		written.append((g.name, g.asset, g.status, repriced_from, nbv, remaining, rate))
+		if not dry_run:
+			frappe.db.set_value("Asset Depreciation Schedule", g.name, {
+				"basis_date": basis_date, "repriced_from": repriced_from, "basis_hav": hav,
+				"basis_accumulated": accumulated, "basis_nbv": nbv, "basis_salvage": salvage,
+				"basis_depreciable_base": base, "basis_remaining_days": remaining,
+				"basis_daily_rate": rate, "basis_end_of_life": end_of_life,
+			}, update_modified=False)
+	if not dry_run:
+		frappe.db.commit()
+	print(f"{len(gens)} generation(s) without a basis: {len(written)} derived, {len(skipped)} left blank")
+	for name, a, st, rf, nbv, rem, rate in written[:10]:
+		print(f"  {name} ({a}, {st}): from {rf} NBV {nbv:,.2f} over {rem}d @ {rate:,.6f}")
+	if len(written) > 10:
+		print(f"  ... and {len(written) - 10} more")
+	for name, why in skipped[:10]:
+		print(f"  SKIPPED {name}: {why}")
+	print(f"  {len(written)} written{' (dry run — nothing written)' if dry_run else ''}")
+	return written, skipped
+
+
 def _legacy_acquisition_candidates(company=None):
 	"""Older acquisition rows carry no `voucher_detail_no`, so nothing on
 	the row links it to a receipt line (MAT-PRE-2026-00284's 13,500,000
