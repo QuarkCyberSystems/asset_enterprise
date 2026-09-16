@@ -588,6 +588,21 @@ CUSTOM_FIELDS = {
 			"insert_after": "journal_entry",
 			"description": "Cost centre carrying this row after a mid-period transfer split.",
 		},
+		# A row built from more than one rate (an event inside its period)
+		# keeps the per-day composition, so a LATER event in the same
+		# period can price the days before it exactly. Reading the row's
+		# single blended rate instead under-charged March on the client's
+		# ACC-ASS-2026-00019 by 16,151.25 (scrap on the 20th, invoice
+		# difference on the 25th, month unposted).
+		{
+			"fieldname": "rate_segments",
+			"fieldtype": "Small Text",
+			"label": "Rate Segments",
+			"read_only": 1,
+			"hidden": 1,
+			"insert_after": "cost_center",
+			"description": "JSON [{from, to, rate}] when the row spans more than one daily rate.",
+		},
 		{
 			"fieldname": "is_pya_entry",
 			"fieldtype": "Check",

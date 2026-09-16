@@ -1303,6 +1303,88 @@ def e28():
 	)
 
 
+@case("E-29", "client 16/09 (ACC-ASS-2026-00019)", "two events in one unposted month price the days between them exactly")
+def e29():
+	"""Ruba's ACC-ASS-2026-00019: partial scrap on 20/03, invoice
+	difference on 25/03, March not yet posted. The second rebuild priced
+	1–25 March from the March row's single BLENDED rate (19 days at the
+	old rate averaged with 12 at the post-scrap rate) instead of the real
+	per-day composition, under-charging March by 16,151.25 and spreading
+	the shortfall over the next twenty years. The FA team found it as
+	5,117 on the post-invoice rate.
+
+	Rows now carry their per-day composition; a later event in the same
+	period prices the days before it from that. Expected month-2 row:
+
+	    days 1..9   at the original rate
+	    days 10..19 at the post-scrap rate
+	    days 20..   at the post-adjustment rate
+
+	Both events take effect from their own date (§4.11, client 16/09).
+	"""
+	from asset_enterprise import disposal
+	from asset_enterprise.depreciation import enable_depreciation, post_schedule_entries
+	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
+
+	company = _company()
+	afu = get_first_day(add_months(nowdate(), 1))
+	asset = make_test_asset(company, gross=36_500, submit=False)
+	asset.available_for_use_date = str(afu)
+	asset.purchase_date = str(afu)
+	asset.save(ignore_permissions=True)
+	asset.submit()
+	enable_depreciation(
+		asset.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
+		depreciation_start_date=get_last_day(afu), expected_value_after_useful_life=0,
+	)
+	sched = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"
+	)
+	r0 = flt(_rows(asset.name)[0].daily_rate)
+	post_schedule_entries(sched, date=str(get_last_day(afu)))
+
+	month2 = get_first_day(add_months(afu, 1))
+	m2_end = get_last_day(month2)
+	d = cint(date_diff(m2_end, month2)) + 1
+
+	# event 1: partial scrap on the 10th -> post-scrap rate r1 from the 10th
+	disposal.partial_scrap_asset(
+		asset.name, scrap_date=str(add_days(month2, 9)), scrap_value=3_650, scrapping_type="Damage"
+	)
+	mid = _rows(asset.name)
+	r1 = flt(next(r for r in mid if getdate(r.schedule_date) > m2_end).daily_rate)
+
+	# event 2: upward revaluation on the 20th -> post-adjustment rate r2 from the 20th
+	nbv = flt(frappe.db.get_value("Asset", asset.name, "net_book_value"))
+	ava = frappe.get_doc({
+		"doctype": "Asset Value Adjustment", "asset": asset.name, "company": company,
+		"date": str(add_days(month2, 19)), "transaction_type": "Upward Revaluation",
+		"current_asset_value": nbv, "new_asset_value": nbv + 2_000,
+		"difference_account": pick_plain_account(company, "Liability"),
+	})
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+
+	final = _rows(asset.name)
+	row = next((r for r in final if getdate(r.schedule_date) == m2_end), None)
+	if row is None:
+		return False, "no row for month 2"
+	r2 = flt(next(r for r in final if getdate(r.schedule_date) > m2_end).daily_rate)
+	want = 9 * r0 + 10 * r1 + (d - 19) * r2
+	blended_want = d and (19 * ((9 * r0 + (d - 9) * r1) / d)) + (d - 19) * r2  # the old behaviour
+	segs = frappe.db.get_value("Depreciation Schedule", {"parent": final and frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"),
+		"schedule_date": m2_end}, "rate_segments")
+	n_segs = len(frappe.parse_json(segs) or []) if segs else 0
+	ok = abs(flt(row.depreciation_amount) - want) < 0.05 and n_segs == 3
+	return ok, (
+		f"month-2 row {flt(row.depreciation_amount):,.2f} (want {want:,.2f} = 9d x {r0:.4f} + "
+		f"10d x {r1:.4f} + {d - 19}d x {r2:.4f}; the blended-rate defect would give "
+		f"{blended_want:,.2f}); rate segments stored: {n_segs} (want 3)"
+	)
+
+
 # ====================================================== §12 invoice matrix
 
 

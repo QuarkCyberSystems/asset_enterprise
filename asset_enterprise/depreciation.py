@@ -18,6 +18,7 @@ row absorbs accumulated drift so NBV lands on Salvage exactly.
 """
 
 import calendar
+import json
 from datetime import date, timedelta
 
 import frappe
@@ -253,6 +254,7 @@ def build_rows_after_rate_change(
 					"daily_rate": flt(r.daily_rate),
 					"amount": flt(r.depreciation_amount),
 					"cost_center": r.get("cost_center"),
+					"rate_segments": r.get("rate_segments"),
 				}
 			)
 		else:
@@ -264,14 +266,20 @@ def build_rows_after_rate_change(
 
 	prev = getdate(copied[-1]["schedule_date"]) if copied else getdate(as_of_date)
 	a_days = max(0, date_diff(rate_change, prev))
-	old_rate = 0.0
-	if event_row is not None:
-		old_rate = flt(event_row.daily_rate)
-		if not old_rate and cint(event_row.days_in_period):
-			old_rate = flt(event_row.depreciation_amount) / cint(event_row.days_in_period)
+	# The days before the event are priced from the event row's OWN
+	# per-day composition, never from its blended rate: a row already
+	# split by an earlier event in the same period carries two rates,
+	# and its average is neither (client ACC-ASS-2026-00019 — scrap on
+	# the 20th, invoice difference on the 25th, March under-charged by
+	# 16,151.25 and the shortfall spread over the next twenty years).
+	pre_segments = (
+		_clip_segments(_row_segments(event_row), add_days(prev, 1), rate_change)
+		if event_row is not None and a_days
+		else []
+	)
 	a_part = fa_module_round(
-		min(old_rate * a_days, nbv_base - copied_total), company
-	) if a_days and old_rate else 0.0
+		min(_segments_amount(pre_segments), nbv_base - copied_total), company
+	) if pre_segments else 0.0
 
 	seg_b_base = fa_module_round(nbv_base - copied_total - a_part, company)
 	seg_b = (
@@ -290,6 +298,16 @@ def build_rows_after_rate_change(
 				"days_in_period": days,
 				"daily_rate": flt(amount / days, 9) if days else 0.0,
 				"amount": amount,
+				"rate_segments": _dump_segments(
+					pre_segments
+					+ [
+						{
+							"from": str(add_days(rate_change, 1)),
+							"to": str(first["schedule_date"]),
+							"rate": flt(first["daily_rate"]),
+						}
+					]
+				),
 			},
 		)
 	elif a_part:
@@ -298,11 +316,59 @@ def build_rows_after_rate_change(
 			{
 				"schedule_date": rate_change,
 				"days_in_period": a_days,
-				"daily_rate": old_rate,
+				"daily_rate": flt(a_part / a_days, 9) if a_days else 0.0,
 				"amount": a_part,
+				"rate_segments": _dump_segments(pre_segments),
 			}
 		]
 	return copied + seg_b
+
+
+def _row_segments(row):
+	"""The per-day rate composition of a schedule row: its stored
+	segments when it was built from more than one rate, else the whole
+	period at its single rate. Works on child-row docs and row dicts."""
+	raw = row.get("rate_segments")
+	if raw:
+		try:
+			segments = json.loads(raw) if isinstance(raw, str) else list(raw)
+			if segments:
+				return [
+					{"from": getdate(s["from"]), "to": getdate(s["to"]), "rate": flt(s["rate"])}
+					for s in segments
+				]
+		except (ValueError, KeyError, TypeError):
+			pass
+	end = getdate(row.get("schedule_date"))
+	days = cint(row.get("days_in_period"))
+	rate = flt(row.get("daily_rate"))
+	if not rate and days:
+		rate = flt(row.get("depreciation_amount") or row.get("amount")) / days
+	start = add_days(end, -(days - 1)) if days else end
+	return [{"from": start, "to": end, "rate": rate}]
+
+
+def _clip_segments(segments, start, end):
+	"""The part of each segment that lies inside [start, end]."""
+	out = []
+	for s in segments:
+		lo, hi = max(getdate(s["from"]), getdate(start)), min(getdate(s["to"]), getdate(end))
+		if lo <= hi:
+			out.append({"from": lo, "to": hi, "rate": flt(s["rate"])})
+	return out
+
+
+def _segments_amount(segments):
+	return sum((date_diff(s["to"], s["from"]) + 1) * flt(s["rate"]) for s in segments)
+
+
+def _dump_segments(segments):
+	"""Stored only when the row genuinely spans more than one rate."""
+	if len(segments) < 2:
+		return None
+	return json.dumps(
+		[{"from": str(s["from"]), "to": str(s["to"]), "rate": flt(s["rate"])} for s in segments]
+	)
 
 
 def truncate_rows_at_disposal(rows, period_basis, disposal_date, company):
@@ -324,11 +390,21 @@ def truncate_rows_at_disposal(rows, period_basis, disposal_date, company):
 	kept = [r for r in rows if getdate(r["schedule_date"]) < end]
 	prev = getdate(kept[-1]["schedule_date"]) if kept else getdate(period_basis)
 	days = date_diff(end, prev)
-	rate = flt(rows[0]["daily_rate"])
-	amount = fa_module_round(rate * days, company)
+	# The stub is priced from the cut row's own per-day composition — a
+	# row already split by an event in the same period carries more than
+	# one rate, and its blended rate is neither.
+	cut = next((r for r in rows if getdate(r["schedule_date"]) >= end), rows[0])
+	segments = _clip_segments(_row_segments(cut), add_days(prev, 1), end)
+	amount = fa_module_round(_segments_amount(segments), company)
 	if days > 0 and amount > 0:
 		kept.append(
-			{"schedule_date": end, "days_in_period": days, "daily_rate": rate, "amount": amount}
+			{
+				"schedule_date": end,
+				"days_in_period": days,
+				"daily_rate": flt(amount / days, 9),
+				"amount": amount,
+				"rate_segments": _dump_segments(segments),
+			}
 		)
 	return kept
 
@@ -535,6 +611,15 @@ def supersede_and_regenerate(
 	if not as_of_date:
 		as_of_date = resume_basis_date(asset_name, finance_book)
 	as_of_date = getdate(as_of_date or nowdate())
+	# §4.11 (client, 16/09): a value event takes effect FROM ITS OWN
+	# DATE — the event day is already at the new rate. Callers pass the
+	# event date; the boundary the old rate runs to is the day before,
+	# and never earlier than the last posted period, because a posted
+	# row is immutable and re-pricing from inside it would charge its
+	# final day twice. One place decides this for scrap, adjustment,
+	# addition, life change, repair reversal and restore alike.
+	if rate_change_date:
+		rate_change_date = max(add_days(getdate(rate_change_date), -1), as_of_date)
 
 	filters = {"asset": asset_name, "status": "Active", "docstatus": 1}
 	if finance_book:
@@ -641,6 +726,7 @@ def supersede_and_regenerate(
 				"journal_entry": r.journal_entry,
 				"reversal_journal_entry": r.get("reversal_journal_entry"),
 				"cost_center": r.get("cost_center"),
+				"rate_segments": r.get("rate_segments"),
 				"is_pya_entry": r.get("is_pya_entry"),
 				"days_in_period": r.get("days_in_period"),
 				"daily_rate": r.get("daily_rate"),
@@ -660,6 +746,7 @@ def supersede_and_regenerate(
 				"period_end_date": row.get("period_end_date") or row["schedule_date"],
 				# verbatim pre-event copies keep their GAP-021 cost centre
 				"cost_center": row.get("cost_center"),
+				"rate_segments": row.get("rate_segments"),
 			},
 		)
 

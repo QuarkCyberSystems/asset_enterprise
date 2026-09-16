@@ -257,29 +257,14 @@ def partial_scrap_asset(
 	)
 
 	last_posted = last_posted_schedule_date(asset.name)
-	# §4.11: a partial scrap is a DERECOGNITION, and derecognition takes
-	# effect at the START of its date — depreciation on the removed
-	# portion ceases from the scrap day (IAS 16.55). The old rate
-	# therefore stops the day BEFORE the scrap; the scrap day itself is
-	# already at the post-scrap rate. TC-031's own figures say so (831
-	# days accumulated for a scrap "on day 832"), and so did the client's
-	# scrap workbook of 10/09. Value-changing events (addition,
-	# adjustment, transfer) stay end-of-day; this path is the one that
-	# differs, and §4.11 says why.
-	#
-	# Never earlier than the last posted period: a posted row is
-	# immutable, and re-pricing from inside it would charge its last day
-	# twice. When the scrap lands on the posted row's own date (the
-	# client's ACC-ASS-2026-00016), the boundary collapses onto that date
-	# and the schedule is unchanged — the day is already booked.
-	rate_change = (
-		max(add_days(getdate(scrap_date), -1), getdate(last_posted)) if last_posted else None
-	)
+	# §4.11: the event date is passed as-is; the engine applies the one
+	# rule for every value event — the new rate from the event day, the
+	# boundary never earlier than the last posted period.
 	try:
 		supersede_and_regenerate(
 			asset.name,
 			as_of_date=getdate(last_posted) if last_posted else None,
-			rate_change_date=rate_change,
+			rate_change_date=getdate(scrap_date) if last_posted else None,
 			reason=_("Partial scrap via {0}").format(je),
 		)
 	except frappe.ValidationError:
