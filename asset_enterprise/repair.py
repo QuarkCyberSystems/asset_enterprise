@@ -1737,18 +1737,20 @@ def backfill_generation_basis(company=None, asset=None, dry_run=1):
 		rate = flt(base / remaining, 9)
 
 		net_purchase = flt(frappe.db.get_value("Asset", g.asset, "net_purchase_amount"))
+		# The treatment subledger is the one record of everything that
+		# moved value or accumulated before this generation existed:
+		# scheduled rows, catch-ups, immediate depreciation, disposal
+		# relief and every reversal alike. Summing rows would miss the
+		# off-schedule entries (the 5,004.37 catch-up on the client's
+		# ACC-ASS-2026-00019 failed the identity by exactly that).
 		hav_delta, accum_delta = frappe.db.sql(
 			"""select ifnull(sum(hav_delta), 0), ifnull(sum(accum_delta), 0)
 			   from `tabFinancial Treatment`
-			   where asset = %s and status = 'Posted' and creation < %s
-			     and transaction_category <> 'Depreciation'""",
+			   where asset = %s and status = 'Posted' and creation < %s""",
 			(g.asset, g.creation),
 		)[0]
 		hav = fa_module_round(net_purchase + flt(hav_delta), g.company)
-		posted_before = sum(
-			flt(r.depreciation_amount) for r in rows if r.journal_entry and getdate(r.schedule_date) <= basis_date
-		)
-		accumulated = fa_module_round(posted_before + flt(accum_delta) + stub, g.company)
+		accumulated = fa_module_round(flt(accum_delta) + stub, g.company)
 		salvage = flt(frappe.db.get_value(
 			"Asset Finance Book", {"parent": g.asset}, "expected_value_after_useful_life") or 0)
 		nbv = fa_module_round(hav - accumulated, g.company)
