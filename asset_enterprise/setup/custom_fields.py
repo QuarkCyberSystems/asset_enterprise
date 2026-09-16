@@ -716,10 +716,30 @@ CUSTOM_FIELDS = {
 		{
 			"fieldname": "daily_rate",
 			"fieldtype": "Float",
-			"label": "Daily Rate",
+			"label": "Daily Rate (Effective)",
 			"precision": "9",
 			"read_only": 1,
 			"insert_after": "days_in_period",
+			"description": "Amount ÷ days. On a row that spans an event this is a blend of the "
+			"rates actually used — see Rate Breakdown for the rates themselves.",
+		},
+		# Client, 16/09: "save the 19-day rate in the schedule … make it
+		# visible to the user". The composition IS saved (rate_segments,
+		# hidden JSON); this is the same fact rendered for a person, on
+		# the grid, so a split row reads the way the finance worksheet
+		# does — one line per rate — instead of as a single average that
+		# appears nowhere on that worksheet. Filled by the schedule
+		# controller on every save from rate_segments; never typed.
+		{
+			"fieldname": "rate_breakdown",
+			"fieldtype": "Small Text",
+			"label": "Rate Breakdown",
+			"read_only": 1,
+			"in_list_view": 1,
+			"columns": 3,
+			"insert_after": "daily_rate",
+			"description": "The daily rate for each stretch of days in this period, when an event "
+			"changed the rate mid-period. Blank when the whole period was at one rate.",
 		},
 		{
 			"fieldname": "period_end_date",

@@ -20,6 +20,19 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 	def validate(self):
 		super().validate()
 		self._protect_posted_rows()
+		self._render_rate_breakdowns()
+
+	def _render_rate_breakdowns(self):
+		"""Rate Breakdown is derived, never typed: one line per rate the
+		engine used inside the period, read from rate_segments. Rendered
+		here, at the one point every generation passes through, so no
+		writer can store a composition without also showing it (client,
+		16/09 — "save the 19-day rate … make it visible")."""
+		from asset_enterprise.depreciation import rate_breakdown_text
+
+		for row in self.get("depreciation_schedule") or []:
+			if row.meta.has_field("rate_breakdown"):
+				row.rate_breakdown = rate_breakdown_text(row.get("rate_segments"))
 
 	def before_cancel(self):
 		# GAP-031: a schedule is never cancelled — it is superseded. The
@@ -48,6 +61,7 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 		# protection must run here (VR-036, Phase 11b).
 		super().validate_update_after_submit()
 		self._protect_posted_rows()
+		self._render_rate_breakdowns()
 
 	def _protect_posted_rows(self):
 		"""VR-036 (Phase 11b): a save that would DROP posted rows (rows

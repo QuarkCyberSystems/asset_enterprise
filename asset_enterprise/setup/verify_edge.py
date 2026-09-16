@@ -1377,11 +1377,23 @@ def e29():
 		"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"),
 		"schedule_date": m2_end}, "rate_segments")
 	n_segs = len(frappe.parse_json(segs) or []) if segs else 0
-	ok = abs(flt(row.depreciation_amount) - want) < 0.05 and n_segs == 3
+	# The composition must also be SHOWN (client, 16/09): one entry per
+	# rate on the row's Rate Breakdown, in the grid, not only in hidden
+	# JSON. Three rates -> three "@" entries carrying the three rates.
+	shown = frappe.db.get_value(
+		"Depreciation Schedule",
+		{"parent": frappe.db.get_value(
+			"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"),
+		 "schedule_date": m2_end},
+		"rate_breakdown",
+	) or ""
+	shown_ok = shown.count("@") == 3 and all(f"{x:,.6f}" in shown for x in (r0, r1, r2))
+	ok = abs(flt(row.depreciation_amount) - want) < 0.05 and n_segs == 3 and shown_ok
 	return ok, (
 		f"month-2 row {flt(row.depreciation_amount):,.2f} (want {want:,.2f} = 9d x {r0:.4f} + "
 		f"10d x {r1:.4f} + {d - 19}d x {r2:.4f}; the blended-rate defect would give "
-		f"{blended_want:,.2f}); rate segments stored: {n_segs} (want 3)"
+		f"{blended_want:,.2f}); rate segments stored: {n_segs} (want 3); "
+		f"shown on the grid as \"{shown}\" ({'all three rates' if shown_ok else 'INCOMPLETE'})"
 	)
 
 

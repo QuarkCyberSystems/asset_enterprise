@@ -410,6 +410,36 @@ def _segments_amount(segments):
 	return sum((date_diff(s["to"], s["from"]) + 1) * flt(s["rate"]) for s in segments)
 
 
+def rate_breakdown_text(segments_json):
+	"""The stored composition of a split row, written for a person:
+
+	    01–19 Mar @ 339,519.626052 · 20–24 Mar @ 335,127.619433 · 25–31 Mar @ 324,092.685030
+
+	One entry per rate the engine used inside the period, in date order
+	— the lines the finance worksheet shows for that month. None when
+	the row was priced at a single rate, so the column stays blank on
+	ordinary rows and a filled cell always means "an event landed here".
+	"""
+	if not segments_json:
+		return None
+	try:
+		segments = json.loads(segments_json) if isinstance(segments_json, str) else list(segments_json)
+	except (ValueError, TypeError):
+		return None
+	if len(segments) < 2:
+		return None
+	parts = []
+	for s in segments:
+		start, end = getdate(s["from"]), getdate(s["to"])
+		span = (
+			f"{start.day:02d}–{end.day:02d} {end.strftime('%b')}"
+			if start.month == end.month
+			else f"{start.day:02d} {start.strftime('%b')}–{end.day:02d} {end.strftime('%b')}"
+		)
+		parts.append(f"{span} @ {flt(s['rate']):,.6f}")
+	return " · ".join(parts)
+
+
 def _dump_segments(segments):
 	"""Stored only when the row genuinely spans more than one rate."""
 	if len(segments) < 2:

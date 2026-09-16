@@ -1625,6 +1625,49 @@ def post_depreciation_catch_up(asset, amount, reason, posting_date=None, dry_run
 	return je.name
 
 
+def backfill_rate_breakdown(company=None, asset=None, dry_run=1):
+	"""Render Rate Breakdown on rows that stored a composition before the
+	column existed. Submitted schedules do not pass through validate
+	again, so the text is written directly from the same helper the
+	controller uses — a display value, derived from stored data, never a
+	change to any amount, rate or date."""
+	from asset_enterprise.depreciation import rate_breakdown_text
+
+	conditions, values = ["ifnull(ds.rate_segments, '') <> ''",
+	                      "ifnull(ds.rate_breakdown, '') = ''"], {}
+	if company:
+		conditions.append("ads.company = %(company)s")
+		values["company"] = company
+	if asset:
+		conditions.append("ads.asset = %(asset)s")
+		values["asset"] = asset
+	rows = frappe.db.sql(
+		f"""
+		select ds.name, ads.asset, ds.schedule_date, ds.rate_segments
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ads.name = ds.parent
+		where {" and ".join(conditions)}
+		order by ads.asset, ds.schedule_date
+		""",
+		values,
+		as_dict=True,
+	)
+	print(f"{len(rows)} split row(s) without a rendered breakdown:")
+	for r in rows[:12]:
+		print(f"  {r.asset} {r.schedule_date}: {rate_breakdown_text(r.rate_segments)}")
+	if len(rows) > 12:
+		print(f"  ... and {len(rows) - 12} more")
+	if not dry_run:
+		for r in rows:
+			frappe.db.set_value(
+				"Depreciation Schedule", r.name, "rate_breakdown",
+				rate_breakdown_text(r.rate_segments), update_modified=False,
+			)
+		frappe.db.commit()
+	print(f"  {len(rows)} rendered{' (dry run — nothing written)' if dry_run else ''}")
+	return rows
+
+
 def _legacy_acquisition_candidates(company=None):
 	"""Older acquisition rows carry no `voucher_detail_no`, so nothing on
 	the row links it to a receipt line (MAT-PRE-2026-00284's 13,500,000
