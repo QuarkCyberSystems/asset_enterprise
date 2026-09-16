@@ -80,7 +80,7 @@ frappe.ui.form.on("Asset", {
 			const from = frappe.format(d.repriced_from, { fieldtype: "Date" });
 			const eol = frappe.format(d.basis_end_of_life, { fieldtype: "Date" });
 			$(`<div class="ae-generation-basis" style="margin:0 0 10px 0;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-light-gray);font-size:var(--text-md);line-height:1.8">
-				<div style="font-weight:600;margin-bottom:2px">${__("Generation Basis")} — ${d.name}
+				<div style="font-weight:600;margin-bottom:2px">${__("Generation Basis")} — <a href="/app/asset-depreciation-schedule/${d.name}">${d.name}</a>
 					<span style="font-weight:400;color:var(--text-muted)"> · ${__("re-priced from")} ${from} · ${__("end of life")} ${eol}</span></div>
 				<div><b>${__("Asset Value")}</b> ${fmt(d.basis_hav)}
 					&nbsp;−&nbsp; <b>${__("Accumulated")}</b> ${fmt(d.basis_accumulated)}
