@@ -31,40 +31,37 @@ frappe.ui.form.on("Asset", {
 				sch.idx,
 				frappe.format(sch.schedule_date, { fieldtype: "Date" }),
 				sch.days_in_period || "",
-				sch.daily_rate ? frappe.format(sch.daily_rate, { fieldtype: "Float", precision: 6 }) : "",
+				// inline: the Float formatter's own right-aligned block pushed the
+				// marker onto a second line; align the whole cell ourselves
+				sch.daily_rate
+					? '<div style="text-align:right">' +
+					  frappe.format(sch.daily_rate, { fieldtype: "Float", precision: 6 }, { inline: true }) +
+					  (sch.rate_breakdown ? " †" : "") +
+					  "</div>"
+					: "",
 				money(sch.depreciation_amount),
 				money(sch.accumulated_depreciation_amount),
 				sch.journal_entry || "",
 			];
-			if (split_rows) row.push(sch.rate_breakdown || "");
 			if (asset_depr_schedule_doc.shift_based) row.push(sch.shift);
 			return row;
 		});
 
 		const columns = [
-			{ name: __("No."), editable: false, resizable: false, format: (v) => v, width: 50 },
-			{ name: __("Schedule Date"), editable: false, resizable: false, width: 110 },
-			{ name: __("Days"), editable: false, resizable: false, width: 60 },
-			{ name: __("Daily Rate (Effective)"), editable: false, resizable: false, width: 140 },
-			{ name: __("Depreciation Amount"), editable: false, resizable: false, width: 150 },
-			{ name: __("Accumulated Depreciation Amount"), editable: false, resizable: false, width: 170 },
+			{ name: __("No."), editable: false, resizable: false, format: (v) => v, width: 44 },
+			{ name: __("Schedule Date"), editable: false, resizable: false, width: 104 },
+			{ name: __("Days"), editable: false, resizable: false, width: 52 },
+			{ name: __("Daily Rate (Effective)"), editable: false, resizable: false, format: (v) => v, width: 132 },
+			{ name: __("Depreciation Amount"), editable: false, resizable: false, width: 138 },
+			{ name: __("Accumulated Depreciation"), editable: false, resizable: false, width: 150 },
 			{
 				name: __("Journal Entry"),
 				editable: false,
 				resizable: false,
 				format: (v) => (v ? `<a href="/app/journal-entry/${v}">${v}</a>` : ""),
-				width: 180,
+				width: 168,
 			},
 		];
-		if (split_rows) {
-			columns.push({
-				name: __("Rate Breakdown"),
-				editable: false,
-				resizable: true,
-				format: (v) => v,
-				width: 460,
-			});
-		}
 		if (asset_depr_schedule_doc.shift_based) {
 			columns.push({ name: __("Shift"), editable: false, resizable: false, width: 59 });
 		}
@@ -72,24 +69,55 @@ frappe.ui.form.on("Asset", {
 		// The generation's own basis — asset value, accumulated, NBV,
 		// remaining days, rate — above the rows it produced (client,
 		// 16/09: "there is no NBV and remaining days"). The stamp lives
-		// on the schedule document; the table lives here.
+		// on the schedule document; the table lives here. Amounts are
+		// formatted inline: the default Currency formatter wraps each value
+		// in a right-aligned block, which broke every figure onto its own
+		// line (client, 16/09: "rendered so ugly").
 		const d = asset_depr_schedule_doc;
 		if (d.basis_daily_rate) {
-			const fmt = (v) => money(v);
-			const rate = frappe.format(d.basis_daily_rate, { fieldtype: "Float", precision: 6 });
-			const from = frappe.format(d.repriced_from, { fieldtype: "Date" });
-			const eol = frappe.format(d.basis_end_of_life, { fieldtype: "Date" });
-			$(`<div class="ae-generation-basis" style="margin:0 0 10px 0;padding:10px 12px;border:1px solid var(--border-color);border-radius:6px;background:var(--bg-light-gray);font-size:var(--text-md);line-height:1.8">
-				<div style="font-weight:600;margin-bottom:2px">${__("Generation Basis")} — <a href="/app/asset-depreciation-schedule/${d.name}">${d.name}</a>
-					<span style="font-weight:400;color:var(--text-muted)"> · ${__("re-priced from")} ${from} · ${__("end of life")} ${eol}</span></div>
-				<div><b>${__("Asset Value")}</b> ${fmt(d.basis_hav)}
-					&nbsp;−&nbsp; <b>${__("Accumulated")}</b> ${fmt(d.basis_accumulated)}
-					&nbsp;=&nbsp; <b>${__("NBV")}</b> ${fmt(d.basis_nbv)}
-					${d.basis_salvage ? `&nbsp;−&nbsp; <b>${__("Salvage")}</b> ${fmt(d.basis_salvage)}` : ""}
-					&nbsp;=&nbsp; <b>${__("Depreciable Base")}</b> ${fmt(d.basis_depreciable_base)}</div>
-				<div><b>${__("Remaining Days")}</b> ${d.basis_remaining_days}
-					&nbsp;→&nbsp; <b>${__("Daily Rate")}</b> ${rate}
-					<span style="color:var(--text-muted)"> (${fmt(d.basis_depreciable_base)} ÷ ${d.basis_remaining_days})</span></div>
+			const amt = (v) =>
+				frappe.format(
+					v,
+					{ fieldtype: "Currency", options: "Company:company:default_currency" },
+					{ inline: true }
+				);
+			const date = (v) => frappe.format(v, { fieldtype: "Date" });
+			const cell = (label, value, op) => `
+				<div class="ae-basis-cell">
+					<div class="ae-basis-label">${op ? `<span class="ae-basis-op">${op}</span>` : ""}${label}</div>
+					<div class="ae-basis-value">${value}</div>
+				</div>`;
+			const cells = [
+				cell(__("Asset Value"), amt(d.basis_hav)),
+				cell(__("Accumulated"), amt(d.basis_accumulated), "−"),
+				cell(__("NBV"), amt(d.basis_nbv), "="),
+			];
+			if (flt(d.basis_salvage)) cells.push(cell(__("Salvage"), amt(d.basis_salvage), "−"));
+			cells.push(cell(__("Depreciable Base"), amt(d.basis_depreciable_base), "="));
+			const cells2 = [
+				cell(__("Remaining Days"), cint(d.basis_remaining_days).toLocaleString()),
+				cell(__("Daily Rate"), frappe.format(d.basis_daily_rate, { fieldtype: "Float", precision: 6 }), "→"),
+				cell(__("Re-priced From"), date(d.repriced_from)),
+				cell(__("End of Life"), date(d.basis_end_of_life)),
+			];
+			$(`
+			<style>
+				.ae-generation-basis { margin: 0 0 12px 0; padding: 10px 14px 12px; border: 1px solid var(--border-color); border-radius: var(--border-radius-md, 8px); background: var(--subtle-fg, var(--bg-light-gray)); }
+				.ae-basis-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; font-size: var(--text-sm); color: var(--text-muted); }
+				.ae-basis-head b { color: var(--text-color); font-weight: 600; }
+				.ae-basis-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 18px; }
+				.ae-basis-row + .ae-basis-row { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border-color); }
+				.ae-basis-label { font-size: var(--text-xs); color: var(--text-muted); text-transform: uppercase; letter-spacing: .02em; white-space: nowrap; }
+				.ae-basis-op { display: inline-block; min-width: 1.6em; color: var(--text-light); font-weight: 600; }
+				.ae-basis-value { font-size: var(--text-md); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-color); }
+			</style>
+			<div class="ae-generation-basis">
+				<div class="ae-basis-head">
+					<span><b>${__("Generation Basis")}</b> · <a href="/app/asset-depreciation-schedule/${d.name}">${d.name}</a></span>
+					<span>${__("rate = depreciable base ÷ remaining days")}</span>
+				</div>
+				<div class="ae-basis-row">${cells.join("")}</div>
+				<div class="ae-basis-row">${cells2.join("")}</div>
 			</div>`).appendTo(wrapper);
 		}
 
@@ -107,6 +135,35 @@ frappe.ui.form.on("Asset", {
 			cellHeight: 35,
 		});
 		datatable.style.setStyle(".dt-scrollable", { "overflow-y": "hidden" });
+
+		// Rows an event split carry more than one rate. A wide extra
+		// column for it sat off-screen with no scrollbar (found in a
+		// screenshot, not in the DOM dump), so the composition is listed
+		// under the table instead — only the split rows, one line each,
+		// which is exactly the shape of the finance team's worksheet.
+		const split = asset_depr_schedule_doc.depreciation_schedule.filter((s) => s.rate_breakdown);
+		if (split.length) {
+			const lines = split
+				.map(
+					(s) => `<tr><td class="ae-split-date">${frappe.format(s.schedule_date, { fieldtype: "Date" })}</td>` +
+						`<td class="ae-split-text">${frappe.utils.escape_html(s.rate_breakdown).replace(/ · /g, '<span class="ae-split-sep">·</span>')}</td></tr>`
+				)
+				.join("");
+			$(`
+			<style>
+				.ae-split-mark { color: var(--text-muted); font-size: 0.85em; margin-left: 2px; }
+				.ae-split-rows { margin-top: 10px; font-size: var(--text-sm); }
+				.ae-split-rows .ae-split-title { color: var(--text-muted); text-transform: uppercase; font-size: var(--text-xs); letter-spacing: .02em; margin-bottom: 4px; }
+				.ae-split-rows table { border-collapse: collapse; }
+				.ae-split-rows td { padding: 3px 14px 3px 0; vertical-align: top; white-space: nowrap; font-variant-numeric: tabular-nums; }
+				.ae-split-rows .ae-split-date { font-weight: 600; }
+				.ae-split-rows .ae-split-sep { color: var(--text-light); padding: 0 8px; }
+			</style>
+			<div class="ae-split-rows">
+				<div class="ae-split-title">† ${__("Rows priced at more than one rate")}</div>
+				<table>${lines}</table>
+			</div>`).appendTo(wrapper);
+		}
 	},
 
 	refresh(frm) {
