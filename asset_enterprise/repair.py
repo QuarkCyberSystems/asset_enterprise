@@ -1463,6 +1463,168 @@ def find_category_side_violations(company=None):
 	return out
 
 
+_VALUE_EVENT_CATEGORIES = ("Addition", "Disposal", "Impairment", "Revaluation", "Useful Life Adjustment")
+
+
+def find_multi_event_months(company=None, asset=None):
+	"""Assets that took two or more value events inside one calendar
+	month while that month's row was still unposted.
+
+	Before 16/09 the second rebuild in such a month priced the days
+	before it from the month row's single BLENDED rate — the average of
+	the two rates the first event had left in it — instead of the real
+	per-day composition, so the month was mis-charged and the difference
+	spread over the remaining life (client ACC-ASS-2026-00019, March
+	under-charged by 16,151.25). Rows now carry their composition; this
+	finds the assets whose history predates that and needs review.
+
+	Report only. What each one is owed depends on replaying its events
+	under the current rules; post_depreciation_catch_up books the
+	result once it has been worked out.
+	"""
+	conditions, values = ["ft.status = 'Posted'", "ft.transaction_category in %(cats)s",
+	                      "ft.transaction_type not like 'Existing-Asset Opening%%'",
+	                      "ft.transaction_type not like 'Asset Acquisition%%'"], {"cats": _VALUE_EVENT_CATEGORIES}
+	if company:
+		conditions.append("a.company = %(company)s")
+		values["company"] = company
+	if asset:
+		conditions.append("ft.asset = %(asset)s")
+		values["asset"] = asset
+	rows = frappe.db.sql(
+		f"""
+		select ft.asset, date_format(ft.posting_date, '%%Y-%%m') as month,
+		       count(*) as events, min(ft.posting_date) as first_event,
+		       max(ft.posting_date) as last_event, min(ft.creation) as first_created
+		from `tabFinancial Treatment` ft join `tabAsset` a on a.name = ft.asset
+		where {" and ".join(conditions)}
+		group by ft.asset, date_format(ft.posting_date, '%%Y-%%m')
+		having count(*) >= 2
+		order by ft.asset, month
+		""",
+		values,
+		as_dict=True,
+	)
+	out = []
+	for r in rows:
+		month_end = frappe.utils.get_last_day(r.first_event)
+		posted_at = frappe.db.sql(
+			"""select min(je.creation) from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ads.name = ds.parent
+			   join `tabJournal Entry` je on je.name = ds.journal_entry
+			   where ads.asset = %s and ds.schedule_date = %s and ifnull(ds.journal_entry,'') <> ''""",
+			(r.asset, month_end),
+		)[0][0]
+		# the month was unposted at the time of the LAST event of the month
+		last_event_created = frappe.db.get_value(
+			"Financial Treatment",
+			{"asset": r.asset, "posting_date": r.last_event, "status": "Posted",
+			 "transaction_category": ("in", _VALUE_EVENT_CATEGORIES)},
+			"creation",
+		)
+		if posted_at is None or (last_event_created and posted_at > last_event_created):
+			r.month_row_posted_at = posted_at
+			out.append(r)
+	print(f"{len(out)} asset-month(s) with two or more value events while the month was unposted:")
+	for r in out:
+		print(f"  {r.asset} {r.month}: {r.events} events ({r.first_event} .. {r.last_event}); "
+		      f"month row posted {r.month_row_posted_at or 'never'}")
+	return out
+
+
+def post_depreciation_catch_up(asset, amount, reason, posting_date=None, dry_run=1):
+	"""Book depreciation the schedule should already have charged, as one
+	entry, then re-spread the remaining rows on the corrected book value.
+
+	Used where posted rows are wrong by a known amount and cannot be
+	touched: they are immutable, and re-pricing them would break the
+	ledger they already tie to. The entry carries the working in its
+	remark so an auditor can follow it; the Financial Treatment records
+	it as Depreciation like any other charge, and the regeneration that
+	follows lands the future rows on the rate the corrected NBV implies.
+
+	Client ACC-ASS-2026-00019 (16/09): March under-charged by 5,112.10
+	(blended-rate defect + event-day rule), April–August over-charged by
+	107.72 (rate carried the shortfall) — net 5,004.37 owed; once booked,
+	the remaining rows price at the client's own 324,092.685028.
+
+	A NEGATIVE amount reverses over-charged depreciation the same way.
+	"""
+	from asset_enterprise import tcc
+	from asset_enterprise.depreciation import (
+		attribution_on,
+		last_posted_schedule_date,
+		supersede_and_regenerate,
+	)
+	from asset_enterprise.asset_values import recalculate_asset_values
+
+	amount = fa_module_round(flt(amount), frappe.db.get_value("Asset", asset, "company"))
+	if not amount:
+		print("nothing to book")
+		return None
+	doc = frappe.get_doc("Asset", asset)
+	posting_date = getdate(posting_date or frappe.utils.nowdate())
+	last_posted = last_posted_schedule_date(asset)
+	before = recalculate_asset_values(asset, save=False)
+	print(f"{asset}: last posted period {last_posted}; NBV {flt(before['net_book_value']):,.2f}; "
+	      f"catch-up {amount:+,.2f} on {posting_date}")
+	if dry_run:
+		print("  dry run — nothing written")
+		return None
+
+	aca = frappe.db.get_value(
+		"Asset Category Account",
+		{"parent": doc.asset_category, "company_name": doc.company},
+		["depreciation_expense_account", "accumulated_depreciation_account"],
+		as_dict=True,
+	)
+	held_cc, held_dims = attribution_on(asset, posting_date, fallback=doc.get("cost_center"))
+	debit, credit = (amount, amount) if amount > 0 else (-amount, -amount)
+	expense_leg = {
+		"account": aca.depreciation_expense_account, "cost_center": held_cc,
+		"reference_type": "Asset", "reference_name": asset, **held_dims,
+	}
+	accum_leg = {
+		"account": aca.accumulated_depreciation_account,
+		"reference_type": "Asset", "reference_name": asset,
+	}
+	if amount > 0:
+		expense_leg["debit_in_account_currency"] = debit
+		accum_leg["credit_in_account_currency"] = credit
+	else:
+		accum_leg["debit_in_account_currency"] = debit
+		expense_leg["credit_in_account_currency"] = credit
+	je = frappe.get_doc({
+		"doctype": "Journal Entry", "voucher_type": "Depreciation Entry",
+		"company": doc.company, "posting_date": posting_date,
+		"user_remark": _("Depreciation catch-up — {0}").format(reason),
+		"accounts": [expense_leg, accum_leg],
+	})
+	je.flags.ignore_permissions = True
+	je.submit()
+	tcc.apply(
+		source_doc=("Asset", asset), category="Depreciation",
+		transaction_type="Depreciation Catch-up", asset=asset,
+		posting_date=posting_date, amount=amount, accum_delta=amount, journal_entry=je.name,
+	)
+	supersede_and_regenerate(
+		asset, as_of_date=getdate(last_posted) if last_posted else None,
+		reason=_("Re-spread after depreciation catch-up {0}").format(je.name),
+	)
+	frappe.db.commit()
+	after = recalculate_asset_values(asset, save=False)
+	rate = frappe.db.sql(
+		"""select ds.daily_rate from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ads.name = ds.parent
+		   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		     and ifnull(ds.journal_entry,'') = '' order by ds.schedule_date limit 1""",
+		asset,
+	)
+	print(f"  posted {je.name}; NBV now {flt(after['net_book_value']):,.2f}; "
+	      f"next unposted row rate {flt(rate[0][0]) if rate else 0:,.6f}")
+	return je.name
+
+
 def _legacy_acquisition_candidates(company=None):
 	"""Older acquisition rows carry no `voucher_detail_no`, so nothing on
 	the row links it to a receipt line (MAT-PRE-2026-00284's 13,500,000
