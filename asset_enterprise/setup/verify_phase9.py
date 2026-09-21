@@ -16,6 +16,7 @@ def run():
 		_run()
 	except Exception:
 		traceback.print_exc()
+		raise
 
 
 def _run():

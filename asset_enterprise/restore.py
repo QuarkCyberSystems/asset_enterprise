@@ -440,39 +440,14 @@ def _same_period_gate(asset, disposal_date, partial=False):
 
 
 def _mirror_je(source_je_name, remark):
-	source_je = frappe.get_doc("Journal Entry", source_je_name)
-	mirror = frappe.get_doc(
-		{
-			"doctype": "Journal Entry",
-			# Keep the source's voucher type — core requires Depreciation
-			# Entry for JEs carrying asset depreciation references.
-			"voucher_type": source_je.voucher_type,
-			"company": source_je.company,
-			"posting_date": nowdate(),
-			"user_remark": remark,
-			"accounts": [
-				{
-					"account": a.account,
-					"debit_in_account_currency": flt(a.credit_in_account_currency),
-					"credit_in_account_currency": flt(a.debit_in_account_currency),
-					"cost_center": a.cost_center,
-					"reference_type": a.reference_type,
-					"reference_name": a.reference_name,
-				}
-				for a in source_je.accounts
-			],
-		}
-	)
-	# §12.22 / GA-0001-01 (Phase 11b T10): carry the two-way JE
-	# back-references when the site has the reversal fields.
-	je_meta = frappe.get_meta("Journal Entry")
-	if je_meta.has_field("reversal_of"):
-		mirror.reversal_of = source_je_name
+	# Use the fork's mapper: it preserves dimensions, references, currencies
+	# and locked header fields, and declares is_reversal/reversal_of (D-026).
+	from erpnext.accounts.doctype.journal_entry.journal_entry import make_reverse_journal_entry
+
+	mirror = make_reverse_journal_entry(source_je_name)
+	mirror.posting_date = nowdate()
+	mirror.user_remark = remark
 	mirror.flags.ignore_permissions = True
 	mirror.flags.ignore_links = True
 	mirror.submit()
-	if je_meta.has_field("reversed_by"):
-		frappe.db.set_value(
-			"Journal Entry", source_je_name, "reversed_by", mirror.name, update_modified=False
-		)
 	return mirror.name

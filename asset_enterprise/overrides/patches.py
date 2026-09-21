@@ -564,6 +564,9 @@ def apply_patches():
 				for row in data
 				if (row.get("asset_id") if isinstance(row, dict) else None) not in group_nodes
 			]
+		from asset_enterprise.asset_enterprise.report.replacement_chain.replacement_chain import add_register_chain
+
+		columns, data = add_register_chain(columns, data)
 		return (columns, data, *result[2:])
 
 	fixed_asset_register._asset_enterprise_wrapper = True

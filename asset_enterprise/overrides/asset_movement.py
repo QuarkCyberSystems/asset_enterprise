@@ -188,20 +188,20 @@ class EnterpriseAssetMovement(AssetMovement):
 				# this method is about to overwrite with the target, so the
 				# pre-transfer days inherited the centre the asset had not
 				# joined yet (UAT ACC-JV-2026-02277).
-				effective_prior = prior or acquisition_cost_center(d.asset)
+				origin = acquisition_cost_center(d.asset)
+				effective_prior = prior or origin
 				if not d.get("source_cost_center"):
 					d.db_set("source_cost_center", effective_prior, update_modified=False)
-				if effective_prior and not frappe.db.get_value(
+				if origin and not frappe.db.get_value(
 					"Asset", d.asset, "acquisition_cost_center"
 				):
-					# The last moment the answer is knowable from the asset
-					# itself: after the line below, `cost_center` means the
-					# target and the derivation has nothing left to read.
+					# Capture the derived origin, not the current centre:
+					# legacy assets may already have moved before this transfer.
 					frappe.db.set_value(
 						"Asset",
 						d.asset,
 						"acquisition_cost_center",
-						effective_prior,
+						origin,
 						update_modified=False,
 					)
 				frappe.db.set_value(

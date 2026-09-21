@@ -112,7 +112,10 @@ class EnterpriseAssetRepair(AssetRepair):
 			# Months are already on core's counter (which
 			# schedule_horizon_from_life now reads); only days need ours.
 			bump_useful_life_periods(self.asset, 0, days)
-		return add_days(add_months(getdate(horizon), sign * months), sign * days)
+		if sign < 0:
+			# Undo the day grant before the month grant (reverse composition).
+			return add_months(add_days(getdate(horizon), -days), -months)
+		return add_days(add_months(getdate(horizon), months), days)
 
 	def validate(self):
 		# GAP-036 / N1: capitalizing a repair posts value onto the asset

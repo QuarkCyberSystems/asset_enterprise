@@ -252,6 +252,10 @@ def apply_asset_cost_centre_policy(doc, method=None):
 	touched; everything else, including a manual entry elsewhere in the
 	chart, is left exactly as written.
 	"""
+	# D-026: a reversal must preserve the original attribution verbatim.
+	if doc.get("is_reversal") or doc.get("reversal_of"):
+		return
+
 	from asset_enterprise.depreciation import enterprise_enabled
 
 	if not enterprise_enabled():

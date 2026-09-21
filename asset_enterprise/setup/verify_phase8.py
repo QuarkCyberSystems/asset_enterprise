@@ -11,6 +11,7 @@ def run():
 		_run()
 	except Exception:
 		traceback.print_exc()
+		raise
 
 
 def _run():
@@ -529,7 +530,11 @@ def _run():
 		c1, r1 = mergelog({})
 		c2, r2 = chain({"company": company})
 		c3, r3 = recon({"company": company})
-		rep_ok = len(c1) == 11 and len(c2) == 7 and len(c3) == 8  # merge-log +2 RUL cols (11b)
+		rep_ok = (
+			len(c1) == 11 and len(c2) == 7
+			and {"stored_hav", "derived_hav", "gl_hav", "gl_accum", "gl_nbv", "flagged"}
+			<= {c["fieldname"] for c in c3}
+		)
 		print(
 			f"report merge-log cols={len(c1)} chain cols={len(c2)} recon cols={len(c3)} "
 			f"(recon rows={len(r3)}) {'OK' if rep_ok else 'FAIL'}"

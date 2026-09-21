@@ -21,6 +21,7 @@ def run():
 		_run()
 	except Exception:
 		traceback.print_exc()
+		raise
 
 
 def _run():
@@ -192,9 +193,9 @@ def _run():
 		v1 = make_test_asset(company, gross=24_000, submit=True)
 		enable_depreciation(
 			v1.name, total_number_of_depreciations=24, frequency_of_depreciation=1,
-			depreciation_start_date=get_first_day(add_months(nowdate(), -2)),
+			depreciation_start_date=get_first_day(add_months(nowdate(), -1)),
 		)
-		_post_one(first_unposted_row(v1.name), getdate(nowdate()))  # month -2
+		_post_one(first_unposted_row(v1.name), getdate(nowdate()))  # prior completed month
 		ava = frappe.get_doc(
 			{
 				"doctype": "Asset Value Adjustment", "asset": v1.name, "company": company,

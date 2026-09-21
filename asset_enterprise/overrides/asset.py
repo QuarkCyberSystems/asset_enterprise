@@ -97,8 +97,10 @@ class EnterpriseAsset(Asset):
 		need the centre the cost actually landed in, so it is captured
 		here while the two still agree and never rewritten afterwards.
 		"""
-		if not self.get("acquisition_cost_center") and self.get("cost_center"):
-			self.acquisition_cost_center = self.cost_center
+		if not self.get("acquisition_cost_center"):
+			from asset_enterprise.gl_attribution import acquisition_cost_center
+
+			self.acquisition_cost_center = acquisition_cost_center(self)
 
 	def _validate_pr_row_allocation(self):
 		"""VR-004 (Phase 11b): over-allocation check at the Asset level —

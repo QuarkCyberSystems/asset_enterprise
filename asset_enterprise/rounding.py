@@ -11,8 +11,8 @@ Rules:
 3. Final-period drift absorption: the last schedule row is computed as
    depreciable-base minus everything already posted — never rate x days
    — so NBV lands on Salvage exactly.
-4. Drift beyond the per-company tolerance is still posted (recon is
-   always exact) but flagged for the Daily Reconciliation Report.
+4. CH-01: drift beyond the per-company tolerance blocks posting until
+   corrected. The final row absorbs drift within tolerance.
 """
 
 from decimal import ROUND_HALF_UP, Decimal
@@ -64,7 +64,7 @@ def final_row_drift(final_amount, nominal_amount, company):
 
 
 def is_drift_beyond_tolerance(drift, company):
-	"""§4.10 point 4 — informational flag only; posting is never blocked."""
+	"""§4.10 / CH-01 — whether final-row drift exceeds the posting tolerance."""
 	from asset_enterprise.accounts import get_last_period_tolerance
 
 	return abs(drift) > get_last_period_tolerance(company)

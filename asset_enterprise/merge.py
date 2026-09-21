@@ -443,8 +443,8 @@ def _resupersede(target_name, posting_date, cap_doc):
 
 				end_override = getdate(last_posted_schedule_date(target_name) or posting_date)
 			elif horizon:
-				end_override = add_days(
-					add_months(getdate(horizon), -int(round(src_months))), -src_days
+				end_override = add_months(
+					add_days(getdate(horizon), -src_days), -int(round(src_months))
 				)
 				bump_useful_life_periods(target_name, -src_months, -src_days)
 	elif cap_doc.get("fully_depreciated_treatment") == "Add Value and Extend Life" and (

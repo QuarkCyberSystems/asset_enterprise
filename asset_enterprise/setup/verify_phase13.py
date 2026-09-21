@@ -26,6 +26,7 @@ def run():
 		_run()
 	except Exception:
 		traceback.print_exc()
+		raise
 
 
 def gl_bal(account):
@@ -363,17 +364,14 @@ def _run():
 			v2.name, total_number_of_depreciations=24, frequency_of_depreciation=1,
 			depreciation_start_date=get_first_day(add_months(nowdate(), -2)),
 		)
-		_post_one(
-			frappe.db.sql(
-				"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
-				   ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
-				   ds.daily_rate, ds.days_in_period
-				from `tabDepreciation Schedule` ds
-				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-				where ads.asset = %s and ads.status='Active' and ifnull(ds.journal_entry,'')=''
-				order by ds.schedule_date limit 1""", v2.name, as_dict=True)[0],
-			getdate(nowdate()),
+		# VR-043: post every completed period before measuring the AVA.
+		from asset_enterprise.depreciation import post_schedule_entries
+
+		v2_schedule = frappe.db.get_value(
+			"Asset Depreciation Schedule",
+			{"asset": v2.name, "status": "Active", "docstatus": 1}, "name",
 		)
+		post_schedule_entries(v2_schedule, frappe.utils.add_days(get_first_day(nowdate()), -1))
 		ava2 = frappe.get_doc(
 			{"doctype": "Asset Value Adjustment", "asset": v2.name, "company": company,
 			 "date": nowdate(), "transaction_type": "Upward Revaluation",
@@ -580,7 +578,15 @@ def _run():
 			r.get("replacement_of_asset") == j4.name or r.get("asset") == repl for r in crows
 		)
 		print(f"s8 replacement chain report contains pair: {'OK' if in_chain else 'FAIL: ' + str(crows[:2])}")
-		ok = ok and in_chain
+		replacement = frappe.get_doc("Asset", repl)
+		replacement.is_existing_asset = 1
+		replacement.save(ignore_permissions=True)
+		replacement.submit()
+		register = register_row(company, j4.name)
+		register_chain = register and register.get("replacement_chain", "")
+		register_ok = bool(register_chain and j4.name in register_chain and repl in register_chain)
+		print(f"s8b replacement chain on Fixed Asset Register: {register_chain} {'OK' if register_ok else 'FAIL'}")
+		ok = ok and in_chain and register_ok
 
 		# ============ S9: every voucher balanced (global) ================
 		unbalanced = frappe.db.sql(

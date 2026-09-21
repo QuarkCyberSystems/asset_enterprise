@@ -51,6 +51,10 @@ def sync_customizations():
 	register_asset_accounting_dimension()
 	rebuild_asset_tree_nodes()
 	extend_assets_sidebar()
+	from asset_enterprise.repair import backfill_generation_basis, backfill_rate_breakdown
+
+	backfill_rate_breakdown(dry_run=0)
+	backfill_generation_basis(dry_run=0)
 
 
 ENTERPRISE_SIDEBAR_GROUP = "Enterprise Assets"

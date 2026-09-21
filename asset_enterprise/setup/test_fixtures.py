@@ -133,3 +133,30 @@ def _ensure_location():
 		.insert(ignore_permissions=True)
 		.name
 	)
+
+
+def ensure_enterprise_test_defaults():
+	"""Idempotent defaults for a disposable test site, never an install hook."""
+	company = pick_company()
+	if not company:
+		frappe.throw("Create the test company before seeding enterprise defaults.")
+	centres = frappe.get_all("Cost Center", filters={"company": company, "is_group": 0}, pluck="name")
+	if len(centres) < 2:
+		parent = frappe.db.get_value("Cost Center", {"company": company, "is_group": 1}, "name")
+		frappe.get_doc({
+			"doctype": "Cost Center", "company": company,
+			"cost_center_name": "AE Test Transfer", "parent_cost_center": parent,
+			"is_group": 0,
+		}).insert(ignore_permissions=True)
+	for field, root in (
+		("pya_expense_account", "Expense"),
+		("asset_invoice_difference_account", "Expense"),
+		("post_disposal_invoice_diff_account", "Expense"),
+	):
+		field = "default_" + field
+		if not frappe.db.get_value("Company", company, field):
+			account = pick_plain_account(company, root)
+			if not account:
+				frappe.throw(f"Test company {company} lacks a plain {root} account")
+			frappe.db.set_value("Company", company, field, account)
+	return company

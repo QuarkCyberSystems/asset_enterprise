@@ -1,10 +1,7 @@
-"""Asset Daily Reconciliation — GA-0005-01 VR-008 / §4.10.
+"""VR-008: stored values, the treatment fold, and independent GL balances.
 
-Per asset: stored Enterprise-tab values vs freshly derived values, and
-the final-row drift vs the per-company tolerance. Reconciliation is
-always exact by construction (§4.10 point 2); rows appear here only
-when stored values are stale (recalc pending) or final-row drift
-exceeded tolerance (informational — the drift is still posted).
+Any difference at company currency precision is flagged. Posting drift
+is governed separately by CH-01; tolerance never hides a ledger mismatch.
 """
 
 import frappe
@@ -14,7 +11,8 @@ from frappe.utils import flt
 def execute(filters=None):
 	filters = filters or {}
 	from asset_enterprise.accounts import get_last_period_tolerance
-	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.asset_values import gl_asset_values, recalculate_asset_values
+	from asset_enterprise.rounding import fa_module_round
 
 	asset_filters = {"docstatus": 1}
 	if filters.get("company"):
@@ -27,10 +25,15 @@ def execute(filters=None):
 		fields=["name", "company", "historical_asset_value", "accumulated_depreciation_value", "net_book_value"],
 	):
 		derived = recalculate_asset_values(a.name, save=False)
+		ledger = gl_asset_values(a.name)
 		tolerance = get_last_period_tolerance(a.company)
-		hav_diff = flt(derived["historical_asset_value"] - flt(a.historical_asset_value), 2)
-		nbv_diff = flt(derived["net_book_value"] - flt(a.net_book_value), 2)
-		flagged = abs(hav_diff) > 0 or abs(nbv_diff) > tolerance
+		hav_diff = fa_module_round(ledger["historical_asset_value"] - flt(a.historical_asset_value), a.company)
+		nbv_diff = fa_module_round(ledger["net_book_value"] - flt(a.net_book_value), a.company)
+		accum_diff = fa_module_round(ledger["accumulated_depreciation_value"] - flt(a.accumulated_depreciation_value), a.company)
+		flagged = any((hav_diff, nbv_diff, accum_diff)) or any(
+			fa_module_round(derived[key] - ledger[key], a.company)
+			for key in ledger
+		)
 		if filters.get("flagged_only") and not flagged:
 			continue
 		rows.append(
@@ -41,6 +44,11 @@ def execute(filters=None):
 				"stored_nbv": a.net_book_value,
 				"derived_nbv": derived["net_book_value"],
 				"nbv_diff": nbv_diff,
+				"gl_hav": ledger["historical_asset_value"],
+				"gl_accum": ledger["accumulated_depreciation_value"],
+				"gl_nbv": ledger["net_book_value"],
+				"hav_diff": hav_diff,
+				"accum_diff": accum_diff,
 				"tolerance": tolerance,
 				"flagged": "Yes" if flagged else "No",
 			}
@@ -52,7 +60,12 @@ def execute(filters=None):
 		{"fieldname": "derived_hav", "label": "Derived HAV", "fieldtype": "Currency", "width": 120},
 		{"fieldname": "stored_nbv", "label": "Stored NBV", "fieldtype": "Currency", "width": 120},
 		{"fieldname": "derived_nbv", "label": "Derived NBV", "fieldtype": "Currency", "width": 120},
-		{"fieldname": "nbv_diff", "label": "NBV Diff", "fieldtype": "Currency", "width": 110},
+		{"fieldname": "gl_hav", "label": "GL HAV", "fieldtype": "Currency", "width": 120},
+		{"fieldname": "gl_accum", "label": "GL Accumulated", "fieldtype": "Currency", "width": 120},
+		{"fieldname": "gl_nbv", "label": "GL NBV", "fieldtype": "Currency", "width": 120},
+		{"fieldname": "hav_diff", "label": "GL − Stored HAV", "fieldtype": "Currency", "width": 130},
+		{"fieldname": "accum_diff", "label": "GL − Stored Accumulated", "fieldtype": "Currency", "width": 150},
+		{"fieldname": "nbv_diff", "label": "GL − Stored NBV", "fieldtype": "Currency", "width": 110},
 		{"fieldname": "tolerance", "label": "Tolerance", "fieldtype": "Currency", "width": 100},
 		{"fieldname": "flagged", "label": "Flagged", "fieldtype": "Data", "width": 80},
 	]

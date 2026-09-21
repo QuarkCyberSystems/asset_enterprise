@@ -370,6 +370,14 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 				).format(self.name)
 			)
 
+		from asset_enterprise.api import _assert_reversal_date
+
+		reversal_date = _assert_reversal_date(
+			self.company, self.posting_date,
+			frappe.flags.get("ae_capitalization_reversal_date"),
+			_("Capitalized Maintenance"),
+		)
+
 		# VR-042: the composite must be able to give the merged value back.
 		merged_nbv = sum(
 			frappe.utils.flt(r.net_book_value_at_merge)
@@ -430,7 +438,7 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 				"target_asset": self.target_asset,
 				"target_item_code": self.get("target_item_code"),
 				"company": self.company,
-				"posting_date": frappe.utils.nowdate(),
+				"posting_date": reversal_date,
 				"posting_time": frappe.utils.nowtime(),
 				"entry_type": self.get("entry_type"),
 			}

@@ -169,6 +169,11 @@ def e06():
 	company = _company()
 	asset = _asset(company, gross=120_000)
 	ahead = add_days(getdate(nowdate()), 10)
+	from asset_enterprise.depreciation import post_schedule_entries
+
+	schedule = frappe.db.get_value("Asset Depreciation Schedule",
+		{"asset": asset, "status": "Active", "docstatus": 1}, "name")
+	post_schedule_entries(schedule, add_days(get_first_day(ahead), -1))
 	disposal.partial_scrap_asset(asset, scrap_value=10_000, scrap_date=ahead)
 	ft = frappe.get_all(
 		"Financial Treatment",
@@ -594,14 +599,12 @@ def e20():
 	# The fixture's own receipt movement lands today, so the transfer has
 	# to be dated on or after it — the 13th of a month at least a month out.
 	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
-	locations = frappe.get_all("Location", limit=2, pluck="name")
 	move = frappe.get_doc({
 		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
 		"transaction_date": str(transfer),
 		"assets": [{
 			"asset": asset.name, "source_cost_center": old_cc, "target_cost_center": new_cc,
 			"source_location": frappe.db.get_value("Asset", asset.name, "location"),
-			"target_location": locations[-1],
 		}],
 	})
 	move.flags.ignore_permissions = True
@@ -679,14 +682,12 @@ def e21():
 	frappe.db.set_value("Asset", asset, "cost_center", old_cc, update_modified=False)
 	frappe.db.set_value("Asset", asset, "acquisition_cost_center", old_cc, update_modified=False)
 
-	locations = frappe.get_all("Location", limit=2, pluck="name")
 	move = frappe.get_doc({
 		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
 		"transaction_date": str(transfer),
 		"assets": [{
 			"asset": asset, "source_cost_center": old_cc, "target_cost_center": new_cc,
 			"source_location": frappe.db.get_value("Asset", asset, "location"),
-			"target_location": locations[-1],
 		}],
 	})
 	move.flags.ignore_permissions = True
@@ -754,12 +755,12 @@ def e22():
 
 	fields = movement_dimension_fields()
 	if not fields:
-		return True, "no registered dimension on Asset Movement Item — nothing to bind (skipped)"
+		return None, "no registered dimension on Asset Movement Item — nothing to bind (skipped)"
 	field = fields[0]
 	value = frappe.get_all(frappe.get_meta("Asset Movement Item").get_field(field).options,
 	                       limit=1, pluck="name")
 	if not value:
-		return True, f"no {field} record to transfer to (skipped)"
+		return None, f"no {field} record to transfer to (skipped)"
 
 	company = _company()
 	ccs = frappe.get_all(
@@ -775,14 +776,12 @@ def e22():
 	asset = make_test_asset(company, gross=3_000, submit=True, with_depreciation=True)
 	frappe.db.set_value("Asset", asset.name, "cost_center", old_cc, update_modified=False)
 	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
-	locations = frappe.get_all("Location", limit=2, pluck="name")
 	move = frappe.get_doc({
 		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
 		"transaction_date": str(transfer),
 		"assets": [{
 			"asset": asset.name, "source_cost_center": old_cc, "target_cost_center": new_cc,
 			"source_location": frappe.db.get_value("Asset", asset.name, "location"),
-			"target_location": locations[-1],
 			field: value[0],
 		}],
 	})
@@ -867,12 +866,12 @@ def e24():
 	fields = dimension_fields("Asset")
 	field = next((f for f in fields if f == "project_accounting"), fields[0] if fields else None)
 	if not field:
-		return True, "no registered dimension on Asset — nothing to contra (skipped)"
+		return None, "no registered dimension on Asset — nothing to contra (skipped)"
 	value = frappe.get_all(
 		frappe.get_meta("Asset").get_field(field).options, limit=1, pluck="name"
 	)
 	if not value:
-		return True, f"no {field} record (skipped)"
+		return None, f"no {field} record (skipped)"
 
 	company = _company()
 	asset = make_test_asset(company, gross=3_000, submit=True, with_depreciation=True)
@@ -963,14 +962,12 @@ def e23():
 	)
 	frappe.db.sql("update `tabGL Entry` set asset = NULL where asset = %s", asset.name)
 	transfer = getdate(add_months(get_first_day(nowdate()), 1)).replace(day=13)
-	locations = frappe.get_all("Location", limit=2, pluck="name")
 	move = frappe.get_doc({
 		"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
 		"transaction_date": str(transfer),
 		"assets": [{
 			"asset": asset.name, "target_cost_center": new_cc,
 			"source_location": frappe.db.get_value("Asset", asset.name, "location"),
-			"target_location": locations[-1],
 		}],
 	})
 	move.flags.ignore_permissions = True
@@ -994,7 +991,21 @@ def e23():
 		and captured == acq_cc
 		and stamped == acq_cc
 	)
+	# Legacy shape at the SECOND transfer: current centre has changed,
+	# but the captured field is still absent. Its origin is in the trail.
+	frappe.db.set_value("Asset", asset.name, "acquisition_cost_center", None)
+	move2 = frappe.copy_doc(move)
+	move2.transaction_date = str(add_days(transfer, 1))
+	move2.assets[0].source_cost_center = None
+	move2.assets[0].target_cost_center = acq_cc
+	move2.flags.ignore_permissions = True
+	move2.insert()
+	move2.submit()
+	second_origin = frappe.db.get_value("Asset", asset.name, "acquisition_cost_center")
+	second_source = frappe.db.get_value("Asset Movement Item", {"parent": move2.name}, "source_cost_center")
+	ok = ok and second_origin == acq_cc and second_source == new_cc
 	return ok, (
+		f"second transfer origin={second_origin}, source={second_source}; "
 		f"captured source={captured or 'none'} (want {acq_cc}); "
 		f"acquisition_cost_center={stamped or 'none'} (want {acq_cc}, never {new_cc}); "
 		f"split {[(cc, round(a, 2)) for cc, a in split]} "
@@ -1574,12 +1585,102 @@ def _invoice(company, supplier, pr, seed, qty, rate, allocation):
 	return pi
 
 
+@case("E-31", "D-026 / R124", "reversal preserves the posted centre after acquisition attribution changes")
+def e31():
+	from asset_enterprise.depreciation import post_schedule_entries
+	from asset_enterprise.gl_attribution import dimension_fields
+	from asset_enterprise.restore import _mirror_je
+
+	company = _company()
+	asset = _asset(company, start=get_first_day(nowdate()))
+	schedule = frappe.db.get_value("Asset Depreciation Schedule",
+		{"asset": asset, "status": "Active", "docstatus": 1}, "name")
+	post_schedule_entries(schedule, nowdate())
+	je = frappe.db.get_value("Depreciation Schedule",
+		{"parent": schedule, "journal_entry": ("is", "set")}, "journal_entry")
+	if not je:
+		# EOM schedule: explicitly post its first row for this rollback-only case.
+		date = frappe.db.get_value("Depreciation Schedule", {"parent": schedule}, "schedule_date")
+		post_schedule_entries(schedule, str(date))
+		je = frappe.db.get_value("Depreciation Schedule", {"parent": schedule}, "journal_entry")
+	source = frappe.get_doc("Journal Entry", je)
+	old_cc = next(r.cost_center for r in source.accounts if r.credit_in_account_currency)
+	new_cc = frappe.db.get_value("Cost Center",
+		{"company": company, "is_group": 0, "name": ("!=", old_cc)}, "name")
+	if not new_cc:
+		return False, "need a second cost centre"
+	frappe.db.set_value("Asset", asset, "acquisition_cost_center", new_cc)
+	mirror = frappe.get_doc("Journal Entry", _mirror_je(je, "D-026 regression"))
+	fields = ["account", "cost_center", "project", "asset", "reference_type", "reference_name"]
+	fields += dimension_fields("Journal Entry Account")
+	ok = bool(mirror.is_reversal and mirror.reversal_of == je)
+	ok = ok and len(source.accounts) == len(mirror.accounts)
+	for original, reversed_row in zip(source.accounts, mirror.accounts):
+		ok = ok and all(original.get(f) == reversed_row.get(f) for f in fields)
+		ok = ok and original.debit_in_account_currency == reversed_row.credit_in_account_currency
+		ok = ok and original.credit_in_account_currency == reversed_row.debit_in_account_currency
+	# Draft re-validation exercises the fork's locked-fields guard too.
+	mirror.validate_reversal_locked_fields()
+	return ok, f"source={je}, mirror={mirror.name}; changed origin {old_cc} -> {new_cc}; original row attribution preserved={ok}"
+
+
+@case("E-32", "R017 / §3.7.3", "CM reversal uses the role-governed chosen date")
+def e32():
+	from asset_enterprise.api import cancel_capitalization_with_reversal
+	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
+	from asset_enterprise.setup.verify_tc import _cm_merge
+
+	company = _company()
+	target = make_test_asset(company, gross=40_000, submit=True)
+	source = make_test_asset(company, gross=10_000, submit=True)
+	frappe.db.set_value("Asset Category Account",
+		{"parent": target.asset_category, "company_name": company},
+		"capitalization_clearing_account", pick_plain_account(company, "Liability"))
+	cap = _cm_merge(company, target.name, source.name)
+	chosen = add_days(getdate(nowdate()), 1)
+	frappe.db.delete("Asset Settings Reversal Role", {"parent": "Asset Settings", "company": company})
+	refused, message = _refused(lambda: cancel_capitalization_with_reversal(cap.name, chosen))
+	if not refused or "Reversal Date Edit Role" not in message:
+		return False, f"ungoverned date was not refused: {message}"
+	settings = frappe.get_single("Asset Settings")
+	# Locate the table by its child type to keep the fixture schema-driven.
+	field = next(f.fieldname for f in settings.meta.fields if f.options == "Asset Settings Reversal Role")
+	settings.append(field, {"company": company, "reversal_date_edit_role": "System Manager"})
+	settings.save(ignore_permissions=True)
+	cancel_capitalization_with_reversal(cap.name, chosen)
+	reversal = frappe.db.get_value("Asset Capitalization",
+		{"reversal_of_capitalization": cap.name, "docstatus": 1}, ["name", "posting_date"], as_dict=True)
+	ok = bool(reversal and getdate(reversal.posting_date) == getdate(chosen))
+	ok = ok and frappe.flags.get("ae_capitalization_reversal_date") is None
+	return ok, f"date without role refused={refused}; chosen={chosen}, reversal={reversal}"
+
+
+@case("E-33", "VR-008 / R161", "reconciliation detects a ledger mismatch despite an unchanged fold")
+def e33():
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.asset_enterprise.report.asset_daily_reconciliation.asset_daily_reconciliation import execute
+
+	company = _company()
+	asset = make_test_asset(company, gross=3_000, submit=True)
+	before = recalculate_asset_values(asset.name, save=False)
+	# Simulate an unattributed historical acquisition leg inside the
+	# rollback-only fixture. The fold still says 3,000; the GL no longer does.
+	frappe.db.sql("""update `tabGL Entry` set asset = NULL,
+		against_voucher = NULL, against_voucher_type = NULL where asset = %s""", asset.name)
+	_, rows = execute({"company": company, "flagged_only": 1})
+	row = next((r for r in rows if r["asset"] == asset.name), None)
+	ok = bool(row and row["flagged"] == "Yes" and row["gl_hav"] == 0
+		and row["derived_hav"] == before["historical_asset_value"] == 3_000)
+	return ok, f"unattributed GL leg: {row}"
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(
 		"Asset Settings", "enable_enterprise_assets", cache=False
 	)
-	tally = {"PASS": 0, "FAIL": 0, "ERROR": 0}
+	tally = {"PASS": 0, "FAIL": 0, "ERROR": 0, "SKIP": 0}
 	for case_id, design_ref, title, fn in CASES:
 		if wanted and case_id not in wanted:
 			continue
@@ -1587,7 +1688,7 @@ def run(only=None):
 		try:
 			frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
 			ok, detail = fn()
-			status = "PASS" if ok else "FAIL"
+			status = "SKIP" if ok is None else ("PASS" if ok else "FAIL")
 		except Exception as exc:
 			status, detail = "ERROR", f"{type(exc).__name__}: {str(exc)[:150]}"
 			if frappe.flags.get("edge_traceback"):

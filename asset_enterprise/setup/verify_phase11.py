@@ -28,6 +28,7 @@ def run():
 		_run()
 	except Exception:
 		traceback.print_exc()
+		raise
 
 
 def _run():
@@ -1171,83 +1172,73 @@ def _run():
 		)
 		ok = ok and bool(t9_ok)
 
-		# T10 (Ruba, 18/08, ACC-ASS-2026-00118): a value change re-prices
-		# the schedule only AFTER its date. Asset 125,000 / 60m in
-		# service 31/03/2026, posted through 30/06 at 68.493151/day, then
-		# +35,945.21 added on 18/08. July's unposted row must stay
-		# 2,123.29 to the cent; August splits at the event (18 days old
-		# rate + 13 days new) into one 31-day row; September onward runs
-		# at the new rate; the future rows still sum to the full NBV.
-		from asset_enterprise.depreciation import enable_depreciation as t10_enable
-
-		t10 = make_test_asset(company, gross=125_000, submit=True)
-		t10_enable(
-			t10.name, total_number_of_depreciations=60,
-			available_for_use_date="2026-03-31", depreciation_start_date="2026-03-31",
-		)
+		# T10: VR-043 requires all prior periods to be posted. Use a
+		# current-month event so this fixture does not expire with the calendar.
 		from asset_enterprise.depreciation import post_schedule_entries
+		from asset_enterprise.rounding import fa_module_round
 
+		t10_event = getdate(nowdate())
+		t10_start = getdate(add_months(get_first_day(t10_event), -5))
+		t10_end = getdate(add_days(add_months(t10_start, 60), -1))
+		t10 = make_test_asset(company, gross=125_000, submit=False)
+		t10.purchase_date = t10_start
+		t10.available_for_use_date = t10_start
+		t10.save()
+		t10.submit()
+		enable_depreciation(
+			t10.name, total_number_of_depreciations=60,
+			available_for_use_date=t10_start, depreciation_start_date=t10_start,
+		)
 		t10_sched = frappe.db.get_value(
 			"Asset Depreciation Schedule",
 			{"asset": t10.name, "status": "Active", "docstatus": 1}, "name",
 		)
-		post_schedule_entries(t10_sched, "2026-06-30")
-
+		post_schedule_entries(t10_sched, add_days(get_first_day(t10_event), -1))
+		before = recalculate_asset_values(t10.name, save=False)
 		t10_diff = pick_plain_account(company, "Liability")
 		t10_ava = frappe.get_doc({
 			"doctype": "Asset Value Adjustment", "asset": t10.name, "company": company,
-			"date": "2026-08-18", "transaction_type": "Upward Revaluation",
-			"current_asset_value": 118_698.64, "new_asset_value": 154_643.85,
+			"date": t10_event, "transaction_type": "Upward Revaluation",
+			"current_asset_value": before["net_book_value"],
+			"new_asset_value": before["net_book_value"] + 35_945.21,
 			"difference_account": t10_diff,
 			"cost_center": frappe.db.get_value("Asset", t10.name, "cost_center"),
 		})
 		t10_ava.flags.ignore_permissions = True
 		t10_ava.insert()
 		t10_ava.submit()
-
 		t10_rows = frappe.db.sql(
-			"""
-			select ds.schedule_date, ds.depreciation_amount, ds.days_in_period,
-			       ds.daily_rate, ifnull(ds.journal_entry, '') je
-			from `tabDepreciation Schedule` ds
-			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-			where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
-			order by ds.schedule_date
-			""",
-			t10.name, as_dict=True,
+			"""select ds.schedule_date, ds.depreciation_amount, ds.days_in_period,
+			          ds.daily_rate, ifnull(ds.journal_entry, '') je
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+			   order by ds.schedule_date""", t10.name, as_dict=True,
 		)
-		by = {str(r.schedule_date): r for r in t10_rows}
-		jul, aug, sep = by.get("2026-07-31"), by.get("2026-08-31"), by.get("2026-09-30")
-		future_sum = flt(sum(flt(r.depreciation_amount) for r in t10_rows if not r.je), 2)
-		# Core's counter must track the derived NBV after value events —
-		# it is what core's status logic reads (client, ACC-ASS-2026-00125:
-		# counter went negative and status flipped to Fully Depreciated
-		# with a row still unposted).
+		# D-027: the event's own day uses the NEW rate. Earlier days in
+		# this month keep the old actual-day rate; prior months stay posted.
+		old_rate = 125_000 / (date_diff(t10_end, t10_start) + 1)
+		stub = old_rate * (t10_event.day - 1)
+		expected_nbv = fa_module_round(before["net_book_value"] + 35_945.21, company)
+		new_rate = (expected_nbv - stub) / (date_diff(t10_end, t10_event) + 1)
+		event_eom = getdate(get_last_day(t10_event))
+		expected_event = fa_module_round(stub + new_rate * (date_diff(event_eom, t10_event) + 1), company)
+		event_row = next(r for r in t10_rows if getdate(r.schedule_date) == event_eom)
+		future_sum = fa_module_round(sum(flt(r.depreciation_amount) for r in t10_rows if not r.je), company)
 		t10_counter = flt(frappe.db.get_value(
 			"Asset Finance Book", {"parent": t10.name}, "value_after_depreciation"))
 		t10_status = frappe.db.get_value("Asset", t10.name, "status")
 		t10_ok = (
-			jul and aug and sep
-			# CH-12 amended 01/09 — actual-day denominator throughout.
-			# On the superseded 365-basis: 2,123.29 @68.493151, Aug
-			# 2,400.78, Sep 2,695.15, post-event NBV 154,643.85.
-			and flt(jul.depreciation_amount, 2) == 2_122.12
-			and flt(jul.daily_rate, 6) == 68.455641
-			and cint(aug.days_in_period) == 31
-			and flt(aug.depreciation_amount, 2) == 2_399.45
-			and flt(sep.depreciation_amount, 2) == 2_693.64
-			and future_sum == 154_647.29  # the post-event NBV, already net of posted
-			and flt(t10_counter, 2) == 154_647.29
+			all(r.je for r in t10_rows if getdate(r.schedule_date) < get_first_day(t10_event))
+			and abs(flt(event_row.depreciation_amount) - expected_event) <= 0.01
+			and future_sum == expected_nbv
+			and flt(t10_counter, 2) == expected_nbv
 			and t10_status == "Partially Depreciated"
 		)
 		print(
-			f"t10    rate change only after its date: Jul={jul and flt(jul.depreciation_amount, 2)} "
-			f"@{jul and flt(jul.daily_rate, 6)} (want 2,122.12 @68.455641 UNCHANGED), "
-			f"Aug={aug and flt(aug.depreciation_amount, 2)}/{aug and aug.days_in_period}d "
-			f"(want 2,399.45/31 split at 18/08), Sep={sep and flt(sep.depreciation_amount, 2)} "
-			f"(want 2,695.15 new rate), future-sum={future_sum:,.2f} (want 154,643.85), "
-			f"core counter={t10_counter:,.2f} (want =NBV) status={t10_status} "
-			f"(want Partially Depreciated) {'OK' if t10_ok else 'FAIL'}"
+			f"t10    event-day split: {event_row.depreciation_amount} (want {expected_event}); "
+			f"future-sum={future_sum}, counter={t10_counter} (want {expected_nbv}); "
+			f"{'OK' if t10_ok else 'FAIL'}"
 		)
 		ok = ok and bool(t10_ok)
 
@@ -2557,7 +2548,9 @@ def _run():
 		# booked as a disposal loss. Her asset then depreciated to zero on
 		# the reduced base, so reversing the scrap handed back exactly that
 		# difference with no life left to charge it through.
-		post_all_rows(e1.name, limit=3)
+		e1_schedule = frappe.db.get_value("Asset Depreciation Schedule",
+			{"asset": e1.name, "status": "Active", "docstatus": 1}, "name")
+		post_schedule_entries(e1_schedule, add_days(get_first_day(nowdate()), -1))
 		disposal.partial_scrap_asset(e1.name, scrap_value=200, scrap_date=nowdate())
 		post_all_rows(e1.name)          # asset now has nothing left to post
 		exhausted = flt(recalculate_asset_values(e1.name, save=False)["net_book_value"])

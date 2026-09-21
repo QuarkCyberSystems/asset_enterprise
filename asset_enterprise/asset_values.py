@@ -1,4 +1,6 @@
-"""Ledger-derived asset values — GA-0005-01 v2.14 GAP-006 / §5.1.
+"""Treatment-derived asset values; independent GL reconciliation below.
+
+The production fold remains an open deviation from GAP-006 / §5.1.
 
 The Asset form's Enterprise tab shows values DERIVED, not stored-and-
 mutated:
@@ -304,3 +306,36 @@ def assert_nbv_covers_reversal(asset_name, amount, context=None):
 			).format(amount, nbv, asset_name, f" ({context})" if context else ""),
 			title=_("Reversal Not Covered by NBV"),
 		)
+
+
+def gl_asset_values(asset_name):
+	"""Independent posted-ledger balances for VR-008 reconciliation.
+
+	Use the asset dimension, with the legacy against-voucher reference only
+	when the dimension is blank. Never count another asset's dimensioned leg.
+	No purchase amount, schedule row, or Financial Treatment enters this read.
+	"""
+	asset = frappe.get_doc("Asset", asset_name)
+	accounts = _category_accounts(asset)
+	fa = accounts.get("fixed_asset_account")
+	accum = accounts.get("accumulated_depreciation_account")
+	balances = frappe.db.sql(
+		"""select account, sum(debit - credit) as balance
+		   from `tabGL Entry`
+		   where company = %(company)s and is_cancelled = 0
+		     and (asset = %(asset)s or
+		          (ifnull(asset, '') = '' and against_voucher_type = 'Asset'
+		           and against_voucher = %(asset)s))
+		     and account in %(accounts)s
+		   group by account""",
+		{"company": asset.company, "asset": asset_name, "accounts": tuple(a for a in (fa, accum) if a) or ("",)},
+		as_dict=True,
+	)
+	by_account = {r.account: flt(r.balance) for r in balances}
+	hav = fa_module_round(by_account.get(fa, 0), asset.company)
+	accumulated = fa_module_round(-by_account.get(accum, 0), asset.company)
+	return {
+		"historical_asset_value": hav,
+		"accumulated_depreciation_value": accumulated,
+		"net_book_value": fa_module_round(hav - accumulated, asset.company),
+	}

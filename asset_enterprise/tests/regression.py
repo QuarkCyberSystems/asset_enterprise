@@ -43,7 +43,7 @@ def _capture(fn, *args, **kwargs):
 			return len(s)
 
 	crashed = None
-	with contextlib.redirect_stdout(Tee()):
+	with contextlib.redirect_stdout(Tee()), contextlib.redirect_stderr(Tee()):
 		try:
 			fn(*args, **kwargs)
 		except Exception as e:  # a crash is a failure, not an abort of the sweep
@@ -55,7 +55,9 @@ def _capture(fn, *args, **kwargs):
 def _verdict(crashed, output):
 	if crashed:
 		return "CRASHED"
-	return "FAIL" if _FAIL.search(output) else "PASS"
+	if _FAIL.search(output) or re.search(r"\bERROR\b|Traceback \(most recent call last\)", output):
+		return "FAIL"
+	return "INCOMPLETE" if re.search(r"\bSKIP\b", output) else "PASS"
 
 
 def run(phases=None, raise_on_fail=True):

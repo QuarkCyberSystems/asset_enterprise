@@ -453,6 +453,25 @@ def cancel_repair_with_reversal(repair_name, posting_date=None):
 
 
 @frappe.whitelist()
+def cancel_capitalization_with_reversal(capitalization_name, posting_date=None):
+	"""Cancel Capitalized Maintenance with the governed reversal date."""
+	doc = frappe.get_doc("Asset Capitalization", capitalization_name)
+	frappe.has_permission("Asset Capitalization", "cancel", doc, throw=True)
+	if doc.get("transaction_type") != "Capitalized Maintenance":
+		frappe.throw(_("Only Capitalized Maintenance can be reversed with this action."))
+	chosen = _assert_reversal_date(
+		doc.company, doc.posting_date, posting_date, _("Capitalized Maintenance")
+	)
+	previous = frappe.flags.get("ae_capitalization_reversal_date")
+	frappe.flags["ae_capitalization_reversal_date"] = chosen
+	try:
+		doc.cancel()
+	finally:
+		frappe.flags["ae_capitalization_reversal_date"] = previous
+	return True
+
+
+@frappe.whitelist()
 def reversal_date_editable(company):
 	"""C3 UX helper: may the current user change the reversal posting
 	date from today for this company? (Enforcement lives in the cancel
