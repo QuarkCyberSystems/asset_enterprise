@@ -96,8 +96,10 @@ Every build phase ships a savepoint-rolled-back end-to-end verification —
 safe to run on a live site; nothing persists:
 
 ```bash
-bench --site <site> execute asset_enterprise.setup.verify_all.run   # all 10 phase suites
-bench --site <site> execute asset_enterprise.setup.verify_phase3.run  # single phase
+bench --site <site> execute asset_enterprise.tests.regression.run        # all 13 phase suites, raises on any FAIL
+bench --site <site> execute asset_enterprise.tests.regression.run --kwargs '{"phases": [3]}'  # single phase
+bench --site <site> execute asset_enterprise.tests.regression.run_edge   # design-derived edge suite
+bench --site <site> execute asset_enterprise.tests.regression.run_tc     # literal §11 test-case audit
 ```
 
 ## Contributing
