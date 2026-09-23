@@ -6,6 +6,7 @@ app the same way:
     bench --site <site> execute asset_enterprise.tests.regression.run --kwargs '{"phases": [3, 9]}'
     bench --site <site> execute asset_enterprise.tests.regression.run_edge
     bench --site <site> execute asset_enterprise.tests.regression.run_tc
+    bench --site <site> execute asset_enterprise.tests.smoke_platform_registration.run
 
 The phase suites live in setup/verify_phase*.py (they are the WP's
 official verification and the GA-0005-01 runbook points at them). Each
@@ -69,6 +70,11 @@ def run(phases=None, raise_on_fail=True):
 		print(f"\n{'=' * 20} PHASE {phase} {'=' * 20}")
 		results[phase] = _verdict(*_capture(mod.run))
 
+	# the platform registration suite runs with every sweep (Build 0.1 §12)
+	from asset_enterprise.tests import smoke_platform_registration
+
+	print(f"\n{'=' * 20} PLATFORM REGISTRATION {'=' * 20}")
+	results["platform"] = _verdict(*_capture(smoke_platform_registration.run))
 	print("\nasset_enterprise regression summary")
 	for phase, verdict in results.items():
 		print(f"  phase {phase:>2}: {verdict}")

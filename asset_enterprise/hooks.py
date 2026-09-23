@@ -8,7 +8,13 @@ app_license = "mit"
 # Apps
 # ------------------
 
-required_apps = ["erpnext"]
+required_apps = ["erpnext", "qcs_platform"]
+
+# Build 0.1 step 4: the immutable-ledger answers (delete refusals on the
+# four asset transactions, the capitalization-issue Stock Entry) are given
+# to the platform's dispatcher by asset_enterprise.platform, not thrown
+# from hooks; pr_before_cancel is declared there as a legacy effect hook.
+qcs_platform_registration = "asset_enterprise.platform.get_registration"
 
 # GA-0005-01 v2.14 — controller overrides (build plan §2.1).
 # Phase 0: pass-through subclasses; behavior lands per phase.
@@ -74,11 +80,9 @@ doctype_list_js = {
 doc_events = {
 	"Purchase Receipt": {
 		"on_submit": "asset_enterprise.invoice_diff.pr_on_submit",
+		# an EFFECT hook (it cascades the receipt's assets), not a refusal:
+		# declared in platform.get_registration as a legacy hook
 		"before_cancel": "asset_enterprise.invoice_diff.pr_before_cancel",
-	},
-	"Stock Entry": {
-		# a capitalization's Material Issue is never cancelled on its own
-		"before_cancel": "asset_enterprise.overrides.stock_entry.block_capitalization_issue_cancel",
 	},
 	"Journal Entry": {
 		# GAP-023 / TC-038: fill the Asset accounting dimension from the
@@ -103,21 +107,6 @@ doc_events = {
 	# prevent-disposal-before-full-invoicing control.
 	"Sales Invoice": {
 		"validate": "asset_enterprise.invoice_diff.si_validate",
-	},
-	# Immutable ledger: a posted asset transaction is never deleted — it
-	# is reversed. Deleting one left the supersession trail naming a
-	# document that no longer existed (UAT, 16/08/2026).
-	"Asset Capitalization": {
-		"on_trash": "asset_enterprise.immutability.block_deletion_of_posted_document",
-	},
-	"Asset Repair": {
-		"on_trash": "asset_enterprise.immutability.block_deletion_of_posted_document",
-	},
-	"Asset Value Adjustment": {
-		"on_trash": "asset_enterprise.immutability.block_deletion_of_posted_document",
-	},
-	"Scrap Transaction": {
-		"on_trash": "asset_enterprise.immutability.block_deletion_of_posted_document",
 	},
 }
 
