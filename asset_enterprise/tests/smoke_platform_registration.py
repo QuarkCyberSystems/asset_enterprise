@@ -169,6 +169,19 @@ class Fixtures:
 		return None
 
 
+def _guard_fires(checks, label, fn):
+	"""`require_qcs_platform` fails a migrate on a site without the platform."""
+	original = frappe.get_installed_apps
+	frappe.get_installed_apps = lambda *a, **k: [x for x in original(*a, **k) if x != "qcs_platform"]
+	try:
+		fn()
+		checks(label, False, "did not raise")
+	except frappe.ValidationError as exc:
+		checks(label, "install-app qcs_platform" in str(exc), str(exc)[:100])
+	finally:
+		frappe.get_installed_apps = original
+
+
 def _a_cases(fixtures, adapter, checks):
 	from qcs_platform import compat
 	from qcs_platform.ledger.dispatcher import LedgerRefusal, ui_state
@@ -214,6 +227,10 @@ def _a_cases(fixtures, adapter, checks):
 	# A-07 the receipt's cascade hook is declared, so the overlap check passes
 	checks("A-07 pr_before_cancel is declared as a legacy hook", ("Purchase Receipt", "before_cancel") in get_registration().legacy_hooks)
 	checks("A-07 verify_install passes with it declared", compat.verify_install() is True)
+
+	from asset_enterprise.setup.install import require_qcs_platform
+
+	_guard_fires(checks, "after_migrate refuses a site without the platform", require_qcs_platform)
 
 
 def _routed_issue_case(fixtures, adapter, checks):

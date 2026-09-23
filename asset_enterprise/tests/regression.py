@@ -74,7 +74,17 @@ def run(phases=None, raise_on_fail=True):
 	from asset_enterprise.tests import smoke_platform_registration
 
 	print(f"\n{'=' * 20} PLATFORM REGISTRATION {'=' * 20}")
-	results["platform"] = _verdict(*_capture(smoke_platform_registration.run))
+	try:
+		from qcs_platform.testkit import throwaway_site_only
+
+		throwaway_site_only()
+	except RuntimeError as exc:
+		# the phases roll back; this suite commits fixtures, so it is SKIP -
+		# reported as INCOMPLETE, never CRASHED - anywhere but a throwaway site
+		print(f"SKIP platform registration: {exc}")
+		results["platform"] = "INCOMPLETE"
+	else:
+		results["platform"] = _verdict(*_capture(smoke_platform_registration.run))
 	print("\nasset_enterprise regression summary")
 	for phase, verdict in results.items():
 		print(f"  phase {phase:>2}: {verdict}")
