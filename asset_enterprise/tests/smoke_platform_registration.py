@@ -169,17 +169,6 @@ class Fixtures:
 		return None
 
 
-def _guard_fires(checks, label, fn):
-	"""`require_qcs_platform` fails a migrate on a site without the platform."""
-	original = frappe.get_installed_apps
-	frappe.get_installed_apps = lambda *a, **k: [x for x in original(*a, **k) if x != "qcs_platform"]
-	try:
-		fn()
-		checks(label, False, "did not raise")
-	except frappe.ValidationError as exc:
-		checks(label, "install-app qcs_platform" in str(exc), str(exc)[:100])
-	finally:
-		frappe.get_installed_apps = original
 
 
 def _a_cases(fixtures, adapter, checks):
@@ -227,10 +216,30 @@ def _a_cases(fixtures, adapter, checks):
 	# A-07 the receipt's cascade hook is declared, so the overlap check passes
 	checks("A-07 pr_before_cancel is declared as a legacy hook", ("Purchase Receipt", "before_cancel") in get_registration().legacy_hooks)
 	checks("A-07 verify_install passes with it declared", compat.verify_install() is True)
+	# and refuses the site the moment the declaration goes (the real path,
+	# over the governed union: this app registers nothing for the receipt)
+	from qcs_platform import registry
+	from qcs_platform.contracts import Registration
 
-	from asset_enterprise.setup.install import require_qcs_platform
+	import asset_enterprise.platform as platform_module
 
-	_guard_fires(checks, "after_migrate refuses a site without the platform", require_qcs_platform)
+	real = platform_module.get_registration
+	platform_module.get_registration = lambda: Registration(app="asset_enterprise", api_version=real().api_version, ledger_adapters=real().ledger_adapters)
+	registry.clear_cache()
+	try:
+		compat.verify_install()
+		checks("A-07 with the declaration removed verify_install refuses the site", False, "verified")
+	except registry.RegistryError as exc:
+		checks("A-07 with the declaration removed verify_install refuses the site", "pr_before_cancel" in str(exc), str(exc)[:140])
+	finally:
+		platform_module.get_registration = real
+		registry.clear_cache()
+
+	from qcs_platform.testkit import migrate_guard_fires
+
+	from asset_enterprise.setup.install import after_migrate
+
+	migrate_guard_fires(checks, "after_migrate refuses a site without the platform first", after_migrate)
 
 
 def _routed_issue_case(fixtures, adapter, checks):
@@ -239,7 +248,7 @@ def _routed_issue_case(fixtures, adapter, checks):
 	neither offered nor admitted (§5.1: one owner's route is not another
 	owner's permission)."""
 	if "periodic_valuation" not in frappe.get_installed_apps():
-		print("routed-issue case: skipped (periodic_valuation not installed)")
+		print("SKIP routed-issue case (periodic_valuation not installed)")
 		return
 	from periodic_valuation.periodic_moving_average.cancellation import make_cancellation
 	from periodic_valuation.tests.smoke_kernel import ITEM as MAP_ITEM, ensure_masters, get_company
@@ -248,7 +257,7 @@ def _routed_issue_case(fixtures, adapter, checks):
 
 	ensure_masters()
 	if get_company() != fixtures.company:
-		print("routed-issue case: skipped (valuation smoke company differs)")
+		print("SKIP routed-issue case (valuation smoke company differs)")
 		return
 	with isolated():
 		wh = f"_SMK Stores - {frappe.db.get_value('Company', fixtures.company, 'abbr')}"
