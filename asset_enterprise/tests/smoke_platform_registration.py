@@ -256,8 +256,8 @@ def _routed_issue_case(fixtures, adapter, checks):
 	from qcs_platform.testkit import isolated
 
 	ensure_masters()
+	checks("X-AE valuation's smoke company is this suite's company", get_company() == fixtures.company, f"{get_company()} != {fixtures.company}")
 	if get_company() != fixtures.company:
-		print("SKIP routed-issue case (valuation smoke company differs)")
 		return
 	with isolated():
 		wh = f"_SMK Stores - {frappe.db.get_value('Company', fixtures.company, 'abbr')}"

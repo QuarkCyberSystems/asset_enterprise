@@ -81,16 +81,19 @@ def run(phases=None, raise_on_fail=True):
 	except RuntimeError as exc:
 		# the phases roll back; this suite commits fixtures, so it is SKIP -
 		# reported as INCOMPLETE, never CRASHED - anywhere but a throwaway site
-		print(f"SKIP platform registration: {exc}")
-		results["platform"] = "INCOMPLETE"
+		# the site-skip alone is SKIPPED (not red); a SKIP inside the suite
+		# stays INCOMPLETE, which is red
+		print(f"platform registration not run here: {exc}")
+		results["platform"] = "SKIPPED"
 	else:
 		results["platform"] = _verdict(*_capture(smoke_platform_registration.run))
 	print("\nasset_enterprise regression summary")
 	for phase, verdict in results.items():
 		print(f"  phase {phase:>2}: {verdict}")
-	# the platform suite's SKIP off a throwaway site is not a red sweep
-	red = {p: v for p, v in results.items() if v != "PASS" and not (p == "platform" and v == "INCOMPLETE")}
-	print(f"  {len(results) - len(red)}/{len(results)} phases PASS")
+	red = {p: v for p, v in results.items() if v not in ("PASS", "SKIPPED")}
+	skipped = [p for p, v in results.items() if v == "SKIPPED"]
+	counted = len(results) - len(skipped)
+	print(f"  {counted - len(red)}/{counted} phases PASS" + (f" ({len(skipped)} skipped)" if skipped else ""))
 	if red and raise_on_fail:
 		raise RegressionFailed(f"phases not passing: {red}")
 	return results
