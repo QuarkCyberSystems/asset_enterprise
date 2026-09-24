@@ -439,13 +439,13 @@ def _same_period_gate(asset, disposal_date, partial=False):
 		)
 
 
-def _mirror_je(source_je_name, remark):
+def _mirror_je(source_je_name, remark, posting_date=None):
 	# Use the fork's mapper: it preserves dimensions, references, currencies
 	# and locked header fields, and declares is_reversal/reversal_of (D-026).
-	from erpnext.accounts.doctype.journal_entry.journal_entry import make_reverse_journal_entry
+	from qcs_platform.core.journal_entry import make_reverse_journal_entry
 
 	mirror = make_reverse_journal_entry(source_je_name)
-	mirror.posting_date = nowdate()
+	mirror.posting_date = posting_date or nowdate()
 	mirror.user_remark = remark
 	mirror.flags.ignore_permissions = True
 	mirror.flags.ignore_links = True
