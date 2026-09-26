@@ -7,7 +7,7 @@ never meant to persist on a live site.
 import contextlib
 
 import frappe
-from frappe.utils import add_months, get_first_day, nowdate
+from frappe.utils import add_months, flt, get_first_day, nowdate
 
 # asset_values.recalculate_asset_values sources operational values from
 # the legacy fold or from posted GL, per site_config
@@ -371,7 +371,13 @@ def control_purchase(fixture, amount, acquired_under):
 
 def control_invoice(pr, price, dimensions=None):
 	"""A Purchase Invoice against the receipt at `price` - AE posts the
-	difference as an Invoice Adjustment AVA plus the delta transfer."""
+	difference as an Invoice Adjustment AVA plus the delta transfer. The
+	runbook's configuration items (Buying Settings "maintain same rate"
+	off, an over-billing allowance) are what let an invoice differ from its
+	receipt at all."""
+	frappe.db.set_single_value("Buying Settings", "maintain_same_rate", 0)
+	if flt(frappe.db.get_single_value("Accounts Settings", "over_billing_allowance")) < 100:
+		frappe.db.set_single_value("Accounts Settings", "over_billing_allowance", 100)
 	row = pr.items[0]
 	pi = frappe.get_doc(_with_dimensions({
 		"doctype": "Purchase Invoice", "company": pr.company, "supplier": pr.supplier,
