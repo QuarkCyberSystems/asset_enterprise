@@ -171,19 +171,12 @@ class EnterpriseAssetRepair(AssetRepair):
 		reversal_date = getdate(self.completion_date or nowdate())
 		original_gl = frappe.get_all("GL Entry",
 			filters={"voucher_type": "Asset Repair", "voucher_no": source.name, "is_cancelled": 0},
-			fields=["*"], order_by="creation, name")
-		gl_map = []
-		for original in original_gl:
-			row = frappe._dict(original)
-			for field in ("name", "creation", "modified", "owner", "modified_by"):
-				row.pop(field, None)
-			row.update(voucher_no=self.name, posting_date=reversal_date, is_cancelled=0,
-				remarks=_("Reversal Repair {0} of {1}").format(self.name, source.name))
-			for debit, credit in (("debit", "credit"),
-				("debit_in_account_currency", "credit_in_account_currency"),
-				("debit_in_transaction_currency", "credit_in_transaction_currency")):
-				row[debit], row[credit] = original.get(credit), original.get(debit)
-			gl_map.append(row)
+			fields=_mirror_source_fields(), order_by="creation, name")
+		gl_map = [
+			_mirror_gl_row(original, self.name, reversal_date,
+				_("Reversal Repair {0} of {1}").format(self.name, source.name))
+			for original in original_gl
+		]
 		make_gl_entries(gl_map, merge_entries=False)
 
 		# 2. Stock return — Material Receipt of the consumed items
@@ -385,3 +378,63 @@ def is_fully_depreciated(asset_name):
 		"Asset Depreciation Schedule", {"asset": asset_name, "status": "Active", "docstatus": 1}
 	)
 	return bool(has_schedule) and unposted == 0 and flt(values["net_book_value"]) <= salvage
+
+
+# A mirror row keeps who and what the original booked against; everything
+# a GL row derives from its own date (fiscal year, reporting-currency rate
+# and amounts, due and transaction dates) or from its insert (name, audit
+# stamps, app-stamped keys) is left blank so core and the stamping hooks
+# derive it again for the reversal's posting date. Copying the whole row
+# carried the original fiscal year across a year end (GLEntry fills a
+# blank fiscal year only).
+_MIRROR_KEEP = (
+	"company",
+	"account",
+	"account_currency",
+	"party_type",
+	"party",
+	"cost_center",
+	"project",
+	"finance_book",
+	"against",
+	"against_voucher_type",
+	"against_voucher",
+	"voucher_type",
+	"voucher_subtype",
+	"voucher_detail_no",
+	"is_opening",
+	"is_advance",
+	"transaction_currency",
+	"transaction_exchange_rate",
+)
+
+_MIRROR_SWAP = (
+	("debit", "credit"),
+	("debit_in_account_currency", "credit_in_account_currency"),
+	("debit_in_transaction_currency", "credit_in_transaction_currency"),
+)
+
+
+def _mirror_kept_fields():
+	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import (
+		get_accounting_dimensions,
+	)
+
+	meta = frappe.get_meta("GL Entry")
+	return list(_MIRROR_KEEP) + [
+		fieldname for fieldname in (get_accounting_dimensions() or []) if meta.has_field(fieldname)
+	]
+
+
+def _mirror_source_fields():
+	"""Every column the mirror reads from the original row — one query."""
+	return _mirror_kept_fields() + [field for pair in _MIRROR_SWAP for field in pair]
+
+
+def _mirror_gl_row(original, voucher_no, posting_date, remarks):
+	"""The reversing GL map row for `original` under `voucher_no`."""
+	row = frappe._dict({field: original.get(field) for field in _mirror_kept_fields()})
+	for debit, credit in _MIRROR_SWAP:
+		row[debit], row[credit] = original.get(credit), original.get(debit)
+	row.update(voucher_no=voucher_no, posting_date=posting_date, is_cancelled=0, remarks=remarks)
+	return row

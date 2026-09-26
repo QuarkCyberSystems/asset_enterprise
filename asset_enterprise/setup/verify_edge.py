@@ -1789,44 +1789,59 @@ def e35():
 	return bool(ok), f"{original.name} <-> {mirror.name}; attribution preserved after origin changed to {new_cc}"
 
 
-@case("E-36", "R174 / §3.7", "Repair reversal owns its GL voucher, date and two-way audit links")
+@case("E-36", "R174 / R211 / §3.7", "Repair reversal owns its GL voucher, date, fiscal year and two-way audit links")
 def e36():
+	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import get_accounting_dimensions
+	from erpnext.accounts.utils import get_fiscal_year
+
 	from asset_enterprise.api import cancel_repair_with_reversal
 	from asset_enterprise.setup.test_fixtures import make_test_asset
 	from asset_enterprise.setup.verify_tc import _stock_in, _stock_item, _warehouse
 	company = _company()
-	asset = make_test_asset(company, gross=3_000, submit=True)
 	item, warehouse = _stock_item("E36-REPAIR-STOCK"), _warehouse(company)
 	_stock_in(company, item, warehouse, 10, 100)
-	repair = frappe.get_doc({"doctype": "Asset Repair", "asset": asset.name, "company": company,
-		"failure_date": nowdate(), "completion_date": nowdate(), "repair_status": "Completed",
-		"capitalize_repair_cost": 1, "cost_center": frappe.db.get_value("Company", company, "cost_center"),
-		"stock_items": [{"item_code": item, "warehouse": warehouse, "consumed_quantity": 2,
-			"valuation_rate": 100, "total_value": 200}],
-	})
-	repair.flags.ignore_permissions = True
-	repair.insert()
-	repair.submit()
-	original = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": repair.name},
-		fields=["name", "account", "debit", "credit", "cost_center", "asset"], order_by="account")
 	settings = frappe.get_single("Asset Settings")
 	field = next(f.fieldname for f in settings.meta.fields if f.options == "Asset Settings Reversal Role")
 	settings.set(field, [r for r in settings.get(field) if r.company != company])
 	settings.append(field, {"company": company, "reversal_date_edit_role": "System Manager"})
 	settings.save(ignore_permissions=True)
-	chosen = add_days(getdate(nowdate()), 1)
-	cancel_repair_with_reversal(repair.name, chosen)
-	reversed_by = frappe.db.get_value("Asset Repair", repair.name, "reversed_by_repair")
-	mirrors = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": reversed_by},
-		fields=["account", "debit", "credit", "cost_center", "asset", "posting_date"], order_by="account")
-	ok = bool(original and len(original) == len(mirrors))
-	ok = ok and frappe.db.get_value("Asset Repair", reversed_by, "reversal_of_repair") == repair.name
-	ok = ok and all(getdate(m.posting_date) == getdate(chosen) and a.account == m.account
-		and flt(a.debit) == flt(m.credit) and flt(a.credit) == flt(m.debit)
-		and a.cost_center == m.cost_center and a.asset == m.asset for a, m in zip(original, mirrors))
-	ok = ok and frappe.db.count("GL Entry", {"voucher_type": "Asset Repair", "voucher_no": repair.name}) == len(original)
-	ok = ok and all(frappe.db.get_value("GL Entry", r.name, "is_cancelled") == 0 for r in original)
-	return bool(ok), f"repair={repair.name}, reversal={reversed_by}; {len(original)} original rows, {len(mirrors)} mirror rows dated {chosen}"
+	# Every column the reversal must carry over unchanged: account, party,
+	# cost centre and every registered accounting dimension.
+	kept = ["account", "party_type", "party", "cost_center", "project", "finance_book"] + [
+		d for d in (get_accounting_dimensions() or []) if frappe.get_meta("GL Entry").has_field(d)]
+	fields = ["name", "debit", "credit", "posting_date", "fiscal_year", *kept]
+
+	def reverse_on(chosen, stock):
+		asset = make_test_asset(company, gross=3_000, submit=True)
+		repair = frappe.get_doc({"doctype": "Asset Repair", "asset": asset.name, "company": company,
+			"failure_date": nowdate(), "completion_date": nowdate(), "repair_status": "Completed",
+			"capitalize_repair_cost": 1, "cost_center": frappe.db.get_value("Company", company, "cost_center"),
+			"stock_items": [{"item_code": item, "warehouse": warehouse, "consumed_quantity": stock,
+				"valuation_rate": 100, "total_value": 100 * stock}],
+		})
+		repair.flags.ignore_permissions = True
+		repair.insert()
+		repair.submit()
+		original = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": repair.name},
+			fields=fields, order_by="account, debit")
+		cancel_repair_with_reversal(repair.name, chosen)
+		reversed_by = frappe.db.get_value("Asset Repair", repair.name, "reversed_by_repair")
+		mirrors = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": reversed_by},
+			fields=fields, order_by="account, credit")
+		want_fy = get_fiscal_year(chosen, company=company)[0]
+		ok = bool(original and len(original) == len(mirrors))
+		ok = ok and frappe.db.get_value("Asset Repair", reversed_by, "reversal_of_repair") == repair.name
+		ok = ok and all(getdate(m.posting_date) == getdate(chosen) and m.fiscal_year == want_fy
+			and flt(a.debit) == flt(m.credit) and flt(a.credit) == flt(m.debit)
+			and all(a.get(k) == m.get(k) for k in kept) for a, m in zip(original, mirrors))
+		ok = ok and frappe.db.count("GL Entry", {"voucher_type": "Asset Repair", "voucher_no": repair.name}) == len(original)
+		ok = ok and all(frappe.db.get_value("GL Entry", r.name, "is_cancelled") == 0 for r in original)
+		return bool(ok), (f"{repair.name} ({original[0].fiscal_year if original else '-'}) -> {reversed_by} on {chosen}: "
+			f"{len(original)}/{len(mirrors)} rows, mirror FY {sorted({m.fiscal_year for m in mirrors})} want {want_fy}")
+
+	next_fy_start = add_days(get_fiscal_year(nowdate(), company=company)[2], 15)
+	results = [reverse_on(add_days(getdate(nowdate()), 1), 2), reverse_on(next_fy_start, 1)]
+	return all(r[0] for r in results), "; ".join(r[1] for r in results)
 
 
 @case("E-37", "D-031 / R126", "explicit project exit, blank retention, re-entry and cancellation preserve dated attribution")
