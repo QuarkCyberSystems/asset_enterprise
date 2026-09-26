@@ -33,6 +33,11 @@ from frappe.utils import flt
 
 from asset_enterprise.rounding import fa_module_round
 
+# The Financial Treatment of Case A.02: an invoice difference that reaches an
+# asset already disposed of. Readers of that treatment (project_accounting's
+# acquisition amendment) import this name rather than copying the text.
+POST_DISPOSAL_ADJUSTMENT = "Post-Disposal Invoice Adjustment"
+
 
 def _enterprise():
 	from asset_enterprise.depreciation import enterprise_enabled
@@ -582,7 +587,7 @@ def pi_on_submit(doc, method=None):
 				tcc.apply(
 					source_doc=doc,
 					category="Addition",
-					transaction_type="Post-Disposal Invoice Adjustment",
+					transaction_type=POST_DISPOSAL_ADJUSTMENT,
 					asset=row.asset,
 					posting_date=doc.posting_date,
 					amount=abs(price_delta),
@@ -767,7 +772,7 @@ def pi_on_cancel(doc, method=None):
 		filters={
 			"source_doctype": "Purchase Invoice",
 			"source_name": doc.name,
-			"transaction_type": "Post-Disposal Invoice Adjustment",
+			"transaction_type": POST_DISPOSAL_ADJUSTMENT,
 			"status": "Posted",
 		},
 		pluck="name",
