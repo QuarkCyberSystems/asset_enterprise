@@ -23,11 +23,12 @@ see `value_mode`), never under whatever the site happens to be set to.
     ... .run --kwargs "{'only': 'E-07'}"
 """
 
-import contextlib
 import traceback
 
 import frappe
 from frappe.utils import add_days, add_months, cint, date_diff, flt, get_first_day, get_last_day, getdate, nowdate
+
+from asset_enterprise.setup.test_fixtures import GL, LEGACY, value_mode
 
 CASES = []
 
@@ -38,9 +39,7 @@ CASES = []
 # verdict must not depend on how the site running it is configured, so
 # every case names the value modes it exercises and runs once under
 # each; it passes only if every mode passes.
-LEGACY, GL = "legacy", "gl"
 BOTH = (LEGACY, GL)
-_MODE_FLAG = {LEGACY: 0, GL: 1}
 
 
 def case(case_id, design_ref, title, modes=BOTH):
@@ -50,22 +49,6 @@ def case(case_id, design_ref, title, modes=BOTH):
 
 	return wrap
 
-
-@contextlib.contextmanager
-def value_mode(mode):
-	"""Run the body with asset values sourced as `mode`, restoring the
-	site's own setting afterwards (in-process only; site_config.json is
-	never written)."""
-	key = "asset_enterprise_gl_values_ready"
-	had, before = key in frappe.conf, frappe.conf.get(key)
-	frappe.conf[key] = _MODE_FLAG[mode]
-	try:
-		yield
-	finally:
-		if had:
-			frappe.conf[key] = before
-		else:
-			frappe.conf.pop(key, None)
 
 
 def _company():

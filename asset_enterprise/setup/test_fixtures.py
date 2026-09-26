@@ -4,8 +4,35 @@ ALWAYS call inside a savepoint that the caller rolls back — these are
 never meant to persist on a live site.
 """
 
+import contextlib
+
 import frappe
 from frappe.utils import add_months, nowdate
+
+# asset_values.recalculate_asset_values sources operational values from
+# the legacy fold or from posted GL, per site_config
+# asset_enterprise_gl_values_ready. A check whose expectation belongs to
+# one source runs under value_mode(<that source>) so its verdict does not
+# depend on how the site running it is configured.
+LEGACY, GL = "legacy", "gl"
+_MODE_FLAG = {LEGACY: 0, GL: 1}
+
+
+@contextlib.contextmanager
+def value_mode(mode):
+	"""Run the body with asset values sourced as `mode` (LEGACY or GL),
+	restoring the site's own setting afterwards (in-process only; site_config.json is
+	never written)."""
+	key = "asset_enterprise_gl_values_ready"
+	had, before = key in frappe.conf, frappe.conf.get(key)
+	frappe.conf[key] = _MODE_FLAG[mode]
+	try:
+		yield
+	finally:
+		if had:
+			frappe.conf[key] = before
+		else:
+			frappe.conf.pop(key, None)
 
 
 def pick_company():

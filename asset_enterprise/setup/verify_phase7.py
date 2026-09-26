@@ -146,8 +146,12 @@ def _run():
 			update_modified=False,
 		)
 		from asset_enterprise.asset_values import recalculate_asset_values
+		from asset_enterprise.setup.test_fixtures import GL, value_mode
 
-		legacy_values = [recalculate_asset_values(name, save=False)["historical_asset_value"] for name in assets]
+		# a GL-derived rule: the legacy fold values from net_purchase_amount
+		# and never reads the acquisition leg at all
+		with value_mode(GL):
+			legacy_values = [recalculate_asset_values(name, save=False)["historical_asset_value"] for name in assets]
 		legacy_ok = legacy_values == [0, 0]  # no silent allocation from the receipt reference
 		print(f"prlegacy missing acquisition keys produce zero GL balance (flagged for backfill): {legacy_values} {'OK' if legacy_ok else 'FAIL'}")
 		ok = ok and legacy_ok
