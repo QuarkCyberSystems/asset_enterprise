@@ -2227,6 +2227,128 @@ def e40():
 		f"posted rows {posted_before} -> {posted_after}; second live run touched {len(second)}")
 
 
+@case("E-41", "D-054 / R228 / chief r5 M-2..M-4 / cross-app r3", "a capitalizing document records the cost lines it consumes and credits each once")
+def e41():
+	"""asset_enterprise's own evidence for consumption (the project ledger's
+	suites assert the project side): a repair over two lines of one invoice
+	records both and posts one credit per line; a debit note leaves less to
+	capitalize; the repair's consumed stock is recorded per issue row; a
+	service row on an account carrying a project line needs its invoice; the
+	service journal cannot be reversed while its capitalization stands; the
+	GL builders the subclasses override are verified."""
+	from asset_enterprise import consumption
+	from asset_enterprise.merge import standalone_reversal_refusal
+	from asset_enterprise.overrides.patches import _class_override_problems
+	from asset_enterprise.setup.test_fixtures import _expense_account, _supplier, dimension_fixture, make_test_asset
+	from asset_enterprise.setup.verify_tc import _service_item, _stock_in, _stock_item, _warehouse
+
+	company = _company()
+	centre = frappe.db.get_value("Company", company, "cost_center")
+	account = _expense_account(company, "E41 Service")
+	service = _service_item()
+	problems, notes = [], []
+
+	def invoice(amounts, **dims):
+		pi = frappe.get_doc({"doctype": "Purchase Invoice", "company": company, "supplier": _supplier(),
+			"posting_date": nowdate(), "items": [{"item_code": service, "qty": 1, "rate": a, "expense_account": account,
+			"cost_center": centre, **dims} for a in amounts]})
+		pi.flags.ignore_permissions = True
+		pi.insert()
+		pi.submit()
+		return pi
+
+	def repair(pi, cost, stock=()):
+		doc = frappe.get_doc({"doctype": "Asset Repair", "asset": make_test_asset(company, gross=5_000, submit=True).name,
+			"company": company, "failure_date": nowdate(), "completion_date": nowdate(), "repair_status": "Completed",
+			"capitalize_repair_cost": 1, "cost_center": centre,
+			"invoices": [{"purchase_invoice": pi.name, "expense_account": account, "repair_cost": cost}] if pi else [],
+			"stock_items": [{"item_code": i, "warehouse": w, "consumed_quantity": q, "valuation_rate": 100}
+				for i, w, q in stock]})
+		doc.flags.ignore_permissions = True
+		doc.insert()
+		doc.submit()
+		doc.reload()
+		return doc
+
+	def refused(fn, marker):
+		frappe.db.savepoint("e41")
+		try:
+			fn()
+		except frappe.ValidationError as e:
+			frappe.db.rollback(save_point="e41")
+			return marker in str(e)
+		frappe.db.rollback(save_point="e41")
+		return False
+
+	pi = invoice([1_000, 500])
+	two = repair(pi, 1_200)
+	taken = sorted(flt(line.amount) for line in two.consumed_cost_lines)
+	credits = frappe.get_all("GL Entry", filters={"voucher_no": two.name, "account": account, "is_cancelled": 0},
+		fields=["credit", "voucher_detail_no"])
+	if taken != [200, 1_000] or sorted(flt(c.credit) for c in credits) != [200, 1_000] or {
+			c.voucher_detail_no for c in credits} != {line.name for line in two.consumed_cost_lines}:
+		problems.append(f"two lines: records {taken}, credits {[(c.credit, c.voucher_detail_no) for c in credits]}")
+	# core's own invoice cap answers first here (same invoice, same account)
+	if not refused(lambda: repair(pi, 400), ""):
+		problems.append("a repair beyond the 300 left was admitted")
+	notes.append(f"two lines {taken}")
+
+	returned = invoice([1_000])
+	from erpnext.accounts.doctype.purchase_invoice.purchase_invoice import make_debit_note
+
+	note = make_debit_note(returned.name)
+	note.items[0].qty = -1
+	note.flags.ignore_permissions = True
+	note.insert()
+	note.submit()
+	if not refused(lambda: repair(returned, 100), "left to capitalize"):
+		problems.append("a repair on a fully returned line was admitted (M-3)")
+
+	item, warehouse = _stock_item("E41-REPAIR-STOCK"), _warehouse(company)
+	_stock_in(company, item, warehouse, 5, 100)
+	stocked = repair(invoice([300]), 300, stock=[(item, warehouse, 2)])
+	stock_lines = [line for line in stocked.consumed_cost_lines if line.stock_entry]
+	stock_credit = frappe.get_all("GL Entry", filters={"voucher_no": stocked.name, "is_cancelled": 0,
+		"voucher_detail_no": ("in", [line.name for line in stock_lines] or [""]), "credit": (">", 0)}, pluck="credit")
+	if len(stock_lines) != 1 or flt(stock_lines[0].amount) != 200 or [flt(c) for c in stock_credit] != [200]:
+		problems.append(f"stock lines {[(ln.stock_entry, ln.amount) for ln in stock_lines]}, credits {stock_credit}")
+	notes.append(f"stock line {[flt(ln.amount) for ln in stock_lines]}")
+
+	projects = consumption.project_fields()
+	if projects:
+		project = dimension_fixture(projects[0], company, doctype="Purchase Invoice Item")
+		project_pi = invoice([700], **{projects[0]: project})
+		target = make_test_asset(company, gross=5_000, submit=True).name
+
+		def maintenance(named):
+			row = {"item_code": service, "qty": 1, "rate": 300, "expense_account": account, "cost_center": centre}
+			if named:
+				row["purchase_invoice"] = project_pi.name
+			cap = frappe.get_doc({"doctype": "Asset Capitalization", "company": company,
+				"transaction_type": "Capitalized Maintenance", "target_asset": target, "posting_date": nowdate(),
+				"set_posting_time": 1, "service_items": [row]})
+			cap.flags.ignore_permissions = True
+			cap.insert()
+			cap.submit()
+			cap.reload()
+			return cap
+
+		if not refused(lambda: maintenance(False), "name the Purchase Invoice"):
+			problems.append("an unnamed service row on a project account was admitted (M-2)")
+		cap = maintenance(True)
+		journal = cap.consumed_cost_lines[0].gl_voucher_no if cap.consumed_cost_lines else None
+		if not journal or not standalone_reversal_refusal(journal):
+			problems.append(f"the service journal {journal} is not guarded while {cap.name} stands (M-4)")
+		notes.append(f"service journal {journal} guarded")
+	else:
+		notes.append("no project dimension installed: M-2/M-4 shapes not applicable")
+
+	override = _class_override_problems()
+	if override:
+		problems.extend(override)
+	return not problems, "; ".join(problems or notes)
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(

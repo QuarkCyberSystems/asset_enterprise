@@ -66,6 +66,25 @@ def _find_account(company, account_type, root_type=None):
 	return frappe.db.get_value("Account", filters, "name")
 
 
+def service_expense_account(company):
+	"""A service expense account no project cost is booked on: a service
+	row on an account carrying project cost lines must name its invoice
+	(D-054 consumption), which these fixtures do not model. `pick_plain_account`
+	returns whichever expense account sorts first - after the project
+	ledger's suites that can be one of theirs."""
+	name = frappe.db.get_value("Account", {"company": company, "account_name": "AE Test Service Expense"})
+	if name:
+		return name
+	parent = frappe.db.get_value(
+		"Account", {"company": company, "root_type": "Expense", "is_group": 1, "parent_account": ("is", "set")},
+		"name", order_by="lft desc",
+	)
+	return frappe.get_doc({
+		"doctype": "Account", "account_name": "AE Test Service Expense", "company": company,
+		"parent_account": parent, "is_group": 0, "account_type": "Expense Account",
+	}).insert(ignore_permissions=True).name
+
+
 def make_test_asset(company, gross=100000, submit=False, with_depreciation=False):
 	"""Create Asset Category + Item + Asset for smoke tests. Returns Asset doc."""
 	fixed_asset_account = _find_account(company, "Fixed Asset")

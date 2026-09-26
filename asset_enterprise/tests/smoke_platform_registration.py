@@ -15,6 +15,7 @@ import frappe
 from frappe.utils import add_months, flt, get_last_day, nowdate
 
 from asset_enterprise.platform import OWN, AssetLedgerAdapter, get_registration
+from asset_enterprise.setup.test_fixtures import service_expense_account
 from asset_enterprise.setup import verify_tc as tc
 
 
@@ -72,7 +73,7 @@ class Fixtures:
 		doc = frappe.get_doc({
 			"doctype": "Asset Capitalization", "company": self.company, "transaction_type": "Capitalized Maintenance",
 			"target_asset": asset.name, "posting_date": nowdate(), "set_posting_time": 1,
-			"service_items": [{"item_code": tc._service_item(), "qty": 1, "rate": 5_000, "expense_account": tc._plain(self.company, "Expense")}],
+			"service_items": [{"item_code": tc._service_item(), "qty": 1, "rate": 5_000, "expense_account": service_expense_account(self.company)}],
 		})
 		if stock_item:
 			doc.append("stock_items", {"item_code": stock_item, "warehouse": warehouse, "stock_qty": 1})
@@ -137,7 +138,31 @@ class Fixtures:
 			return self.scrap()
 		if doctype == "Stock Entry":
 			return self.capitalization_issue()
+		if doctype == "Journal Entry":
+			return self.service_journal()
 		return None
+
+	def service_journal(self):
+		"""The journal a Capitalized Maintenance posts its service cost
+		through: governed while the capitalization stands (chief r5 M-4)."""
+		cap = self.capitalization(submit=True)
+		name = frappe.db.get_value("Financial Treatment", {"source_doctype": "Asset Capitalization",
+			"source_name": cap.name, "journal_entry": ("is", "set")}, "journal_entry")
+		assert name, f"capitalization {cap.name} posted no service journal"
+		return frappe.get_doc("Journal Entry", name)
+
+	def plain_journal(self, submit=True):
+		expense, other = service_expense_account(self.company), tc._plain(self.company, "Liability")
+		centre = frappe.db.get_value("Company", self.company, "cost_center")
+		doc = frappe.get_doc({"doctype": "Journal Entry", "company": self.company, "posting_date": nowdate(),
+			"voucher_type": "Journal Entry", "accounts": [
+				{"account": expense, "debit_in_account_currency": 100, "cost_center": centre},
+				{"account": other, "credit_in_account_currency": 100, "cost_center": centre}]})
+		doc.flags.ignore_permissions = True
+		doc.insert()
+		if submit:
+			doc.submit()
+		return doc
 
 	def draft(self, doctype):
 		if doctype == "Asset Value Adjustment":
@@ -148,6 +173,8 @@ class Fixtures:
 			return self.capitalization(submit=False)
 		if doctype == "Stock Entry":
 			return self.plain_issue(submit=False)
+		if doctype == "Journal Entry":
+			return self.plain_journal(submit=False)
 		if doctype == "Scrap Transaction":
 			asset = tc._plain_asset(self.company, self.cat, f"AE-PLAT Scrap Draft {_tag()}", 40_000)
 			asset.submit()
@@ -163,6 +190,8 @@ class Fixtures:
 	def ungoverned(self, doctype):
 		if doctype == "Stock Entry":
 			return self.plain_issue()
+		if doctype == "Journal Entry":
+			return self.plain_journal()
 		return None
 
 	def with_dependent(self, doctype):
@@ -212,6 +241,14 @@ def _a_cases(fixtures, adapter, checks):
 		plain = fixtures.plain_issue()
 		state = ui_state("Stock Entry", plain.name)
 		checks("A-06 a plain Stock Entry is not this app's", "asset_enterprise" not in (state.get("owners") or ()), str(state.get("owners")))
+
+	# A-08 a capitalization's service journal is undone only with it (chief r5 M-4)
+	with isolated():
+		journal = fixtures.service_journal()
+		refusal = adapter.can_cancel(journal)
+		checks("A-08 the service journal's cancel is refused while its capitalization stands, naming it",
+			refusal is not None and refusal.route is None and "cannot be reversed or cancelled on its own" in refusal.message,
+			str(refusal))
 
 	# A-07 the receipt's cascade hook is declared, so the overlap check passes
 	checks("A-07 pr_before_cancel is declared as a legacy hook", ("Purchase Receipt", "before_cancel") in get_registration().legacy_hooks)

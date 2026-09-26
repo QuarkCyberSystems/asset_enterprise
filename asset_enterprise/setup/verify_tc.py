@@ -60,6 +60,12 @@ def _plain(company, root_type):
 	return pick_plain_account(company, root_type)
 
 
+def _service_expense(company):
+	from asset_enterprise.setup.test_fixtures import service_expense_account
+
+	return service_expense_account(company)
+
+
 def _location():
 	loc = frappe.db.get_value("Location", {}, "name")
 	if loc:
@@ -1737,7 +1743,7 @@ def tc027():
 		company, cat, "TC-027 CM Target", 1_000_000, get_last_day(add_months(nowdate(), -1)),
 		60, add_months(nowdate(), -2)
 	)
-	expense = _plain(company, "Expense")
+	expense = _service_expense(company)
 	total_before = flt(
 		sum(flt(r.depreciation_amount) for r in _rows(asset.name)[1]), 2
 	)
@@ -2681,7 +2687,7 @@ def tc046():
 	_ensure_fiscal_years(2025, 2032)
 	company = _company()
 	cat = _category(company, "TC IT Equipment", suspense=_plain(company, "Liability"))
-	expense = _plain(company, "Expense")
+	expense = _service_expense(company)
 	composite = _depreciating_asset(
 		company, cat, "TC-046 Composite", 1_000_000, get_last_day(add_months(nowdate(), -1)),
 		60, add_months(nowdate(), -2)

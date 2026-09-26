@@ -2379,10 +2379,8 @@ def _run():
 			depreciation_start_date=nowdate(),
 		)
 		c1_before = getdate(active_schedule_horizon(c1.name))
-		from asset_enterprise.setup.verify_tc import (
-			_plain as t22_plain,
-			_service_item as t22_service,
-		)
+		from asset_enterprise.setup.test_fixtures import service_expense_account
+		from asset_enterprise.setup.verify_tc import _service_item as t22_service
 
 		cap = frappe.get_doc({
 			"doctype": "Asset Capitalization", "company": company,
@@ -2393,7 +2391,7 @@ def _run():
 			"service_items": [{
 				"item_code": t22_service(),
 				"qty": 1, "rate": 5_000, "amount": 5_000,
-				"expense_account": t22_plain(company, "Expense"),
+				"expense_account": service_expense_account(company),
 				"cost_center": frappe.db.get_value(
 					"Cost Center", {"company": company, "is_group": 0}, "name"),
 			}],
