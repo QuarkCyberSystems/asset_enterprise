@@ -45,7 +45,8 @@ def _enterprise():
 class AssetLedgerAdapter:
 	app = "asset_enterprise"
 	id = "asset.ledger"
-	doctypes = OWN + ("Stock Entry",)
+	# a Journal Entry only when it was posted for an Asset Capitalization
+	doctypes = OWN + ("Stock Entry", "Journal Entry")
 	ledger_doctypes = ()
 
 	def governs(self, doc):
@@ -53,11 +54,20 @@ class AssetLedgerAdapter:
 			return False
 		if doc.doctype in OWN:
 			return True
+		if doc.doctype == "Journal Entry":
+			from asset_enterprise.merge import standing_capitalization
+
+			return not doc.is_new() and bool(standing_capitalization(doc.name))
 		# a Material Issue raised by an Asset Capitalization is an artefact
 		# of that capitalization, not an independent document
 		return bool(doc.get("asset_capitalization"))
 
 	def can_cancel(self, doc):
+		if doc.doctype == "Journal Entry":
+			from asset_enterprise.merge import standalone_reversal_refusal
+
+			blocked = standalone_reversal_refusal(doc.name)
+			return Refusal(title=blocked[0], message=blocked[1], owner=self.app) if blocked else None
 		if doc.doctype != "Stock Entry":
 			return None  # cancels natively; the controller raises the reversal or refuses
 		# no route on purpose: the issue is not reversible by itself - the

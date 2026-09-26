@@ -317,22 +317,57 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		self._allocate_consumed_lines()
 
 	def _allocate_consumed_lines(self):
-		"""D-054 (Vivek 26 Sep, "it consumes the line"): a service row that
-		names the invoice it was bought on capitalizes that invoice's cost
-		lines, decided once and recorded (asset_enterprise.consumption)."""
+		"""A service row capitalizes the invoice cost line it was bought on,
+		decided once and recorded (asset_enterprise.consumption) - Vivek 26
+		Sep, "it consumes the line", unconditionally: a row whose expense
+		account carries a live project cost line, or whose credit would carry
+		a project, must name its invoice (chief r5 M-2)."""
 		from asset_enterprise import consumption
 
 		if not self.meta.has_field(consumption.TABLE):
 			return
 		header = consumption.header_dimensions(self)
+		rows = [r for r in (self.get("service_items") or []) if r.get("expense_account") and flt(r.amount)]
+		self._require_service_invoices(rows, header)
 		requests = []
-		for row in self.get("service_items") or []:
-			if not (row.get("purchase_invoice") and row.get("expense_account") and flt(row.amount)):
+		for row in rows:
+			if not row.get("purchase_invoice"):
 				continue
 			dims = {d: row.get(d) or header.get(d) for d in header}
 			requests.append((row.name, row.purchase_invoice, row.expense_account, flt(row.amount), dims,
 				row.get("cost_center") or self.get("cost_center")))
 		consumption.allocate(self, requests)
+
+	def _require_service_invoices(self, rows, header):
+		"""Refuse a service row without its Purchase Invoice when the cost it
+		capitalizes sits on a project line: its expense account carries a
+		live project debit, or the row or the document names a project.
+		Without the invoice the credit would relieve no line, and the project
+		would offer the cost for settlement a second time."""
+		from asset_enterprise import consumption
+
+		unnamed = [r for r in rows if not r.get("purchase_invoice")]
+		if not unnamed:
+			return
+		projects = consumption.project_fields()
+		on_project_lines = consumption.accounts_with_project_lines(self.company, [r.expense_account for r in unnamed])
+		for row in unnamed:
+			named = next((row.get(f) or self.get(f) for f in projects if row.get(f) or self.get(f)), None)
+			if row.expense_account in on_project_lines or named:
+				frappe.throw(
+					_(
+						"Service row {0} ({1}): name the Purchase Invoice the service was bought on. "
+						"{2} carries project cost lines{3}, and capitalizing the service consumes the "
+						"invoice line it was booked on - without the invoice the project would still "
+						"offer that cost for settlement."
+					).format(
+						row.idx,
+						row.item_code,
+						row.expense_account,
+						_(" (this row is for project {0})").format(named) if named else "",
+					),
+					title=_("Purchase Invoice Required"),
+				)
 
 	def get_gl_entries_for_consumed_service_items(self, gl_entries, target_account, target_against, precision):
 		"""Standard Capitalization: a service row that consumed invoice lines
@@ -340,7 +375,7 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		dimensions); any other row is core's."""
 		from asset_enterprise import consumption
 
-		lines = self.get(consumption.TABLE) or []
+		lines = consumption.invoice_lines_of(self)
 		if not lines:
 			return super().get_gl_entries_for_consumed_service_items(gl_entries, target_account, target_against, precision)
 		for item_row in self.service_items:

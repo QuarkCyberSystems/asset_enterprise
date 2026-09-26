@@ -190,8 +190,10 @@ class EnterpriseAssetRepair(AssetRepair):
 		debit is core's."""
 		from asset_enterprise import consumption
 
-		lines = self.get(consumption.TABLE) or []
+		lines = consumption.invoice_lines_of(self)
 		if not lines or flt(self.repair_cost) <= 0:
+			# no recorded line, or a repair recorded at the upgrade: core's
+			# merged credit, exactly as it was posted
 			return super().get_gl_entries_for_repair_cost(gl_entries, fixed_asset_account)
 		for line in lines:
 			gl_entries.append(
@@ -232,6 +234,58 @@ class EnterpriseAssetRepair(AssetRepair):
 				item=self,
 			)
 		)
+
+	def get_gl_entries_for_consumed_items(self, gl_entries, fixed_asset_account):
+		"""Consumed stock consumes the repair's own Material Issue lines, one
+		credit per issue row (its voucher row is the row's record), on the
+		dimensions the issue booked the row on (cross-app r3 MUST 1); the
+		asset debit per row is core's. A repair submitted before its stock
+		lines were recorded rebuilds core's rows unchanged."""
+		from asset_enterprise import consumption
+
+		if not self.get("stock_items") or not self.meta.has_field(consumption.TABLE):
+			return super().get_gl_entries_for_consumed_items(gl_entries, fixed_asset_account)
+		stock_entry = frappe.db.get_value("Stock Entry", {"asset_repair": self.name}, "name")
+		lines = consumption.record_stock_lines(self, stock_entry)
+		if not lines:
+			return super().get_gl_entries_for_consumed_items(gl_entries, fixed_asset_account)
+		for line in lines:
+			gl_entries.append(
+				self.get_gl_dict(
+					{
+						"account": line.expense_account,
+						"credit": flt(line.amount),
+						"credit_in_account_currency": flt(line.amount),
+						"against": fixed_asset_account,
+						"voucher_type": self.doctype,
+						"voucher_no": self.name,
+						"voucher_detail_no": line.name,
+						"cost_center": self.cost_center,
+						"posting_date": self.completion_date,
+						"company": self.company,
+						**consumption.line_dimensions(line),
+					},
+					item=self,
+				)
+			)
+			gl_entries.append(
+				self.get_gl_dict(
+					{
+						"account": fixed_asset_account,
+						"debit": flt(line.amount),
+						"debit_in_account_currency": flt(line.amount),
+						"against": line.expense_account,
+						"voucher_type": self.doctype,
+						"voucher_no": self.name,
+						"cost_center": self.cost_center,
+						"posting_date": self.completion_date,
+						"against_voucher_type": "Stock Entry",
+						"against_voucher": stock_entry,
+						"company": self.company,
+					},
+					item=self,
+				)
+			)
 
 	def _submit_reversal(self):
 		"""Reversal Repair on_submit — replaces the core forward path."""

@@ -2,7 +2,7 @@
  "actions": [],
  "allow_rename": 0,
  "creation": "2026-09-26 18:00:00.000000",
- "description": "An invoice cost line a capitalized repair or capitalized maintenance consumes: one row per consumed line, one GL credit per row. Filled at submit, never typed.",
+ "description": "A cost line a capitalized repair or capitalized maintenance consumes (an invoice line, or the repair's own consumed-stock issue line): one row per consumed line, one GL credit per row. Filled at submit, never typed.",
  "doctype": "DocType",
  "editable_grid": 0,
  "engine": "InnoDB",
@@ -10,13 +10,16 @@
   "source_row",
   "purchase_invoice",
   "purchase_invoice_item",
+  "stock_entry",
+  "stock_entry_detail",
   "expense_account",
   "cost_center",
   "amount",
   "dimensions",
   "gl_voucher_type",
   "gl_voucher_no",
-  "gl_voucher_detail_no"
+  "gl_voucher_detail_no",
+  "recorded_at_upgrade"
  ],
  "fields": [
   {
@@ -39,6 +42,20 @@
    "fieldname": "purchase_invoice_item",
    "fieldtype": "Data",
    "label": "Purchase Invoice Item",
+   "read_only": 1
+  },
+  {
+   "description": "The repair's consumed-stock issue whose line this row consumes (a stock line, not an invoice line).",
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "Stock Entry",
+   "options": "Stock Entry",
+   "read_only": 1
+  },
+  {
+   "fieldname": "stock_entry_detail",
+   "fieldtype": "Data",
+   "label": "Stock Entry Detail",
    "read_only": 1
   },
   {
@@ -90,13 +107,21 @@
    "fieldtype": "Data",
    "label": "GL Voucher Detail No",
    "read_only": 1
+  },
+  {
+   "default": "0",
+   "description": "Recorded when the app was upgraded, for a repair submitted before consumed lines were recorded: its GL still carries one merged credit per account, so no GL row is named.",
+   "fieldname": "recorded_at_upgrade",
+   "fieldtype": "Check",
+   "label": "Recorded at Upgrade",
+   "read_only": 1
   }
  ],
  "index_web_pages_for_search": 0,
  "issingle": 0,
  "istable": 1,
  "links": [],
- "modified": "2026-09-26 18:00:00.000000",
+ "modified": "2026-09-26 22:00:00.000000",
  "modified_by": "Administrator",
  "module": "Asset Enterprise",
  "name": "Asset Consumed Cost Line",

@@ -1147,3 +1147,61 @@ def reverse_merge(reversal_doc):
 
 	_resupersede(target.name, posting_date, reversal_doc)
 	return mirror_name
+
+
+# ------------------------------------------------ capitalization journals
+def standing_capitalization(journal_entry):
+	"""The submitted Asset Capitalization a journal was posted for (its
+	merge, stock or service journal, or a cost line it consumed), while
+	that capitalization stands - else None. One query."""
+	if not journal_entry or not frappe.db.table_exists("Financial Treatment"):
+		return None
+	consumed = ""
+	if frappe.db.table_exists("Asset Consumed Cost Line"):
+		consumed = """union select parent from `tabAsset Consumed Cost Line`
+			where gl_voucher_type = 'Journal Entry' and gl_voucher_no = %(je)s and parenttype = 'Asset Capitalization'"""
+	found = frappe.db.sql(
+		f"""select ac.name, ac.target_asset from `tabAsset Capitalization` ac
+		where ac.docstatus = 1 and ac.name in (
+			select source_name from `tabFinancial Treatment`
+			where source_doctype = 'Asset Capitalization' and journal_entry = %(je)s
+			{consumed})
+		limit 1""",
+		{"je": journal_entry},
+		as_dict=True,
+	)
+	return found[0] if found else None
+
+
+def standalone_reversal_refusal(journal_entry):
+	"""(title, message) when `journal_entry` may not be undone on its own:
+	it was posted for an Asset Capitalization that still stands. Only the
+	capitalization's own cancel (the Reversal of Capitalized Maintenance)
+	reverses it - otherwise the target keeps the value while the journal,
+	and any project cost line it consumed, comes back (chief r5 M-4)."""
+	capitalization = standing_capitalization(journal_entry)
+	if not capitalization:
+		return None
+	return (
+		_("Reverse the Capitalization"),
+		_(
+			"Journal Entry {0} was posted by Asset Capitalization {1} and cannot be reversed or cancelled on "
+			"its own: the capitalization still stands and keeps the value on {2}. To undo it, cancel {1} - "
+			"its Reversal of Capitalized Maintenance reverses this journal with it."
+		).format(journal_entry, capitalization.name, capitalization.target_asset),
+	)
+
+
+def refuse_standalone_reversal(doc, method=None):
+	"""Journal Entry validate: a reversal (`reversal_of`, the platform's
+	Reverse; or a Cancellation document) of a journal posted for a
+	standing Asset Capitalization is refused. The capitalization's cancel
+	has already set it cancelled when its Reversal of Capitalized
+	Maintenance mirrors the journal, so that path is admitted."""
+	if frappe.flags.in_patch or frappe.flags.in_install or frappe.flags.in_migrate or doc.docstatus == 2:
+		return
+	original = doc.get("reversal_of") or (doc.get("cancellation_against") if doc.get("is_cancellation") else None)
+	blocked = standalone_reversal_refusal(original)
+	if blocked:
+		title, message = blocked
+		frappe.throw(message, title=title)

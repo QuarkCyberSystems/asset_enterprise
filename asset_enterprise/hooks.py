@@ -96,6 +96,9 @@ doc_events = {
 		"validate": [
 			"asset_enterprise.invoice_diff.stamp_asset_dimension",
 			"asset_enterprise.gl_attribution.apply_asset_cost_centre_policy",
+			# chief r5 M-4: a journal posted for a standing capitalization is
+			# reversed only by that capitalization's own cancel
+			"asset_enterprise.merge.refuse_standalone_reversal",
 		],
 	},
 	"Purchase Invoice": {

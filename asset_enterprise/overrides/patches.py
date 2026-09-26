@@ -104,6 +104,25 @@ CLASS_PATCH_TARGETS = [
 	),
 ]
 
+# Core methods an `override_doctype_class` subclass overrides BY NAME to
+# post GL (one credit per consumed cost line): (module, class, attr, min
+# positional params, overriding class path). Not wrapped - the subclass
+# replaces them - so verify_patch_targets checks that core still defines
+# them with that signature and that the site's controller is the subclass
+# (chief r5 S-4, cross-app r3): a rename upstream would otherwise silently
+# bring back core's merged, line-less credit.
+CLASS_OVERRIDE_TARGETS = [
+	("erpnext.assets.doctype.asset_repair.asset_repair", "AssetRepair", "get_gl_entries_for_repair_cost", 3,
+		"asset_enterprise.overrides.asset_repair.EnterpriseAssetRepair"),
+	("erpnext.assets.doctype.asset_repair.asset_repair", "AssetRepair", "get_gl_entries_for_consumed_items", 3,
+		"asset_enterprise.overrides.asset_repair.EnterpriseAssetRepair"),
+	("erpnext.assets.doctype.asset_capitalization.asset_capitalization", "AssetCapitalization",
+		"get_gl_entries_for_consumed_service_items", 5,
+		"asset_enterprise.overrides.asset_capitalization.EnterpriseAssetCapitalization"),
+	("erpnext.assets.doctype.asset_capitalization.asset_capitalization", "AssetCapitalization", "before_submit", 1,
+		"asset_enterprise.overrides.asset_capitalization.EnterpriseAssetCapitalization"),
+]
+
 # (attr, original callable, wrapper callable) — filled by _rebind().
 _WRAPPED = []
 
@@ -209,6 +228,8 @@ def verify_patch_targets():
 		if not getattr(fn, "_asset_enterprise_wrapper", False):
 			problems.append(f"not wrapped: {module_path}.{clsname}.{attr} is still core's method")
 
+	problems.extend(_class_override_problems())
+
 	# Existing-and-wrapped at the DEFINING module is not enough: a module
 	# that did `from x import y` before we patched keeps calling core.
 	problems.extend(
@@ -221,6 +242,45 @@ def verify_patch_targets():
 			"asset_enterprise: erpnext upgrade moved override targets:\n- " + "\n- ".join(problems)
 		)
 	return True
+
+
+def _class_override_problems():
+	"""CLASS_OVERRIDE_TARGETS: core still defines each method with its
+	signature, the subclass still overrides it, and the site's controller
+	for the doctype is the subclass."""
+	problems = []
+	for module_path, clsname, attr, min_params, override_path in CLASS_OVERRIDE_TARGETS:
+		try:
+			core_cls = getattr(frappe.get_module(module_path), clsname, None)
+		except ImportError:
+			problems.append(f"module missing: {module_path}")
+			continue
+		fn = getattr(core_cls, attr, None) if core_cls else None
+		if fn is None:
+			problems.append(f"method missing: {module_path}.{clsname}.{attr} (overridden by {override_path})")
+			continue
+		params = [p for p in inspect.signature(fn).parameters.values()
+			if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+		if len(params) < min_params:
+			problems.append(
+				f"signature changed: {module_path}.{clsname}.{attr} has {len(params)} "
+				f"positional params, expected >= {min_params}"
+			)
+		override_module, override_cls = override_path.rsplit(".", 1)
+		sub = getattr(frappe.get_module(override_module), override_cls, None)
+		if sub is None or attr not in vars(sub):
+			problems.append(f"override missing: {override_path}.{attr}")
+			continue
+		doctype = frappe.unscrub(module_path.rsplit(".", 1)[1])
+		try:
+			from frappe.model.base_document import get_controller
+
+			controller = get_controller(doctype)
+		except Exception:
+			controller = None
+		if controller is not None and not issubclass(controller, sub):
+			problems.append(f"controller for {doctype} is {controller.__module__}.{controller.__name__}, not {override_path}")
+	return problems
 
 
 _PATCHED = False
