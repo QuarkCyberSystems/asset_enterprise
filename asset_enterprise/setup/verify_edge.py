@@ -2034,6 +2034,52 @@ def e39():
 		f"re-validated without refusal={skipped}; unposted gradual refused={refused_unposted}")
 
 
+
+@case("E-40", "R218 / D-050", "legacy fold: unlinked repair treatment is found, linked once, and HAV stops double-counting", modes=(LEGACY,))
+def e40():
+	"""The deploy precondition for a site that stays on the legacy fold:
+	find is read-only, the dry run writes nothing, the live link removes
+	the double count, and a second live run is a no-op."""
+	from asset_enterprise import repair as repair_mod
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.setup.verify_tc import _repaired_depreciating_asset
+
+	asset = _repaired_depreciating_asset("E-40 Unlinked Repair").name
+	ft = frappe.get_all("Financial Treatment",
+		filters={"asset": asset, "transaction_type": "Capitalized Repair"}, pluck="name")[0]
+	frappe.db.set_value("Financial Treatment", ft, {"voucher_type": None, "voucher_no": None},
+		update_modified=False)
+
+	def hav():
+		return flt(recalculate_asset_values(asset, save=False)["historical_asset_value"])
+
+	def found():
+		return [r.name for r in repair_mod.find_unlinked_repair_treatments(asset=asset)]
+
+	unlinked_hav = hav()
+	first_find = found()
+	# The utility commits as a CLI tool should; a COMMIT would release the
+	# harness savepoint, so it is neutralised for the duration.
+	real_commit = frappe.db.commit
+	frappe.db.commit = lambda *a, **k: None
+	try:
+		repair_mod.link_repair_voucher_references(asset=asset, dry_run="1")
+		after_dry = (found(), hav())
+		repair_mod.link_repair_voucher_references(asset=asset, dry_run="0")
+		after_live = (found(), hav(), frappe.db.get_value("Financial Treatment", ft, "voucher_no"))
+		second = repair_mod.link_repair_voucher_references(asset=asset, dry_run=0)
+		after_second = (found(), hav())
+	finally:
+		frappe.db.commit = real_commit
+	ok = (first_find == [ft] and abs(unlinked_hav - 18_000) > 0.01
+		and after_dry == (first_find, unlinked_hav)
+		and after_live[0] == [] and abs(after_live[1] - 18_000) < 0.01 and after_live[2]
+		and second == [] and after_second == ([], after_live[1]))
+	return ok, (f"unlinked HAV {unlinked_hav:,.2f}, find={first_find}; dry run left {after_dry}; "
+		f"live link -> find={after_live[0]}, HAV {after_live[1]:,.2f}, voucher {after_live[2]}; "
+		f"second live run touched {len(second)}, HAV {after_second[1]:,.2f}")
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(

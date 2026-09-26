@@ -711,7 +711,15 @@ def find_unlinked_repair_treatments(company=None, asset=None):
 	counted-voucher set, so the manual-GL sweep re-adds the repair's GL
 	as an "unrepresented" manual posting and the derived HAV
 	double-counts the capitalized cost (client, 2026-08-25: HAV 33,000
-	instead of 18,000)."""
+	instead of 18,000).
+
+	Read-only. Run it on every site that stays on the legacy value fold
+	before and after link_repair_voucher_references; the deploy expects
+	an empty list after the link:
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.find_unlinked_repair_treatments
+	"""
 	filters = {
 		"source_doctype": "Asset Repair",
 		"transaction_type": "Capitalized Repair",
@@ -722,11 +730,14 @@ def find_unlinked_repair_treatments(company=None, asset=None):
 		filters["company"] = company
 	if asset:
 		filters["asset"] = asset
-	return frappe.get_all(
+	rows = frappe.get_all(
 		"Financial Treatment",
 		filters=filters,
 		fields=["name", "asset", "source_name", "amount"],
+		order_by="asset, name",
 	)
+	print(f"{len(rows)} Capitalized Repair treatment(s) without a voucher link")
+	return rows
 
 
 def _schedule_rebuild_needed(asset_name):
@@ -813,8 +824,11 @@ def link_repair_voucher_references(company=None, asset=None, dry_run=1):
 	        asset_enterprise.repair.link_repair_voucher_references \\
 	        --kwargs "{'dry_run': 0}"
 	"""
+	# Idempotent: only treatments still missing the link are selected, so
+	# a second live run finds nothing and changes nothing. `--args` hands
+	# the flag over as a string, and "0" is truthy.
+	dry_run = cint(dry_run)
 	stuck = find_unlinked_repair_treatments(company=company, asset=asset)
-	print(f"{len(stuck)} Capitalized Repair treatment(s) without a voucher link:")
 	for row in stuck:
 		if dry_run:
 			# The divergence only becomes visible once the link is set,
