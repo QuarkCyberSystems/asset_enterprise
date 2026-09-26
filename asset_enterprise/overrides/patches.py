@@ -22,6 +22,8 @@ override_whitelisted_methods and are wrapped here (see build plan §2.3):
    .get_value_after_depreciation_on_disposal_date
 6. erpnext.assets.doctype.asset.asset.get_asset_value_after_depreciation
    -> both derive the value from the ledger, not the counter (GAP-006)
+7. erpnext.assets.report.fixed_asset_register.fixed_asset_register.execute
+   -> group nodes hidden, replacement-chain columns (GAP-036)
 
 Phase 0 ships verification only: on app boot we assert every target
 still exists with a compatible signature, so a bench update that moves
@@ -53,6 +55,10 @@ PATCH_TARGETS = [
 		2,
 	),
 	("erpnext.assets.doctype.asset.asset", "get_asset_value_after_depreciation", 1),
+	# GAP-036 / replacement chain: the Fixed Asset Register's execute is
+	# wrapped too (group nodes hidden, chain columns added), so a core move
+	# or rename must fail the migrate, not silently drop both (D-052 (iv)).
+	("erpnext.assets.report.fixed_asset_register.fixed_asset_register", "execute", 1),
 	# §2.2 override_whitelisted_methods targets — verified here too so a
 	# rename surfaces at boot, not at first user click.
 	("erpnext.assets.doctype.asset.depreciation", "restore_asset", 1),
@@ -70,6 +76,7 @@ WRAPPED_ATTRS = {
 	"validate_disposal_date",
 	"get_value_after_depreciation_on_disposal_date",
 	"get_asset_value_after_depreciation",
+	"execute",  # fixed_asset_register.execute
 }
 
 # Class-method targets: (module, class, attr, min positional params).

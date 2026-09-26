@@ -1641,12 +1641,15 @@ def post_depreciation_catch_up(asset, amount, reason, posting_date=None, dry_run
 	return je.name
 
 
-def backfill_rate_breakdown(company=None, asset=None, dry_run=1):
+def backfill_rate_breakdown(company=None, asset=None, dry_run=1, commit=True):
 	"""Render Rate Breakdown on rows that stored a composition before the
 	column existed. Submitted schedules do not pass through validate
 	again, so the text is written directly from the same helper the
 	controller uses — a display value, derived from stored data, never a
-	change to any amount, rate or date."""
+	change to any amount, rate or date.
+
+	`commit=False` inside migrate (`install.sync_customizations`), which
+	owns its transaction; the bench command keeps committing."""
 	from asset_enterprise.depreciation import rate_breakdown_text
 
 	conditions, values = ["ifnull(ds.rate_segments, '') <> ''",
@@ -1679,7 +1682,8 @@ def backfill_rate_breakdown(company=None, asset=None, dry_run=1):
 				"Depreciation Schedule", r.name, "rate_breakdown",
 				rate_breakdown_text(r.rate_segments), update_modified=False,
 			)
-		frappe.db.commit()
+		if commit:
+			frappe.db.commit()
 	print(f"  {len(rows)} rendered{' (dry run — nothing written)' if dry_run else ''}")
 	return rows
 

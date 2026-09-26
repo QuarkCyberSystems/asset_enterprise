@@ -57,7 +57,8 @@ def sync_customizations():
 	extend_assets_sidebar()
 	from asset_enterprise.repair import backfill_rate_breakdown
 
-	backfill_rate_breakdown(dry_run=0)
+	# migrate (and install) own the transaction - nothing commits here
+	backfill_rate_breakdown(dry_run=0, commit=False)
 	backfill_generation_basis_since_last_migrate()
 
 

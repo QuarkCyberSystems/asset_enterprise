@@ -85,7 +85,7 @@ class TestRegressionCapture(unittest.TestCase):
 		calls, marks = self._migrate(mark=None, newest="2026-09-26 10:00:00")
 		self.assertEqual(calls[0], "create_custom_fields")
 		self.assertEqual(calls[-2:], [
-			("backfill_rate_breakdown", {"dry_run": 0}),
+			("backfill_rate_breakdown", {"dry_run": 0, "commit": False}),
 			("backfill_generation_basis", {"dry_run": 0, "modified_after": None, "commit": False}),
 		])
 		self.assertEqual(marks, [(install.GENERATION_BASIS_MARK, "2026-09-26 10:00:00")])
@@ -106,7 +106,7 @@ class TestRegressionCapture(unittest.TestCase):
 		for mark, newest in (("2026-09-26 10:00:00", "2026-09-26 10:00:00"), (None, None)):
 			with self.subTest(mark=mark, newest=newest):
 				calls, marks = self._migrate(mark=mark, newest=newest)
-				self.assertEqual(calls[-1], ("backfill_rate_breakdown", {"dry_run": 0}))
+				self.assertEqual(calls[-1], ("backfill_rate_breakdown", {"dry_run": 0, "commit": False}))
 				self.assertNotIn("backfill_generation_basis", [c[0] for c in calls if isinstance(c, tuple)])
 				self.assertEqual(marks, [])
 
