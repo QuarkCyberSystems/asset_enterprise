@@ -1313,11 +1313,17 @@ def e28():
 	if pa_project:
 		from project_accounting.settlement.sources import get_eligible_source_lines
 		sources = get_eligible_source_lines(company, pa_project)
-		# Both postings currently meet PA's generic Expense-root filter.
-		# Settlement policy will choose ONE source; do not conceal this risk.
-		assert any(r.voucher_no == je and flt(r.source_amount) == 12000 for r in sources)
+		# D-051: the acquisition is the one settleable source; the one-day
+		# depreciation pair is never a project source line.
+		assert not any(r.voucher_no == je for r in sources), "control depreciation offered as a source"
 	one_day_ok = True  # one-day completion checks above succeeded
 	disposal.scrap_asset(asset.name, scrap_date=nowdate(), scrapping_type="Damage")
+	if pa_project:
+		# D-051: disposal legs on the accumulated / depreciation accounts are
+		# part of the pair, so they are not sources either
+		pair = {contra, dep_expense}
+		assert not any(r.original_account in pair for r in get_eligible_source_lines(company, pa_project)), \
+			"control depreciation-pair row offered as a source after scrap"
 
 	legs = frappe.db.sql(
 		"""select gle.account, acc.root_type, gle.debit, gle.credit
