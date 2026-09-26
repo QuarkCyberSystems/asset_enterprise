@@ -230,6 +230,9 @@ CONTROL_LATER_SHAPES = (
 	# an invoice difference that arrives after the asset was scrapped
 	# (Case A.02) amends the acquisition to the invoiced price.
 	"purchase_return", "purchase_return_after_charge", "invoice_after_scrap",
+	# the same Case A.02 with the invoice ABOVE the receipt (13,000 on
+	# 12,000: design-conformance R128 upward)
+	"invoice_up_after_scrap",
 )
 SALE_PROCEEDS = 5_000
 
@@ -440,10 +443,10 @@ def _later_shape(fixture, shape, acquired_under, moved_to, amount):
 		vouchers.append(ret.name)
 		return frappe._dict(asset=asset, acquisition=pr.name, vouchers=vouchers, shape=shape, amount=amount,
 			settleable=0, actual=0, acquired_under=acquired_under)
-	if shape == "invoice_after_scrap":
+	if shape in ("invoice_after_scrap", "invoice_up_after_scrap"):
 		asset, pr = control_purchase(fixture, amount, acquired_under)
 		scrap = disposal.scrap_asset(asset, scrap_date=nowdate(), scrapping_type="Damage")
-		price = amount - 1_000
+		price = amount - 1_000 if shape == "invoice_after_scrap" else amount + 1_000
 		pi = control_invoice(pr, price, acquired_under)
 		delta = frappe.db.get_value("Journal Entry",
 			{"user_remark": ("like", f"Invoice delta transfer for {pi.name}%"), "docstatus": 1}, "name")
