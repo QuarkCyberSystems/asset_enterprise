@@ -18,7 +18,7 @@ When depreciation is enabled, a Control Category asset uses one schedule row for
 - Kept category accounts on the Expense side. Cost, accumulated depreciation and depreciation expense must be distinct account names so their separate GL-derived balances can produce zero NBV after the charge. Expense account type alone does not imply they should share one account.
 - Used a narrowly scoped creation preview while core creates a schedule before the acquisition GL is posted in the same submit transaction; subsequent operational balances come from the site's configured value model.
 
-## Project settlement — source choice still pending
+## Project settlement — source choice (ruled 2026-09-26)
 
 The client approved eligibility for project settlement, but did not identify which debit is the settleable cost. The actual PA source reader currently accepts both the original acquisition expense and the one-day depreciation debit. Therefore implementing depreciation alone does **not** close the cross-app double-counting issue.
 
@@ -35,4 +35,6 @@ E-28 verifies a 12,000 full charge on the chosen day, zero NBV, idempotent repea
 
 Final suite results are recorded below after completion. Changes are local/uncommitted; no existing-site ledger migration or deployment has been performed.
 
-Final suite results: **13/13 phases PASS, 38/38 edge cases PASS, 8 unit tests PASS**. Literal design suite: **52 PASS, 3 FAIL, 3 DEVIATION, 1 DOC, 1 MANUAL, 1 DEFERRED**; failures remain TC-015/016/017 (finance day-count basis). Python compilation, JS syntax and whitespace checks pass. Evidence retained at `.claude/verification/design-conformance/2026-09-22_asset_enterprise_control_one_day/` in the bench workspace. The settlement source policy is still pending; eligibility evidence is not duplicate-prevention evidence.
+Final suite results: **13/13 phases PASS, 38/38 edge cases PASS, 8 unit tests PASS**. Literal design suite: **52 PASS, 3 FAIL, 3 DEVIATION, 1 DOC, 1 MANUAL, 1 DEFERRED**; failures remain TC-015/016/017 (finance day-count basis). Python compilation, JS syntax and whitespace checks pass. The settlement source was ruled on 2026-09-26 (see below).
+
+**2026-09-26 ruling (D-051):** option 2 — the acquisition expense is the settleable source. Every row carrying a Control Category asset on the category's accumulated-depreciation or depreciation-expense account (the one-day charge, its reversal and disposal legs) is excluded from project_accounting's source eligibility and refused when named by hand. Built in project_accounting `settlement/control_category.py`; edge case E-28 asserts the exclusion.

@@ -58,4 +58,4 @@ SAP's mechanisms informed this design; these are local accepted rules, not claim
 
 The Leave Project field was installed on qcsfresh only. Other sites require the normal app migration before using it. The separate GL-keying/activation backlog, finance day-count decision and overall design-sign-off requirements remain open. This decision's implementation is not an overall conformance PASS.
 
-Final verification: **13/13 phases PASS; 38/38 edges PASS; 8 unit tests PASS**. Literal suite: **52 PASS, 3 FAIL, 3 DEVIATION, 1 DOC, 1 MANUAL, 1 DEFERRED**; remaining FAILs TC-015/016/017 are the unchanged finance day-count issue. Python compilation and `git diff --check` pass. Full logs: `.claude/verification/design-conformance/2026-09-21_asset_enterprise_d031/` in the bench workspace. Changes remain local and uncommitted.
+Final verification: **13/13 phases PASS; 38/38 edges PASS; 8 unit tests PASS**. Literal suite: **52 PASS, 3 FAIL, 3 DEVIATION, 1 DOC, 1 MANUAL, 1 DEFERRED**; remaining FAILs TC-015/016/017 are the unchanged finance day-count issue. Python compilation and `git diff --check` pass. Committed 2026-09-26 (3ec356c).
