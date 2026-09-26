@@ -74,7 +74,15 @@ def normalize_schedule(schedule):
 
 
 def validate_posting(asset, row):
+	"""Refuse a gradual (legacy) row. Callers check liveness first
+	(depreciation._assert_row_is_live), so a superseded generation gets
+	the Superseded Schedule message; an already-posted row is booked
+	history and is never re-priced here."""
 	if not applies(asset):
+		return
+	row_name = row.get("row_name") or row.get("name")
+	if row.get("journal_entry") or (row_name and frappe.db.get_value(
+			"Depreciation Schedule", row_name, "journal_entry")):
 		return
 	validate_accounts(asset)
 	from asset_enterprise.asset_values import recalculate_asset_values

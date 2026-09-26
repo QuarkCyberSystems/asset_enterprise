@@ -837,12 +837,22 @@ def supersede_and_regenerate(
 			},
 		)
 
-	# Supersede FIRST so any one-Active-per-asset validation on the new
-	# doc sees no competing Active schedule. db_set only — never cancel.
-	old.db_set("status", "Superseded", update_modified=False)
-
+	# Build the new generation as a draft while the old one is still the
+	# Active record, THEN supersede, THEN submit. Its validate() (the
+	# Control Category normalizer among others) prices the remaining value
+	# through recalculate_asset_values, and the legacy fold reads posted
+	# depreciation from the Active submitted schedule only; superseding
+	# first left a window with NO Active generation, so the fold saw zero
+	# depreciation and a fully-charged control asset was re-charged in
+	# full on scrap. The one-Active-per-asset check lets this draft
+	# coexist with exactly the schedule it replaces (flags.superseding).
+	# db_set only — never cancel.
+	new.status = "Draft"
 	new.flags.ignore_permissions = True
+	new.flags.superseding = old.name
 	new.insert()
+	old.db_set("status", "Superseded", update_modified=False)
+	new.status = "Active"
 	new.submit()
 
 	if drop_old:
@@ -1529,6 +1539,9 @@ def post_schedule_entries(schedule_name, date=None, sch_start_idx=None, sch_end_
 			continue
 		if sch_end_idx and row.idx > cint(sch_end_idx):
 			continue
+		# liveness first: a superseded generation is refused as such, never
+		# with a Control Category pricing message
+		_assert_row_is_live(row)
 		from asset_enterprise.control_category import validate_posting
 		validate_posting(frappe.get_doc("Asset", row.asset), row)
 		if final_row_requires_manual_post(row):

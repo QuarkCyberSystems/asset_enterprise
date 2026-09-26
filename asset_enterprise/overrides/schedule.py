@@ -97,17 +97,28 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 		if self.finance_book:
 			finance_book_filter = ["finance_book", "=", self.finance_book]
 
-		asset_depr_schedule = frappe.db.exists(
-			"Asset Depreciation Schedule",
-			[
-				["asset", "=", self.asset],
-				finance_book_filter,
-				["docstatus", "<", 2],
-				["status", "!=", "Superseded"],  # GAP-031
-			],
+		# supersede_and_regenerate inserts the new generation as a draft
+		# while the schedule it replaces is still Active; only that one
+		# schedule may coexist with it.
+		allowed = {n for n in (self.name, self.flags.get("superseding")) if n}
+		asset_depr_schedule = next(
+			(
+				n
+				for n in frappe.get_all(
+					"Asset Depreciation Schedule",
+					filters=[
+						["asset", "=", self.asset],
+						finance_book_filter,
+						["docstatus", "<", 2],
+						["status", "!=", "Superseded"],  # GAP-031
+					],
+					pluck="name",
+				)
+				if n not in allowed
+			),
+			None,
 		)
-
-		if asset_depr_schedule and asset_depr_schedule != self.name:
+		if asset_depr_schedule:
 			if self.finance_book:
 				frappe.throw(
 					_(
