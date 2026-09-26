@@ -262,7 +262,12 @@ def acquisition_voucher_sql(gl="gl", asset="ast"):
 
 	"Live" means the voucher is still submitted (a cancelled receipt's
 	rows stay on the ledger under the Immutable Ledger) and, for the
-	journal bookings, that the Addition has not been reversed. Anything
+	journal bookings, that the Addition has not been reversed. The asset's
+	own state matters only where the asset IS the acquiring voucher (core's
+	booking): a receipt or invoice stays the acquisition after its asset is
+	cancelled, because its cost is still on the ledger until the purchase
+	is returned or cancelled - and a return's leg carries the returned
+	line's asset (`attribute_asset_legs`), so the return nets the line. Anything
 	else posting to the asset — reversal mirrors, restore, a sale's
 	cancellation rows, a return's regain rows, adjustments, disposals — is
 	not on one of these vouchers and so is never the acquisition.
@@ -429,16 +434,56 @@ def apply_asset_cost_centre_policy(doc, method=None):
 
 def _asset_line(doctype, detail_name):
 	"""The receipt/invoice line behind a gl row, when it is a fixed-asset
-	line. Returns (item_row, asset_link_field) or (None, None)."""
+	line. Returns (item_row, asset_link_field) or (None, None). On a
+	return, `item_row.returned_line` names the line it returns (the item's
+	own purchase_receipt_item / purchase_invoice_item link - the field
+	shares its name with the Asset's link to the line)."""
 	item_doctype, asset_field = _ITEM_DOCTYPE.get(doctype, (None, None))
 	if not item_doctype or not detail_name:
 		return None, None
 	row = frappe.db.get_value(
-		item_doctype, detail_name, ["is_fixed_asset", "expense_account"], as_dict=True
+		item_doctype, detail_name,
+		["is_fixed_asset", "expense_account", asset_field], as_dict=True,
 	)
 	if not row or not row.is_fixed_asset:
 		return None, None
+	row.returned_line = row.get(asset_field)
 	return row, asset_field
+
+
+def _returned_line_assets(doc, returned_line, account):
+	"""The assets a return's fixed-asset leg gives back, weighted as the
+	acquisition leg of the returned line was stamped - the returned line's
+	live rows on the same account, per asset. Core only allows the return
+	once those assets are cancelled (`validate_asset_return`), so they are
+	read from the ledger, not from live assets; a line acquired before the
+	leg was stamped falls back to the line's assets whatever their state,
+	weighted by their own value. One query per returned line."""
+	cache = getattr(frappe.local, "_ae_returned_line_assets", None)
+	if cache is None:
+		cache = frappe.local._ae_returned_line_assets = {}
+	key = (doc.doctype, doc.get("return_against"), returned_line, account)
+	if key not in cache:
+		stamped = frappe.db.sql(
+			"""select asset as name, sum(debit - credit) as net_purchase_amount
+			from `tabGL Entry`
+			where voucher_type = %s and voucher_no = %s and voucher_detail_no = %s
+			  and account = %s and is_cancelled = 0 and ifnull(asset, '') != ''
+			group by asset having sum(debit - credit) > 0
+			order by min(creation), asset""",
+			key,
+			as_dict=True,
+		) if frappe.db.has_column("GL Entry", "asset") else []
+		if not stamped:
+			_item_doctype, asset_field = _ITEM_DOCTYPE[doc.doctype]
+			stamped = frappe.get_all(
+				"Asset",
+				filters={asset_field: returned_line},
+				fields=["name", "net_purchase_amount"],
+				order_by="creation, name",
+			)
+		cache[key] = stamped
+	return cache[key]
 
 
 def _assets_from_line(asset_field, detail_name):
@@ -486,16 +531,24 @@ def attribute_asset_legs(doc, gl_entries):
 		if not item_row or entry.get("account") != item_row.expense_account:
 			out.append(entry)
 			continue
-		assets = _assets_from_line(asset_field, detail)
+		returning = doc.get("is_return") and doc.get("return_against") and item_row.returned_line
+		if returning:
+			# A return gives back the returned line's assets: its leg is
+			# stamped, or split, exactly as that line's acquisition leg was,
+			# so the return nets into each asset's acquisition line
+			# (project_accounting D-054: a line is key + cost centre + asset)
+			# and the asset's own ledger shows the cost leaving.
+			assets = _returned_line_assets(doc, item_row.returned_line, entry.get("account"))
+		else:
+			assets = _assets_from_line(asset_field, detail)
 		if not assets:
 			# Nothing to attribute to: an asset line that creates no Asset
-			# record (auto_create_assets off — the user makes it by hand),
-			# or a return referencing the original line.
+			# record (auto_create_assets off — the user makes it by hand).
 			out.append(entry)
 			continue
 		if len(assets) == 1:
 			entry["asset"] = assets[0].name
-			out.append(entry)
+			out.append(_control_attributed(entry) if returning else entry)
 			continue
 
 		splits = {
@@ -508,5 +561,16 @@ def attribute_asset_legs(doc, gl_entries):
 			row["asset"] = asset.name
 			for field, parts in splits.items():
 				row[field] = parts[idx]
-			out.append(row)
+			out.append(_control_attributed(row) if returning else row)
 	return out
+
+
+def _control_attributed(entry):
+	"""A return leg of a Control Category asset carries the asset's
+	acquisition attribution (D-053: every leg of a control asset does). An
+	acquisition leg needs nothing - its own row IS the acquisition
+	attribution."""
+	held = control_category_attribution(entry.get("asset"))
+	if held is not None:
+		apply_control_attribution(entry, held)
+	return entry

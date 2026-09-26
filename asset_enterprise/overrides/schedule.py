@@ -58,6 +58,33 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 			)
 		)
 
+	def cancel_depreciation_entries(self):
+		"""Core cancels every depreciation JE of a schedule the asset reversal
+		cancels. Under the immutable model the asset reversal is refused
+		until each posted JE has been undone by a GA-0001-01 Reversal JE
+		(`EnterpriseAsset._block_when_depreciation_posted`), and cancelling a
+		JE that a live reversal names fails frappe's link check - so a
+		reversed JE stays posted, paired with its reversal, exactly as the
+		asset's own guard already counts it. A JE with no live reversal keeps
+		core's behaviour (reached only with the enterprise switch off). One
+		query for the schedule."""
+		from asset_enterprise.depreciation import enterprise_enabled
+
+		if not enterprise_enabled() or not frappe.get_meta("Journal Entry").has_field("reversal_of"):
+			return super().cancel_depreciation_entries()
+		jes = [d.journal_entry for d in self.get("depreciation_schedule") if d.journal_entry]
+		reversed_jes = set(frappe.get_all("Journal Entry",
+			filters={"reversal_of": ("in", jes), "docstatus": 1}, pluck="reversal_of")) if jes else set()
+		for d in self.get("depreciation_schedule"):
+			if not d.journal_entry or d.journal_entry in reversed_jes:
+				continue
+			if frappe.db.get_value("Journal Entry", d.journal_entry, "docstatus") == 0:
+				frappe.throw(
+					_("Cannot cancel Asset Depreciation Schedule {0} as it has a draft journal entry {1}.").format(
+						self.name, d.journal_entry)
+				)
+			frappe.get_doc("Journal Entry", d.journal_entry).cancel()
+
 	def validate_update_after_submit(self):
 		# Submitted-schedule saves skip validate() — the posted-row
 		# protection must run here (VR-036, Phase 11b).

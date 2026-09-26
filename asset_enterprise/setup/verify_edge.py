@@ -1456,6 +1456,18 @@ def _later_shape_failures(run, legs, fixture, field, moved):
 			"asset": ("is", "not set")}, pluck=field)
 		if moved[field] not in invoice_rows:
 			failures.append("blank_sale: the invoice did not carry the project")
+	if shape in ("purchase_return", "purchase_return_after_charge"):
+		# the return's fixed-asset leg names the asset it gives back
+		# (review r3 B-1), on the acquisition attribution (the leg loop)
+		if fa_net(run.vouchers[-1]) != -run.amount:
+			failures.append(f"{shape}: the return's fixed-asset leg naming the asset is {fa_net(run.vouchers[-1])} (want {-run.amount})")
+		if shape == "purchase_return_after_charge" and by_voucher.get(run.vouchers[2]) is None:
+			failures.append(f"{shape}: the charge reversal {run.vouchers[2]} names no asset")
+	if shape == "invoice_after_scrap":
+		# Case A.02: the post-disposal delta leg names the asset
+		delta = sum(flt(leg.debit) - flt(leg.credit) for leg in by_voucher.get(run.vouchers[-1], ()))
+		if abs(delta - (run.settleable - run.amount)) > 0.005:
+			failures.append(f"{shape}: the delta transfer's asset legs total {delta} (want {run.settleable - run.amount})")
 	if shape in ("invoice_down", "invoice_up"):
 		adjusted = sum(fa_net(v) for v in by_voucher if v != run.acquisition)
 		if abs(run.amount + adjusted - run.settleable) > 0.005:

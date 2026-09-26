@@ -224,6 +224,12 @@ CONTROL_SHAPES = ("plain", "prior_fiscal_year", "transfer", "leave_project", "sc
 CONTROL_LATER_SHAPES = (
 	"scrap_restore", "ava_reversal", "sale", "sale_cancel", "sale_return", "blank_sale",
 	"invoice_down", "invoice_up",
+	# D-054 (Vivek 26 Sep) / chief r3 B-1 and M-1: a purchase RETURN of the
+	# asset (core: cancel the asset, then return) - before the one-day
+	# charge and after the charge is reversed - nets the acquisition to 0;
+	# an invoice difference that arrives after the asset was scrapped
+	# (Case A.02) amends the acquisition to the invoiced price.
+	"purchase_return", "purchase_return_after_charge", "invoice_after_scrap",
 )
 SALE_PROCEEDS = 5_000
 
@@ -408,6 +414,40 @@ def _later_shape(fixture, shape, acquired_under, moved_to, amount):
 		ava = frappe.db.get_value("Asset Value Adjustment",
 			{"asset": asset, "transaction_type": "Invoice Adjustment", "docstatus": 1}, "name")
 		return frappe._dict(asset=asset, acquisition=pr.name, vouchers=[pr.name, pi.name, ava],
+			shape=shape, amount=amount, settleable=price, actual=price, acquired_under=acquired_under)
+
+	if shape in ("purchase_return", "purchase_return_after_charge"):
+		from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_return
+
+		asset, pr = control_purchase(fixture, amount, acquired_under)
+		vouchers = [pr.name]
+		if shape == "purchase_return_after_charge":
+			from qcs_platform.core.journal_entry import make_reverse_journal_entry
+
+			charge = _control_charge(asset, nowdate(), nowdate())
+			reversal = make_reverse_journal_entry(charge)
+			reversal.posting_date = nowdate()
+			reversal.flags.ignore_permissions = True
+			reversal.submit()
+			vouchers += [charge, reversal.name]
+		doc = frappe.get_doc("Asset", asset)
+		doc.flags.ignore_permissions = True
+		doc.cancel()
+		ret = make_purchase_return(pr.name)
+		ret.flags.ignore_permissions = True
+		ret.insert()
+		ret.submit()
+		vouchers.append(ret.name)
+		return frappe._dict(asset=asset, acquisition=pr.name, vouchers=vouchers, shape=shape, amount=amount,
+			settleable=0, actual=0, acquired_under=acquired_under)
+	if shape == "invoice_after_scrap":
+		asset, pr = control_purchase(fixture, amount, acquired_under)
+		scrap = disposal.scrap_asset(asset, scrap_date=nowdate(), scrapping_type="Damage")
+		price = amount - 1_000
+		pi = control_invoice(pr, price, acquired_under)
+		delta = frappe.db.get_value("Journal Entry",
+			{"user_remark": ("like", f"Invoice delta transfer for {pi.name}%"), "docstatus": 1}, "name")
+		return frappe._dict(asset=asset, acquisition=pr.name, vouchers=[pr.name, scrap, pi.name, delta],
 			shape=shape, amount=amount, settleable=price, actual=price, acquired_under=acquired_under)
 
 	dims = {} if shape == "blank_sale" else acquired_under
