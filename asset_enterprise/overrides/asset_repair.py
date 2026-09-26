@@ -169,12 +169,14 @@ class EnterpriseAssetRepair(AssetRepair):
 		from erpnext.accounts.general_ledger import make_gl_entries
 
 		reversal_date = getdate(self.completion_date or nowdate())
+		# the dimension list is read once per reversal, not once per row
+		kept = _mirror_kept_fields()
 		original_gl = frappe.get_all("GL Entry",
 			filters={"voucher_type": "Asset Repair", "voucher_no": source.name, "is_cancelled": 0},
-			fields=_mirror_source_fields(), order_by="creation, name")
+			fields=_mirror_source_fields(kept), order_by="creation, name")
 		gl_map = [
 			_mirror_gl_row(original, self.name, reversal_date,
-				_("Reversal Repair {0} of {1}").format(self.name, source.name))
+				_("Reversal Repair {0} of {1}").format(self.name, source.name), kept)
 			for original in original_gl
 		]
 		make_gl_entries(gl_map, merge_entries=False)
@@ -426,14 +428,15 @@ def _mirror_kept_fields():
 	]
 
 
-def _mirror_source_fields():
+def _mirror_source_fields(kept=None):
 	"""Every column the mirror reads from the original row — one query."""
-	return _mirror_kept_fields() + [field for pair in _MIRROR_SWAP for field in pair]
+	return list(kept or _mirror_kept_fields()) + [field for pair in _MIRROR_SWAP for field in pair]
 
 
-def _mirror_gl_row(original, voucher_no, posting_date, remarks):
-	"""The reversing GL map row for `original` under `voucher_no`."""
-	row = frappe._dict({field: original.get(field) for field in _mirror_kept_fields()})
+def _mirror_gl_row(original, voucher_no, posting_date, remarks, kept=None):
+	"""The reversing GL map row for `original` under `voucher_no`; `kept`
+	is `_mirror_kept_fields()`, computed once by the caller."""
+	row = frappe._dict({field: original.get(field) for field in (kept or _mirror_kept_fields())})
 	for debit, credit in _MIRROR_SWAP:
 		row[debit], row[credit] = original.get(credit), original.get(debit)
 	row.update(voucher_no=voucher_no, posting_date=posting_date, is_cancelled=0, remarks=remarks)
