@@ -1103,6 +1103,7 @@ def backfill_asset_dimension(company=None, asset=None, dry_run=1):
 	        asset_enterprise.repair.backfill_asset_dimension \\
 	        --kwargs "{'dry_run': 1}"
 	"""
+	dry_run = cint(dry_run)  # `--args` passes "0" as a truthy string
 	from asset_enterprise.gl_attribution import _AMOUNT_FIELDS, _shares
 
 	rows = find_unattributed_acquisition_legs(company=company, asset=asset)
@@ -1190,6 +1191,7 @@ def find_undimensioned_asset_rows(company=None, asset=None):
 
 def backfill_asset_dimension_from_references(company=None, asset=None, dry_run=1):
 	"""Stamp the dimension on rows that already name their asset."""
+	dry_run = cint(dry_run)  # `--args` passes "0" as a truthy string
 	rows = find_undimensioned_asset_rows(company=company, asset=asset)
 	by_asset = {}
 	for row in rows:
@@ -1870,6 +1872,7 @@ def _legacy_acquisition_candidates(company=None):
 
 def backfill_legacy_acquisition_rows(company=None, dry_run=1):
 	"""Attribute acquisition rows that predate `voucher_detail_no`."""
+	dry_run = cint(dry_run)  # `--args` passes "0" as a truthy string
 	rows = _legacy_acquisition_candidates(company=company)
 	done = skipped = 0
 	print(f"{len(rows)} legacy acquisition row(s) with no line reference:")
