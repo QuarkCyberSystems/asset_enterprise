@@ -149,7 +149,8 @@
    "fieldtype": "Link",
    "label": "Journal Entry",
    "options": "Journal Entry",
-   "read_only": 1
+   "read_only": 1,
+   "search_index": 1
   },
   {
    "fieldname": "column_break_c",
@@ -219,7 +220,7 @@
  "issingle": 0,
  "istable": 0,
  "links": [],
- "modified": "2026-07-16 12:00:00.000000",
+ "modified": "2026-09-26 18:00:00.000000",
  "modified_by": "Administrator",
  "module": "Asset Enterprise",
  "name": "Financial Treatment",

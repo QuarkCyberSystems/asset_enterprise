@@ -45,8 +45,10 @@ def _enterprise():
 class AssetLedgerAdapter:
 	app = "asset_enterprise"
 	id = "asset.ledger"
-	# a Journal Entry only when it was posted for an Asset Capitalization
-	doctypes = OWN + ("Stock Entry", "Journal Entry")
+	# a Journal Entry only when it was posted for an Asset Capitalization; a
+	# Purchase Invoice only while a submitted repair or capitalization
+	# consumes its cost (cross-app r4 X2)
+	doctypes = OWN + ("Stock Entry", "Journal Entry", "Purchase Invoice")
 	ledger_doctypes = ()
 
 	def governs(self, doc):
@@ -58,6 +60,10 @@ class AssetLedgerAdapter:
 			from asset_enterprise.merge import standing_capitalization
 
 			return not doc.is_new() and bool(standing_capitalization(doc.name))
+		if doc.doctype == "Purchase Invoice":
+			from asset_enterprise.consumption import standing_consumers
+
+			return not doc.is_new() and bool(standing_consumers(doc.name))
 		# a Material Issue raised by an Asset Capitalization is an artefact
 		# of that capitalization, not an independent document
 		return bool(doc.get("asset_capitalization"))
@@ -68,6 +74,8 @@ class AssetLedgerAdapter:
 
 			blocked = standalone_reversal_refusal(doc.name)
 			return Refusal(title=blocked[0], message=blocked[1], owner=self.app) if blocked else None
+		if doc.doctype == "Purchase Invoice":
+			return self._consumed_invoice_refusal(doc)
 		if doc.doctype != "Stock Entry":
 			return None  # cancels natively; the controller raises the reversal or refuses
 		# no route on purpose: the issue is not reversible by itself - the
@@ -80,6 +88,30 @@ class AssetLedgerAdapter:
 				"materials are returned by reversing that capitalization, which posts a Material "
 				"Receipt and leaves both movements on the record."
 			).format(doc.name, doc.asset_capitalization),
+			owner=self.app,
+		)
+
+	def _consumed_invoice_refusal(self, doc):
+		"""Core refuses cancelling an invoice a standing repair names
+		(LinkExistsError); a reversal document of it (valuation's Create
+		Cancellation) is refused the same way, with no route, so the
+		platform vetoes it (D-038 shape): the repair or capitalization is
+		reversed first, which gives the cost back to the invoice."""
+		from asset_enterprise.consumption import standing_consumers
+
+		consumers = standing_consumers(doc.name)
+		if not consumers:
+			return None
+		return Refusal(
+			title=_("Invoice Cost Capitalized"),
+			message=_(
+				"Purchase Invoice {0} cannot be cancelled or reversed while its cost stays capitalized by {1}. "
+				"Cancel {2} first - its reversal gives the cost back to the invoice - then reverse the invoice."
+			).format(
+				doc.name,
+				", ".join(f"{_(dt)} {name}" for dt, name in consumers),
+				", ".join(name for _dt, name in consumers),
+			),
 			owner=self.app,
 		)
 
@@ -100,6 +132,14 @@ class AssetLedgerAdapter:
 		return ()
 
 	def actions(self, doc):
+		if doc.doctype == "Purchase Invoice":
+			from asset_enterprise.consumption import standing_consumers
+
+			return tuple(
+				Action(label=_("Open {0} {1}").format(_(dt), name),
+					route_to=f"/app/{frappe.scrub(dt).replace('_', '-')}/{name}", primary=False)
+				for dt, name in standing_consumers(doc.name)[:3]
+			)
 		if doc.doctype == "Stock Entry" and doc.get("asset_capitalization"):
 			return (
 				Action(

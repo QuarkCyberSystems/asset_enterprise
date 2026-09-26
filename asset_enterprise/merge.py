@@ -1152,20 +1152,27 @@ def reverse_merge(reversal_doc):
 # ------------------------------------------------ capitalization journals
 def standing_capitalization(journal_entry):
 	"""The submitted Asset Capitalization a journal was posted for (its
-	merge, stock or service journal, or a cost line it consumed), while
-	that capitalization stands - else None. One query."""
+	merge, stock or service journal, a cost line it consumed, or - for a
+	Reversal of Capitalized Maintenance - its mirror journal), while that
+	capitalization stands - else None. One query on two indexed lookups
+	(`Financial Treatment.journal_entry`, `Asset Consumed Cost Line.
+	gl_voucher_no`), joined to the capitalization - it runs on every
+	journal's cancel, trash, form state and reversal (cross-app r4, RULES
+	§4)."""
 	if not journal_entry or not frappe.db.table_exists("Financial Treatment"):
 		return None
+	fields = "ac.name, ac.target_asset, ac.transaction_type, ac.reversal_of_capitalization"
 	consumed = ""
 	if frappe.db.table_exists("Asset Consumed Cost Line"):
-		consumed = """union select parent from `tabAsset Consumed Cost Line`
-			where gl_voucher_type = 'Journal Entry' and gl_voucher_no = %(je)s and parenttype = 'Asset Capitalization'"""
+		consumed = f"""union all select {fields} from `tabAsset Consumed Cost Line` l
+			join `tabAsset Capitalization` ac on ac.name = l.parent and ac.docstatus = 1
+			where l.gl_voucher_no = %(je)s and l.gl_voucher_type = 'Journal Entry'
+			  and l.parenttype = 'Asset Capitalization'"""
 	found = frappe.db.sql(
-		f"""select ac.name, ac.target_asset from `tabAsset Capitalization` ac
-		where ac.docstatus = 1 and ac.name in (
-			select source_name from `tabFinancial Treatment`
-			where source_doctype = 'Asset Capitalization' and journal_entry = %(je)s
-			{consumed})
+		f"""select {fields} from `tabFinancial Treatment` ft
+		join `tabAsset Capitalization` ac on ac.name = ft.source_name and ac.docstatus = 1
+		where ft.journal_entry = %(je)s and ft.source_doctype = 'Asset Capitalization'
+		{consumed}
 		limit 1""",
 		{"je": journal_entry},
 		as_dict=True,
@@ -1178,10 +1185,22 @@ def standalone_reversal_refusal(journal_entry):
 	it was posted for an Asset Capitalization that still stands. Only the
 	capitalization's own cancel (the Reversal of Capitalized Maintenance)
 	reverses it - otherwise the target keeps the value while the journal,
-	and any project cost line it consumed, comes back (chief r5 M-4)."""
+	and any project cost line it consumed, comes back (chief r5 M-4). The
+	mirror journal of a Reversal of Capitalized Maintenance is final, like
+	the reversal itself: the way back is a fresh Capitalized Maintenance."""
 	capitalization = standing_capitalization(journal_entry)
 	if not capitalization:
 		return None
+	if capitalization.transaction_type == "Reversal of Capitalized Maintenance":
+		return (
+			_("Reversal Is Final"),
+			_(
+				"Journal Entry {0} was posted by {1}, the Reversal of Capitalized Maintenance of {2}, and cannot "
+				"be reversed or cancelled: a reversal is final. To capitalize the cost on {3} again, submit a "
+				"fresh Capitalized Maintenance."
+			).format(journal_entry, capitalization.name, capitalization.reversal_of_capitalization,
+				capitalization.target_asset),
+		)
 	return (
 		_("Reverse the Capitalization"),
 		_(
