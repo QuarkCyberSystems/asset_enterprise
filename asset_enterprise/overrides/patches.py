@@ -25,6 +25,18 @@ override_whitelisted_methods and are wrapped here (see build plan §2.3):
 7. erpnext.assets.report.fixed_asset_register.fixed_asset_register.execute
    -> group nodes hidden, replacement-chain columns (GAP-036)
 
+Not here any more (qcs_platform Build 0.2 step 4, N-4 RULED (a)): the
+wraps of methods on SHARED core classes - PurchaseReceipt / PurchaseInvoice
+`get_gl_entries` (asset-leg attribution), BuyingController
+`update_fixed_asset` (never delete a cancelled receipt's assets) and
+JournalEntry `update_journal_entry_link_on_depr_schedule` (no guessed
+schedule row). Those classes' overrides are the platform's; each rule is
+now a function this app declares on the platform's socket hook of the same
+purpose (`asset_enterprise.platform_sockets`, hooks.py), and the platform
+refuses this app's dependent postings while a socket is unhealthy. What
+stays here is asset-family: module functions of erpnext's asset modules
+(and the Fixed Asset Register report) with this app as their one owner.
+
 Phase 0 ships verification only: on app boot we assert every target
 still exists with a compatible signature, so a bench update that moves
 or renames a target fails loudly at startup instead of silently
@@ -32,7 +44,6 @@ skipping our behavior.
 """
 
 import inspect
-import sys
 
 import frappe
 from frappe.utils import flt, getdate
@@ -81,28 +92,15 @@ WRAPPED_ATTRS = {
 
 # Class-method targets: (module, class, attr, min positional params).
 # verify_patch_targets checks these the same way, resolving through the
-# class instead of the module.
-CLASS_PATCH_TARGETS = [
-	("erpnext.controllers.buying_controller", "BuyingController", "update_fixed_asset", 2),
-	(
-		"erpnext.accounts.doctype.journal_entry.journal_entry",
-		"JournalEntry",
-		"update_journal_entry_link_on_depr_schedule",
-		3,
-	),
-	(
-		"erpnext.stock.doctype.purchase_receipt.purchase_receipt",
-		"PurchaseReceipt",
-		"get_gl_entries",
-		1,
-	),
-	(
-		"erpnext.accounts.doctype.purchase_invoice.purchase_invoice",
-		"PurchaseInvoice",
-		"get_gl_entries",
-		1,
-	),
-]
+# class instead of the module, and requires each to carry this app's
+# wrapper marker. EMPTY since qcs_platform Build 0.2 step 4: the four
+# shared-class wraps it listed (BuyingController.update_fixed_asset,
+# JournalEntry.update_journal_entry_link_on_depr_schedule,
+# PurchaseReceipt / PurchaseInvoice.get_gl_entries) are platform sockets
+# now, and a row left here would fail every migrate with "not wrapped" (the
+# platform, for its part, refuses the marker while it owns the method).
+# Kept for an asset-family class wrap, should one ever be needed.
+CLASS_PATCH_TARGETS = []
 
 # Core methods an `override_doctype_class` subclass overrides BY NAME to
 # post GL (one credit per consumed cost line): (module, class, attr, min
@@ -127,14 +125,6 @@ CLASS_OVERRIDE_TARGETS = [
 _WRAPPED = []
 
 
-def _own_modules():
-	"""Every erpnext / asset_enterprise module currently imported."""
-	for name, module in list(sys.modules.items()):
-		if module is None or not name.startswith(("erpnext", "asset_enterprise")):
-			continue
-		yield name, module
-
-
 def _rebind(attr, original, wrapper):
 	"""Point every module that already imported `attr` at the wrapper.
 
@@ -149,28 +139,27 @@ def _rebind(attr, original, wrapper):
 	get_gl_entries_on_asset_disposal at import time.
 
 	Patch the definition AND every copy; modules imported later pick the
-	wrapper up from the defining module by themselves.
+	wrapper up from the defining module by themselves. The sweep is the
+	platform's one `core_patches.rebind()` (RULES §7 "by-name importer
+	rebinding": ownership = platform, adopted here at this file's first
+	touch after it was built - qcs_platform Build 0.2 step 4). It sweeps
+	erpnext's modules, which hold every by-name importer of these targets
+	(an AST scan finds none in this app), and records the rebind so the
+	platform's `check()` reports a stale one too.
 	"""
+	from qcs_platform.core_patches import rebind
+
 	_WRAPPED.append((attr, original, wrapper))
-	for _name, module in _own_modules():
-		try:
-			if getattr(module, attr, None) is original:
-				setattr(module, attr, wrapper)
-		except Exception:
-			continue
+	rebind(attr, original, wrapper)
 
 
 def stale_bindings():
-	"""Modules still holding an unwrapped original — must always be empty."""
-	stale = []
-	for attr, original, _wrapper in _WRAPPED:
-		for name, module in _own_modules():
-			try:
-				if getattr(module, attr, None) is original:
-					stale.append(f"{name}.{attr}")
-			except Exception:
-				continue
-	return stale
+	"""Modules still holding an original this app rebound — must always be
+	empty (the platform's sweep, narrowed to this app's rebinds)."""
+	from qcs_platform.core_patches import stale_bindings as platform_stale_bindings
+
+	mine = {attr for attr, _original, _wrapper in _WRAPPED}
+	return [ref for ref in platform_stale_bindings() if ref.rsplit(".", 1)[-1] in mine]
 
 
 def verify_patch_targets():
@@ -521,99 +510,10 @@ def apply_patches():
 		get_asset_value_after_depreciation,
 	)
 
-	# GAP-004.4: cancelling a receipt must REVERSE the assets it created,
-	# never destroy them. Core does the opposite —
-	# buying_controller.update_fixed_asset(delete_asset=True) calls
-	# frappe.delete_doc("Asset", ..., force=1) for every auto-created
-	# asset, wiping the record and its movements whatever its docstatus,
-	# so the reversal our pr_before_cancel had just performed vanished
-	# along with the asset (client, 24/08). Assets already cancelled are
-	# skipped by core's own loop once deletion is off.
-	import erpnext.controllers.buying_controller as core_buying
-
-	core_update_fixed_asset = core_buying.BuyingController.update_fixed_asset
-
-	def update_fixed_asset(self, field, delete_asset=False):
-		from asset_enterprise.depreciation import enterprise_enabled
-
-		if delete_asset and enterprise_enabled():
-			delete_asset = False
-		return core_update_fixed_asset(self, field, delete_asset)
-
-	update_fixed_asset._asset_enterprise_wrapper = True
-	# A class attribute — every subclass resolves it at call time, so
-	# there is no already-imported copy to rebind.
-	core_buying.BuyingController.update_fixed_asset = update_fixed_asset
-
-	# GAP-031 / §4.6: core GUESSES which schedule row a depreciation JE
-	# belongs to — update_journal_entry_link_on_depr_schedule matches on
-	# `schedule_date == posting_date` AND an equal amount — because core
-	# only ever posts a row on its own schedule date. Our engine does
-	# not: a mass run posts several periods at ONE posting date (§4.6
-	# makes that date a month end), and the scheduler, the final-row path
-	# and the immediate-charge path all post rows dated differently from
-	# the entry.
-	#
-	# When the guess lands on a DIFFERENT row than the one being posted,
-	# that row is silently marked as posted with another period's journal
-	# entry: the asset then reads more accumulated depreciation than the
-	# ledger holds, and the row can never be posted for real. Reproduced
-	# on dev — a four-period run stamped the 31/08 row with the 31/05
-	# entry, derived accum 12,300.00 against 9,200.00 of GL.
-	#
-	# _post_one stamps the row it is actually posting, so under
-	# Enterprise Assets core's guess is never needed and can only ever be
-	# wrong. Manual Depreciation-Entry JEs are deliberately left unlinked
-	# too — GAP-006 counts them through the manual-GL sweep, and letting
-	# one claim a schedule row would mark a period posted with no
-	# Financial Treatment behind it.
-	import erpnext.accounts.doctype.journal_entry.journal_entry as core_je
-
-	core_link_depr_row = core_je.JournalEntry.update_journal_entry_link_on_depr_schedule
-
-	def update_journal_entry_link_on_depr_schedule(self, asset, je_row):
-		from asset_enterprise.depreciation import enterprise_enabled
-
-		if enterprise_enabled():
-			return None
-		return core_link_depr_row(self, asset, je_row)
-
-	update_journal_entry_link_on_depr_schedule._asset_enterprise_wrapper = True
-	core_je.JournalEntry.update_journal_entry_link_on_depr_schedule = (
-		update_journal_entry_link_on_depr_schedule
-	)
-
-	# GAP-006 / §5.1 (audit C1): core books an asset purchase with neither
-	# the `asset` dimension nor against_voucher, and writes ONE row per
-	# receipt LINE — so a qty-4 line books a single amount for four
-	# assets and the acquisition cost cannot be attributed in the ledger.
-	# That is the only reason the values fold starts from
-	# net_purchase_amount instead of GL. Stamp the leg, splitting it when
-	# a line made several assets; see gl_attribution for the rules.
-	#
-	# BuyingController.on_submit -> process_fixed_asset() creates the
-	# assets BEFORE make_gl_entries() runs on both doctypes, so the
-	# mapping is exact rather than a guess. The transform runs after
-	# core's process_gl_map; merge_similar_entries keys on accounting
-	# dimensions, so rows for different assets never merge back.
-	import erpnext.accounts.doctype.purchase_invoice.purchase_invoice as core_pi
-	import erpnext.stock.doctype.purchase_receipt.purchase_receipt as core_pr
-
-	def _attributed(core_get_gl_entries):
-		def get_gl_entries(self, *args, **kwargs):
-			from asset_enterprise.gl_attribution import attribute_asset_legs
-
-			return attribute_asset_legs(self, core_get_gl_entries(self, *args, **kwargs))
-
-		get_gl_entries._asset_enterprise_wrapper = True
-		return get_gl_entries
-
-	core_pr.PurchaseReceipt.get_gl_entries = _attributed(
-		core_pr.PurchaseReceipt.get_gl_entries
-	)
-	core_pi.PurchaseInvoice.get_gl_entries = _attributed(
-		core_pi.PurchaseInvoice.get_gl_entries
-	)
+	# GAP-004.4 (never delete a cancelled receipt's assets), GAP-031 / §4.6
+	# (no guessed depreciation schedule row) and GAP-006 / §5.1 audit C1
+	# (asset-leg attribution of PR / PI GL) are qcs_platform sockets since
+	# Build 0.2 step 4: see asset_enterprise.platform_sockets.
 
 	# GAP-036: a grouping asset is a structural container with no value —
 	# it must not appear as a zero-value line in the Fixed Asset Register.

@@ -37,10 +37,26 @@ def after_install():
 
 
 
+def require_platform_capabilities():
+	"""Fail the migrate unless the platform provides, healthy on this site,
+	every socket this app's registration requires (qcs_platform Build 0.2
+	§4.0 (8), the new-app / old-platform direction). A platform without
+	`require_capability` predates Build 0.2 step 0; one that does not know
+	the sockets predates step 4 - both are too old."""
+	from asset_enterprise.platform import PLATFORM_CONTRACT, PLATFORM_TOO_OLD, REQUIRES
+
+	try:
+		from qcs_platform.compat import require_capability
+	except ImportError:
+		frappe.throw(PLATFORM_TOO_OLD.format(PLATFORM_CONTRACT), title="Platform Too Old")
+	require_capability("asset_enterprise", *REQUIRES)
+
+
 def after_migrate():
 	from qcs_platform.compat import require_registrant
 
 	require_registrant("asset_enterprise")  # bench migrate never reads required_apps
+	require_platform_capabilities()
 	sync_customizations()
 
 

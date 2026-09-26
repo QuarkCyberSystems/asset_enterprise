@@ -16,6 +16,14 @@ required_apps = ["erpnext", "qcs_platform"]
 # from hooks; pr_before_cancel is declared there as a legacy effect hook.
 qcs_platform_registration = "asset_enterprise.platform.get_registration"
 
+# qcs_platform Build 0.2 step 4 (§4.10 / §4.12): this app's rules on the
+# platform's sockets in the shared purchase and journal classes, which the
+# platform overrides (they were runtime wraps of the core classes until
+# then). Required by the registration; see platform_sockets.py.
+purchase_gl_post_processors = ["asset_enterprise.platform_sockets.attribute_purchase_gl"]
+receipt_asset_delete_policy = ["asset_enterprise.platform_sockets.keep_receipt_assets"]
+depreciation_journal_link_policy = ["asset_enterprise.platform_sockets.skip_depreciation_link_guess"]
+
 # GA-0005-01 v2.14 — controller overrides (build plan §2.1).
 # Phase 0: pass-through subclasses; behavior lands per phase.
 override_doctype_class = {

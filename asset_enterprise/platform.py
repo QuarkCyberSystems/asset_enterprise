@@ -19,6 +19,11 @@ from frappe import _
 
 from qcs_platform.contracts import API_VERSION, Action, Refusal, Registration
 
+try:  # Build 0.2 step 4
+	from qcs_platform.contracts import CapabilityUse
+except ImportError:  # a platform before step 4: get_registration fails naming the contract
+	CapabilityUse = None
+
 OWN = ("Asset Capitalization", "Asset Repair", "Asset Value Adjustment", "Scrap Transaction")
 
 # doctype -> how to undo it instead of deleting (immutable ledger: a posted
@@ -163,10 +168,61 @@ class AssetLedgerAdapter:
 		return False  # the capitalization posts; the issue's rows are core's or valuation's
 
 
-def get_registration():
-	return Registration(
-		app="asset_enterprise",
-		api_version=API_VERSION,
-		ledger_adapters=(AssetLedgerAdapter(),),
-		legacy_hooks=(("Purchase Receipt", "before_cancel"),),
+# qcs_platform Build 0.2 step 4 (§4.10, §4.12): the purchase GL
+# attribution, the receipt-asset keep rule and the depreciation-link rule
+# are this app's functions on the platform's sockets (platform_sockets.py);
+# the methods are the platform's.
+PLATFORM_CONTRACT = "0.2"
+PURCHASE_GL = "purchase_gl_post_processors"
+RECEIPT_ASSETS = "receipt_asset_delete_policy"
+DEPRECIATION_LINK = "depreciation_journal_link_policy"
+REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, DEPRECIATION_LINK)
+
+PLATFORM_TOO_OLD = (
+	"asset_enterprise is written against qcs_platform contract {0} (Build 0.2 step 4 or later: the purchase GL, "
+	"receipt-asset and depreciation-link sockets); this qcs_platform predates it. Upgrade qcs_platform together "
+	"with this app and project_accounting of the same step, then migrate (Build 0.2 §6.3)."
+)
+
+
+def capability_uses():
+	"""Which postings rely on which socket (step-0 review S-1), answered on
+	the document being posted or cancelled - new ones included:
+	- a receipt / invoice with a fixed-asset row: its GL's asset legs
+	  (submit), its assets on cancel;
+	- a Depreciation Entry journal with an asset row: its schedule-row link
+	  (submit);
+	- a repost on an Enterprise Assets site: it rebuilds reached receipts'
+	  and invoices' GL through `get_gl_entries` (submit)."""
+	from asset_enterprise import platform_sockets as ps
+
+	purchases = ("Purchase Receipt", "Purchase Invoice")
+	return (
+		CapabilityUse(doctypes=purchases, names=(PURCHASE_GL,), events=("submit",), applies=ps.purchase_with_asset_rows),
+		CapabilityUse(doctypes=purchases, names=(RECEIPT_ASSETS,), events=("cancel",), applies=ps.purchase_with_asset_rows),
+		CapabilityUse(doctypes=("Journal Entry",), names=(DEPRECIATION_LINK,), events=("submit",), applies=ps.depreciation_journal),
+		CapabilityUse(
+			doctypes=("Repost Item Valuation", "Repost Accounting Ledger"),
+			names=(PURCHASE_GL,),
+			events=("submit",),
+			applies=ps.enterprise_site,
+		),
 	)
+
+
+def get_registration():
+	try:
+		return Registration(
+			app="asset_enterprise",
+			api_version=API_VERSION,
+			ledger_adapters=(AssetLedgerAdapter(),),
+			legacy_hooks=(("Purchase Receipt", "before_cancel"),),
+			requires=REQUIRES,
+			platform_contract=PLATFORM_CONTRACT,
+			capability_uses=capability_uses(),
+		)
+	except TypeError as exc:
+		# a platform before Build 0.2 step 4 has no capability_uses (before
+		# step 0, no requires / platform_contract either): the registration
+		# fails - the site fails closed (D-036) - naming why
+		raise frappe.ValidationError(PLATFORM_TOO_OLD.format(PLATFORM_CONTRACT)) from exc
