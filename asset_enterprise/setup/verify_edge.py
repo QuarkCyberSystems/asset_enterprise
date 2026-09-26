@@ -1236,8 +1236,13 @@ def e28():
 	  2. the whole life cycle posts to P&L only;
 	  3. D-053: every leg of the five review shapes (plain charge,
 	     prior-fiscal-year charge with its PYA split, transfer then
-	     charge, Leave Project then charge, scrap before any charge)
-	     carries the acquisition cost centre and dimensions;
+	     charge, Leave Project then charge, scrap before any charge) and
+	     of the later shapes (scrap then restore, downward AVA then its
+	     reversal, sale with proceeds, sale then cancel under the
+	     Immutable Ledger, sale then credit note, a blank-acquisition sale
+	     on an invoice carrying a project, invoice below and above the
+	     receipt) carries the asset and its acquisition cost centre and
+	     dimensions - blank ones held blank;
 	  4. the flag LOCKS once a submitted asset exists.
 
 	Which of those rows project_accounting settles is its own suite's
@@ -1367,9 +1372,11 @@ def _control_shapes_keep_acquisition(company):
 	under, whatever a later movement said."""
 	from asset_enterprise.depreciation import movement_dimension_fields, project_dimension_fields
 	from asset_enterprise.setup.test_fixtures import (
-		CONTROL_SHAPES, control_asset_legs, control_category_fixture, control_shape, dimension_fixture,
+		CONTROL_LATER_SHAPES, CONTROL_SHAPES, control_asset_legs, control_category_fixture, control_shape,
+		dimension_fixture, ensure_enterprise_test_defaults,
 	)
 
+	ensure_enterprise_test_defaults()
 	fixture = control_category_fixture(company, "E28 Shapes")
 	centres = frappe.get_all("Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2)
 	acquisition_cc = frappe.get_cached_value("Company", company, "cost_center")
@@ -1385,14 +1392,15 @@ def _control_shapes_keep_acquisition(company):
 	fields = [f for f in movement_dimension_fields() if frappe.get_meta("GL Entry").has_field(f)]
 
 	failures, counts = [], []
-	for shape in CONTROL_SHAPES:
+	for shape in CONTROL_SHAPES + CONTROL_LATER_SHAPES:
 		run = control_shape(fixture, shape, acquired, moved_to=moved)
 		legs = control_asset_legs(run.asset, fields)
 		accounts = {leg.account for leg in legs}
 		expect_leg = {
 			"prior_fiscal_year": fixture.pya_expense_account,
 			"scrap": None,  # the loss account comes from the Scrapping Type
-		}.get(shape, fixture.depreciation_expense_account)
+		}.get(shape, fixture.depreciation_expense_account if shape in CONTROL_SHAPES else None)
+		failures.extend(_later_shape_failures(run, legs, fixture, field, moved))
 		if expect_leg and expect_leg not in accounts:
 			failures.append(f"{shape}: no {expect_leg} leg")
 		if shape == "scrap" and not any(
@@ -1403,7 +1411,7 @@ def _control_shapes_keep_acquisition(company):
 		if shape == "transfer" and other_cc and frappe.db.get_value("Asset", run.asset, "cost_center") != other_cc:
 			failures.append("transfer: custody centre not recorded on the asset")
 		for leg in legs:
-			wrong = [f for f in fields if (leg.get(f) or None) != (acquired.get(f) or None)]
+			wrong = [f for f in fields if (leg.get(f) or None) != (run.acquired_under.get(f) or None)]
 			if leg.cost_center != acquisition_cc or wrong:
 				failures.append(f"{shape}: {leg.voucher_no} {leg.account} cc={leg.cost_center} "
 				                f"{ {f: leg.get(f) for f in wrong} }")
@@ -1411,6 +1419,48 @@ def _control_shapes_keep_acquisition(company):
 	detail = (f"D-053 shapes ({', '.join(counts)} legs) on acquisition cc {acquisition_cc}"
 	          f"{f' and {field}' if field else ''}: " + ("OK" if not failures else "; ".join(failures[:4])))
 	return not failures, detail
+
+
+def _later_shape_failures(run, legs, fixture, field, moved):
+	"""What each later shape must show beyond "every leg on the acquisition
+	attribution": the voucher that undoes or corrects the acquisition posts
+	rows that name the asset, on the fixed-asset account where the ruling
+	says so."""
+	from asset_enterprise.setup.test_fixtures import SALE_PROCEEDS
+
+	by_voucher = {}
+	for leg in legs:
+		by_voucher.setdefault(leg.voucher_no, []).append(leg)
+	fa = fixture.fixed_asset_account
+	failures = []
+
+	def fa_net(voucher):
+		return sum(flt(leg.debit) - flt(leg.credit) for leg in by_voucher.get(voucher, ()) if leg.account == fa)
+
+	shape = run.shape
+	if shape == "scrap_restore" and not (fa_net(run.vouchers[1]) == -run.amount and fa_net(run.vouchers[2]) == run.amount):
+		failures.append(f"scrap_restore: scrap / restore fixed-asset legs {fa_net(run.vouchers[1])} / {fa_net(run.vouchers[2])}")
+	if shape == "ava_reversal" and not (fa_net(run.vouchers[1]) == -3_000 and fa_net(run.vouchers[2]) == 3_000):
+		failures.append(f"ava_reversal: write-down / reversal legs {fa_net(run.vouchers[1])} / {fa_net(run.vouchers[2])}")
+	if shape in ("sale", "sale_cancel", "sale_return", "blank_sale"):
+		sale = run.vouchers[1]
+		loss = sum(flt(leg.debit) - flt(leg.credit) for leg in by_voucher.get(sale, ()) if leg.account != fa)
+		want_fa = 0 if shape == "sale_cancel" else -run.amount  # cancellation rows net under the invoice
+		want_loss = 0 if shape == "sale_cancel" else run.amount - SALE_PROCEEDS
+		if fa_net(sale) != want_fa or abs(loss - want_loss) > 0.005:
+			failures.append(f"{shape}: sale fixed-asset {fa_net(sale)} (want {want_fa}), loss {loss} (want {want_loss})")
+	if shape == "sale_return" and fa_net(run.vouchers[2]) != run.amount:
+		failures.append(f"sale_return: the regain debit does not name the asset ({fa_net(run.vouchers[2])})")
+	if shape == "blank_sale" and field and moved.get(field):
+		invoice_rows = frappe.get_all("GL Entry", filters={"voucher_no": run.vouchers[1], "is_cancelled": 0,
+			"asset": ("is", "not set")}, pluck=field)
+		if moved[field] not in invoice_rows:
+			failures.append("blank_sale: the invoice did not carry the project")
+	if shape in ("invoice_down", "invoice_up"):
+		adjusted = sum(fa_net(v) for v in by_voucher if v != run.acquisition)
+		if abs(run.amount + adjusted - run.settleable) > 0.005:
+			failures.append(f"{shape}: fixed-asset legs total {run.amount + adjusted} (want {run.settleable})")
+	return failures
 
 
 @case("E-29", "client 16/09 (ACC-ASS-2026-00019)", "two events in one unposted month price the days between them exactly")

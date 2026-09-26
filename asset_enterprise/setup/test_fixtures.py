@@ -7,7 +7,7 @@ never meant to persist on a live site.
 import contextlib
 
 import frappe
-from frappe.utils import add_months, nowdate
+from frappe.utils import add_months, get_first_day, nowdate
 
 # asset_values.recalculate_asset_values sources operational values from
 # the legacy fold or from posted GL, per site_config
@@ -216,6 +216,16 @@ def dimension_fixture(fieldname, company, doctype="Asset Movement Item"):
 # scenarios (PA -> AE is the permitted edge). Writes: the caller owns the
 # savepoint or the throwaway site.
 CONTROL_SHAPES = ("plain", "prior_fiscal_year", "transfer", "leave_project", "scrap")
+# D-053 "Gross" / "the invoiced price" and review r2 B-1 / M-1 / S-A: the
+# reversal, sale, return and invoice-difference shapes. Each run returns
+# the settleable source the ruling prescribes (`settleable`) and the
+# project's actual Expense after it (`actual`), which differ once money
+# comes back (proceeds stay on the project as a credit).
+CONTROL_LATER_SHAPES = (
+	"scrap_restore", "ava_reversal", "sale", "sale_cancel", "sale_return", "blank_sale",
+	"invoice_down", "invoice_up",
+)
+SALE_PROCEEDS = 5_000
 
 
 def _expense_account(company, label):
@@ -292,6 +302,157 @@ def _move(asset_name, company, on_date, **row):
 	return doc.name
 
 
+def _customer():
+	name = frappe.db.get_value("Customer", {"customer_name": "AE Control Buyer"}, "name")
+	if name:
+		return name
+	return frappe.get_doc({"doctype": "Customer", "customer_name": "AE Control Buyer",
+		"customer_group": frappe.db.get_value("Customer Group", {"is_group": 0}, "name"),
+		"territory": frappe.db.get_value("Territory", {"is_group": 0}, "name")}).insert(
+		ignore_permissions=True).name
+
+
+def _supplier():
+	name = frappe.db.get_value("Supplier", {"supplier_name": "AE Smoke Supplier"}, "name")
+	if name:
+		return name
+	return frappe.get_doc({"doctype": "Supplier", "supplier_name": "AE Smoke Supplier"}).insert(
+		ignore_permissions=True).name
+
+
+def _with_dimensions(row, doctype, dimensions):
+	meta = frappe.get_meta(doctype)
+	row.update({f: v for f, v in (dimensions or {}).items() if meta.has_field(f)})
+	return row
+
+
+def _sell(asset_name, company, amount, dimensions=None):
+	"""Sell through a Sales Invoice (core's disposal map, AE's wrapper),
+	the invoice header and row carrying `dimensions`."""
+	item = frappe.db.get_value("Asset", asset_name, "item_code")
+	si = frappe.get_doc(_with_dimensions({
+		"doctype": "Sales Invoice", "company": company, "customer": _customer(),
+		"posting_date": nowdate(), "due_date": nowdate(),
+		"items": [_with_dimensions({"item_code": item, "asset": asset_name, "qty": 1, "rate": amount},
+			"Sales Invoice Item", dimensions)],
+	}, "Sales Invoice", dimensions))
+	si.flags.ignore_permissions = True
+	si.insert()
+	si.submit()
+	return si
+
+
+def control_purchase(fixture, amount, acquired_under):
+	"""A Control Category asset bought through a Purchase Receipt under
+	`acquired_under`; returns (asset, receipt)."""
+	company = fixture.company
+	item = frappe.get_doc("Item", fixture.item)
+	if not item.auto_create_assets:
+		item.auto_create_assets = 1
+		item.asset_naming_series = frappe.get_meta("Asset").get_field("naming_series").options.split("\n")[0]
+		item.flags.ignore_permissions = True
+		item.save()
+	pr = frappe.get_doc(_with_dimensions({
+		"doctype": "Purchase Receipt", "company": company, "supplier": _supplier(),
+		"posting_date": nowdate(),
+		"items": [_with_dimensions({"item_code": fixture.item, "qty": 1, "rate": amount,
+			"asset_location": _ensure_location()}, "Purchase Receipt Item", acquired_under)],
+	}, "Purchase Receipt", acquired_under))
+	pr.flags.ignore_permissions = True
+	pr.insert()
+	pr.submit()
+	asset = frappe.db.get_value("Asset", {"purchase_receipt": pr.name}, "name")
+	if frappe.db.get_value("Asset", asset, "docstatus") == 0:
+		doc = frappe.get_doc("Asset", asset)
+		doc.flags.ignore_permissions = True
+		doc.submit()
+	return asset, pr
+
+
+def control_invoice(pr, price, dimensions=None):
+	"""A Purchase Invoice against the receipt at `price` - AE posts the
+	difference as an Invoice Adjustment AVA plus the delta transfer."""
+	row = pr.items[0]
+	pi = frappe.get_doc(_with_dimensions({
+		"doctype": "Purchase Invoice", "company": pr.company, "supplier": pr.supplier,
+		"posting_date": nowdate(),
+		"items": [_with_dimensions({"item_code": row.item_code, "qty": 1, "rate": price,
+			"purchase_receipt": pr.name, "pr_detail": row.name}, "Purchase Invoice Item", dimensions)],
+	}, "Purchase Invoice", dimensions))
+	pi.flags.ignore_permissions = True
+	pi.insert()
+	pi.submit()
+	return pi
+
+
+def _later_shape(fixture, shape, acquired_under, moved_to, amount):
+	"""The CONTROL_LATER_SHAPES. Dated today where a same-period rule
+	applies (restore, sale); the acquisition a month earlier."""
+	from frappe.utils import getdate
+
+	from asset_enterprise import disposal
+
+	company = fixture.company
+	day0 = getdate(get_first_day(add_months(nowdate(), -1)))
+	settleable, actual = amount, amount
+	if shape in ("invoice_down", "invoice_up"):
+		asset, pr = control_purchase(fixture, amount, acquired_under)
+		price = amount - 1_000 if shape == "invoice_down" else amount + 1_000
+		pi = control_invoice(pr, price, acquired_under)
+		ava = frappe.db.get_value("Asset Value Adjustment",
+			{"asset": asset, "transaction_type": "Invoice Adjustment", "docstatus": 1}, "name")
+		return frappe._dict(asset=asset, acquisition=pr.name, vouchers=[pr.name, pi.name, ava],
+			shape=shape, amount=amount, settleable=price, actual=price, acquired_under=acquired_under)
+
+	dims = {} if shape == "blank_sale" else acquired_under
+	asset = control_asset(fixture, amount, day0, dimensions=dims)
+	acquisition = frappe.db.get_value("Journal Entry Account",
+		{"reference_type": "Asset", "reference_name": asset, "docstatus": 1}, "parent")
+	vouchers = [acquisition]
+	if shape == "scrap_restore":
+		from asset_enterprise.restore import restore_asset
+
+		vouchers.append(disposal.scrap_asset(asset, scrap_date=nowdate(), scrapping_type="Damage"))
+		restore_asset(asset)
+		vouchers.append(frappe.db.get_value("Asset", asset, "scrap_reversal_journal_entry"))
+	elif shape == "ava_reversal":
+		ava = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": asset, "company": company, "date": nowdate(),
+			"transaction_type": "Initial Impairment", "current_asset_value": amount,
+			"new_asset_value": amount - 3_000, "difference_account": fixture.depreciation_expense_account,
+		})
+		ava.flags.ignore_permissions = True
+		ava.insert()
+		ava.submit()
+		vouchers.append(ava.journal_entry)
+		ava.reload()
+		ava.cancel()
+		reversal = frappe.db.get_value("Asset Value Adjustment", {"reversal_of_ava": ava.name}, "journal_entry")
+		vouchers.append(reversal)
+	else:  # the sales
+		sale_dims = (moved_to or {}) if shape == "blank_sale" else acquired_under
+		si = _sell(asset, company, SALE_PROCEEDS, {k: v for k, v in sale_dims.items() if k != "target_cost_center"})
+		vouchers.append(si.name)
+		actual = amount - SALE_PROCEEDS  # the proceeds come back to the project as a credit
+		if shape == "sale_cancel":
+			si.reload()
+			si.cancel()
+			actual = amount
+		elif shape == "sale_return":
+			from erpnext.accounts.doctype.sales_invoice.sales_invoice import make_sales_return
+
+			ret = make_sales_return(si.name)
+			ret.flags.ignore_permissions = True
+			ret.insert()
+			ret.submit()
+			vouchers.append(ret.name)
+			actual = amount
+		elif shape == "blank_sale":
+			settleable = actual = 0  # bought under no project: nothing reaches one
+	return frappe._dict(asset=asset, acquisition=acquisition, vouchers=vouchers, shape=shape, amount=amount,
+		settleable=settleable, actual=actual, acquired_under=dims)
+
+
 def control_shape(fixture, shape, acquired_under, moved_to=None, amount=12_000):
 	"""Run one D-053 shape on a new Control Category asset and return
 	frappe._dict(asset, acquisition, vouchers, shape).
@@ -304,6 +465,8 @@ def control_shape(fixture, shape, acquired_under, moved_to=None, amount=12_000):
 
 	from asset_enterprise import disposal
 
+	if shape in CONTROL_LATER_SHAPES:
+		return _later_shape(fixture, shape, acquired_under, moved_to, amount)
 	company = fixture.company
 	if shape == "prior_fiscal_year":
 		from erpnext.accounts.utils import get_fiscal_year
@@ -326,7 +489,8 @@ def control_shape(fixture, shape, acquired_under, moved_to=None, amount=12_000):
 		vouchers.append(disposal.scrap_asset(asset, scrap_date=str(add_days(day0, 3)), scrapping_type="Damage"))
 	else:
 		vouchers.append(_control_charge(asset, charge_on, post_on))
-	return frappe._dict(asset=asset, acquisition=acquisition, vouchers=vouchers, shape=shape, amount=amount)
+	return frappe._dict(asset=asset, acquisition=acquisition, vouchers=vouchers, shape=shape, amount=amount,
+		settleable=amount, actual=amount, acquired_under=acquired_under)
 
 
 def control_asset_legs(asset_name, fields):
