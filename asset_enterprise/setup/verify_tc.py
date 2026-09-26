@@ -3042,7 +3042,18 @@ def tc047g():
 
 	The link backfill must restore the audit reference, preserve correct
 	values and schedules, and leave all records untouched in dry-run mode.
+
+	A GL-derived rule, so it runs under GL values whatever the site is set
+	to: the legacy fold counts an unlinked treatment's voucher as a manual
+	posting by design, which is what the backfill exists to repair.
 	"""
+	from asset_enterprise.setup.test_fixtures import GL, value_mode
+
+	with value_mode(GL):
+		return _tc047g()
+
+
+def _tc047g():
 	from asset_enterprise import repair as repair_mod
 	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
