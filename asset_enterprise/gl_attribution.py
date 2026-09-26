@@ -207,6 +207,48 @@ def _derive_acquisition_cost_center(asset):
 	return asset.get("cost_center")
 
 
+def control_category_attribution(asset_name):
+	"""D-053: (cost centre, dimensions) every posting of a Control Category
+	asset carries — its ACQUISITION attribution — or None for any other
+	asset.
+
+	A Control Category asset is expensed to whoever bought it (GAP-037):
+	its cost and accumulated accounts are Expense-root, so every leg of
+	every entry on it is P&L. "Expense follows use" (GAP-021) has nothing
+	left to follow once the whole cost sits in the buyer's P&L, and legs
+	of one entry split across holders leave one project with the cost and
+	another with its reversal (review 2026-09-26 B-2). So the one-day
+	charge, its prior-year split, disposal, loss, gain, reversals and
+	mirrors all take the acquisition centre and dimensions; a transfer,
+	project change or Leave Project records custody only.
+
+	This is the single answer: `attribution_timeline` (and through it
+	`attribution_on` / `attribution_split` and every builder that asks
+	them), the journal-entry policy below and the core disposal wrapper
+	read it. Ordinary assets get None and keep the D-013 rules.
+	"""
+	from asset_enterprise.depreciation import enterprise_enabled
+	from asset_enterprise.overrides.asset_category import is_control_category
+
+	if not asset_name or not enterprise_enabled():
+		return None
+	category = frappe.db.get_value("Asset", asset_name, "asset_category")
+	if not is_control_category(category):
+		return None
+	return acquisition_cost_center(asset_name), acquisition_dimensions(asset_name)
+
+
+def apply_control_attribution(row, attribution):
+	"""Put a Control Category asset's acquisition attribution on one leg
+	(a JE row or a gl dict). Assigned, not filled — a blank acquisition
+	dimension clears an inherited one."""
+	centre, dimensions = attribution
+	if centre:
+		row["cost_center"] = centre
+	for field, value in dimensions.items():
+		row[field] = value
+
+
 def apply_asset_cost_centre_policy(doc, method=None):
 	"""One rule, one place, for every entry the module posts.
 
@@ -225,6 +267,10 @@ def apply_asset_cost_centre_policy(doc, method=None):
 	Cost and accumulated depreciation therefore always net to a real
 	book value at ONE centre, and no centre ever reports a fixed asset
 	it does not hold.
+
+	A Control Category asset (D-053) is the exception: EVERY row carrying
+	it takes the acquisition attribution, whatever the account, because
+	all of its legs are project P&L (`control_category_attribution`).
 
 	V-08 says "a contra-asset leg carries the dimension of the asset leg
 	it contras" — dimension, not cost centre, and the two axes have to
@@ -261,6 +307,8 @@ def apply_asset_cost_centre_policy(doc, method=None):
 	if not enterprise_enabled():
 		return
 
+	from asset_enterprise.overrides.asset_category import is_control_category
+
 	category_accounts, centres, dimensions = {}, {}, {}
 	for row in doc.get("accounts") or []:
 		asset_name = row.get("asset") or (
@@ -285,9 +333,16 @@ def apply_asset_cost_centre_policy(doc, method=None):
 				as_dict=True,
 			)
 		aca = category_accounts[key]
-		if not aca or row.account not in (
-			aca.fixed_asset_account,
-			aca.accumulated_depreciation_account,
+		# D-053: every leg of a Control Category asset is P&L of the
+		# project that bought it, so the rule covers all of its rows.
+		control = is_control_category(asset.asset_category)
+		if not control and (
+			not aca
+			or row.account
+			not in (
+				aca.fixed_asset_account,
+				aca.accumulated_depreciation_account,
+			)
 		):
 			continue  # expense, gain, loss, clearing, suspense — not ours
 		if asset_name not in centres:

@@ -530,14 +530,6 @@ def is_prior_fiscal_year(schedule_date, posting_date):
 		return False
 
 
-def split_period_for_cc_change(row_amount, days_in_period, change_day_offset, company):
-	"""GAP-021 primitive: split one period's amount across two cost
-	centers at `change_day_offset` days into the period. Returns
-	(old_cc_amount, new_cc_amount); the pair sums to row_amount exactly."""
-	old_part = fa_module_round(row_amount * change_day_offset / days_in_period, company)
-	return old_part, fa_module_round(row_amount - old_part, company)
-
-
 # --------------------------------------------------------------------------
 # Schedule supersession (GAP-031 / GAP-032)
 # --------------------------------------------------------------------------
@@ -1756,14 +1748,24 @@ def _origin_cost_centre(asset_name, first_move, fallback):
 	return acquisition_cost_center(asset_name) or fallback
 
 
+def project_dimension_doctypes():
+	"""Doctypes whose dimension is a PROJECT for D-031's rules (same-day
+	effect, cleared by Leave project): core's Project, plus whatever an
+	installed app declares through the `asset_project_dimension_doctypes`
+	hook. Named by the declaring app, never here, so this app stays free
+	of any project app (D-013)."""
+	return {"Project", *(frappe.get_hooks("asset_project_dimension_doctypes") or [])}
+
+
 def project_dimension_fields():
 	"""Project dimensions supported by the explicit Leave project action."""
 	meta = frappe.get_meta("Asset Movement Item")
+	doctypes = project_dimension_doctypes()
 	return [field for field in movement_dimension_fields()
-	        if meta.get_field(field).options in ("Project", "Project Accounting")]
+	        if meta.get_field(field).options in doctypes]
 
 
-def attribution_timeline(asset_name, fallback=None):
+def attribution_timeline(asset_name, fallback=None, pending=None):
 	"""Who held this asset, from when, and under which dimensions.
 
 	Returns [(from_date | None, cost_centre, dimensions), ...] oldest
@@ -1787,7 +1789,23 @@ def attribution_timeline(asset_name, fallback=None):
 	Cancelled movements are excluded, so reversing a transfer restores
 	the attribution by itself — GAP-021: "restores prior CC for future
 	depreciation only".
+
+	`pending` is one not-yet-submitted movement row (a dict with
+	`transaction_date` and the row's fields), replayed after the posted
+	ones — how the pre-submit preview asks "what would this do" of the
+	same rules instead of a copy of them.
+
+	A Control Category asset (D-053) has one state for its whole life —
+	its acquisition centre and dimensions: movements track custody only.
 	"""
+	from asset_enterprise.gl_attribution import control_category_attribution
+
+	held = control_category_attribution(asset_name)
+	if held is not None:
+		centre, dimensions = held
+		return [(None, centre or fallback or frappe.db.get_value("Asset", asset_name, "cost_center"),
+		         {field: value for field, value in dimensions.items() if value})]
+
 	fields = movement_dimension_fields()
 	ami = frappe.qb.DocType("Asset Movement Item")
 	am = frappe.qb.DocType("Asset Movement")
@@ -1808,10 +1826,13 @@ def attribution_timeline(asset_name, fallback=None):
 	# A movement may change dimensions WITHOUT changing the cost centre,
 	# so unlike the pre-dimension query this cannot filter on a target
 	# centre; rows that change neither are dropped below instead.
+	moves = query.run(as_dict=True)
+	if pending:
+		moves.append(frappe._dict(pending))
 	moves = [
 		move
-		for move in query.run(as_dict=True)
-		if move.target_cost_center or move.get("leave_project") or any(move.get(f) for f in fields)
+		for move in moves
+		if move.get("target_cost_center") or move.get("leave_project") or any(move.get(f) for f in fields)
 	]
 
 	if fallback is None:
@@ -1838,8 +1859,8 @@ def attribution_timeline(asset_name, fallback=None):
 		if project_changes:
 			events.append((date, order, None, project_changes))
 		other_changes = {f: move.get(f) for f in fields if f not in projects and move.get(f)}
-		if move.target_cost_center or other_changes:
-			events.append((add_days(date, 1), order, move.target_cost_center, other_changes))
+		if move.get("target_cost_center") or other_changes:
+			events.append((add_days(date, 1), order, move.get("target_cost_center"), other_changes))
 	for date, order, cc, dimensions in sorted(events, key=lambda event: (event[0], event[1])):
 		current_cc = cc or current_cc
 		current_dims.update(dimensions)
@@ -1873,10 +1894,14 @@ def cost_centre_timeline(asset_name, fallback=None):
 	return [(start, cc) for start, cc, _dims in attribution_timeline(asset_name, fallback=fallback)]
 
 
-def attribution_on(asset_name, on_date, fallback=None):
+def attribution_on(asset_name, on_date, fallback=None, pending=None):
 	"""(cost centre, dimensions) in force on `on_date`."""
+	return _state_on(attribution_timeline(asset_name, fallback=fallback, pending=pending), on_date)
+
+
+def _state_on(timeline, on_date):
 	held = (None, {})
-	for start, cc, dims in attribution_timeline(asset_name, fallback=fallback):
+	for start, cc, dims in timeline:
 		if start is None or getdate(start) <= getdate(on_date):
 			held = (cc, dims)
 		else:
@@ -1894,11 +1919,14 @@ def dimensions_on(asset_name, on_date, fallback=None):
 	return attribution_on(asset_name, on_date, fallback=fallback)[1]
 
 
-def attribution_split(asset_name, start_date, end_date, amount, company, fallback=None):
+def attribution_split(asset_name, start_date, end_date, amount, company, fallback=None,
+                      pending=None, with_days=False):
 	"""Split `amount` across the centres AND dimensions that held the
 	asset between `start_date` and `end_date`, by days.
 
-	Returns [(cost_centre, dimensions, amount), ...].
+	Returns [(cost_centre, dimensions, amount), ...]; with `with_days`,
+	[(cost_centre, dimensions, amount, segment_start, days), ...] — what
+	the movement preview shows. `pending` is passed to the timeline.
 
 	GAP-021 posts ONE entry per period with a debit per centre:
 	    DR Depreciation Expense (Old CC)  [days before transfer / total]
@@ -1910,32 +1938,34 @@ def attribution_split(asset_name, start_date, end_date, amount, company, fallbac
 	if total_days <= 0:
 		return []
 
-	timeline = attribution_timeline(asset_name, fallback=fallback)
+	timeline = attribution_timeline(asset_name, fallback=fallback, pending=pending)
 	# Boundaries inside the period, plus the state in force when it began.
 	boundaries = []
-	current = attribution_on(asset_name, start, fallback=fallback)
+	current = _state_on(timeline, start)
 	cursor = start
 	for change, cc, dims in timeline:
 		if change is None or getdate(change) <= start or getdate(change) > end:
 			continue
 		days = date_diff(getdate(change), cursor)
 		if days > 0:
-			boundaries.append((current, days))
+			boundaries.append((current, cursor, days))
 		current = (cc, dims)
 		cursor = getdate(change)
 	remaining = date_diff(end, cursor) + 1
 	if remaining > 0:
-		boundaries.append((current, remaining))
+		boundaries.append((current, cursor, remaining))
 
 	out, allocated = [], 0.0
-	for idx, ((cc, dims), seg_days) in enumerate(boundaries):
+	for idx, ((cc, dims), seg_start, seg_days) in enumerate(boundaries):
 		if idx == len(boundaries) - 1:
 			part = fa_module_round(flt(amount) - allocated, company)
 		else:
 			part = fa_module_round(flt(amount) * seg_days / total_days, company)
 		allocated = flt(allocated + part)
-		out.append((cc, dims, part))
-	return [(cc, dims, part) for cc, dims, part in out if flt(part)]
+		out.append((cc, dims, part, seg_start, seg_days))
+	if with_days:
+		return [seg for seg in out if flt(seg[2])]
+	return [(cc, dims, part) for cc, dims, part, _s, _d in out if flt(part)]
 
 
 def cost_centre_split(asset_name, start_date, end_date, amount, company, fallback=None):

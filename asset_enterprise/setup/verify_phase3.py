@@ -81,7 +81,6 @@ def _run():
 		build_prospective_rows,
 		daily_rate,
 		is_prior_fiscal_year,
-		split_period_for_cc_change,
 	)
 
 	# ------------------------------------------------ TC-015: baseline math
@@ -153,9 +152,35 @@ def _run():
 	ok = ok and cdays == 150 and ctotal == 8_500_000
 
 	# ------------------------------------------------------ GAP-021 CC split
-	old_cc, new_cc = split_period_for_cc_change(10_000, 30, 15, company)
-	print(f"gap021 CC split 10000/30d at day 15 -> {old_cc} + {new_cc} {'OK' if (old_cc, new_cc) == (5000.0, 5000.0) else 'FAIL'}")
-	ok = ok and (old_cc, new_cc) == (5000.0, 5000.0)
+	# The one split function the entry posts with (and the movement
+	# preview asks): a transfer on day 15 of a 30-day period, replayed as
+	# a pending movement; the transfer day stays with the old centre (D-009).
+	from asset_enterprise.depreciation import attribution_split
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	frappe.db.savepoint("phase3_gap021")
+	try:
+		centres = frappe.get_all("Cost Center", filters={"company": company, "is_group": 0},
+			pluck="name", limit=2)
+		if len(centres) < 2:
+			centres.append(frappe.get_doc({
+				"doctype": "Cost Center", "company": company, "is_group": 0,
+				"cost_center_name": "Phase3 Split " + frappe.generate_hash(length=6),
+				"parent_cost_center": frappe.db.get_value(
+					"Cost Center", {"company": company, "is_group": 1}, "name"),
+			}).insert(ignore_permissions=True).name)
+		probe = make_test_asset(company, gross=10_000, submit=False)
+		split = attribution_split(
+			probe.name, "2025-06-01", "2025-06-30", 10_000, company, fallback=centres[0],
+			pending={"transaction_date": "2025-06-15", "target_cost_center": centres[-1],
+			         "source_cost_center": centres[0]},
+		)
+		old_cc, new_cc = (split[0][2], split[-1][2]) if len(split) == 2 else (None, None)
+	finally:
+		frappe.db.rollback(save_point="phase3_gap021")
+	gap_ok = (old_cc, new_cc) == (5000.0, 5000.0)
+	print(f"gap021 CC split 10000/30d at day 15 -> {old_cc} + {new_cc} {'OK' if gap_ok else 'FAIL'}")
+	ok = ok and gap_ok
 
 	# ------------------------------------------------------------- §4.7 PYA
 	# Site may lack prior FY records — create temp FYs inside a savepoint.

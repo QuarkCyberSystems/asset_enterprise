@@ -249,6 +249,7 @@ class EnterpriseAssetMovement(AssetMovement):
 				d.asset, self.transaction_date, d.target_cost_center,
 				# this runs after the asset has already been moved
 				old_cost_center=prior,
+				already_applied=1,
 			)
 		except Exception:
 			return

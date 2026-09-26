@@ -228,7 +228,7 @@ def ava_difference_account(asset, transaction_type=None):
 
 @frappe.whitelist()
 def movement_cost_centre_impact(
-	asset, transaction_date, target_cost_center, old_cost_center=None
+	asset, transaction_date, target_cost_center, old_cost_center=None, already_applied=0
 ):
 	"""What a cost-centre transfer will do to depreciation, BEFORE it is
 	submitted.
@@ -238,23 +238,28 @@ def movement_cost_centre_impact(
 	Two things are worth saying out loud:
 
 	  * the period containing the transfer is split by days between the
-	    two centres, in one entry (GAP-021);
+	    centres, in one entry (GAP-021);
 	  * periods that ended BEFORE the transfer stay with the old centre
 	    however late they are posted.
-	"""
-	from frappe.utils import add_days, date_diff, flt, get_first_day, getdate
 
-	from asset_enterprise.depreciation import cost_centre_on
-	from asset_enterprise.rounding import fa_module_round
+	The split is `attribution_split`'s — the function the entry itself
+	posts with — asked with this transfer replayed as a pending movement,
+	so the preview carries the same boundaries (D-009 next-day centre),
+	the same other movements in the period and the same rounding as the
+	ledger, and a Control Category asset (D-053) shows no split at all.
+	A caller running AFTER the transfer was submitted passes
+	`already_applied` (and the centre it left, `old_cost_center`): the
+	history then already contains it.
+	"""
+	from frappe.utils import add_days, flt, getdate
+
+	from asset_enterprise.depreciation import attribution_split, cost_centre_on
 
 	frappe.has_permission("Asset", "read", asset, throw=True)
 	on = getdate(transaction_date)
 	company, old_cc = frappe.db.get_value(
 		"Asset", asset, ["company", "cost_center"]
 	) or (None, None)
-	# `old_cost_center` is passed by callers running AFTER the transfer has
-	# been applied — by then the history already answers with the TARGET,
-	# and the comparison below would short-circuit to "nothing changes".
 	old_cc = old_cost_center or cost_centre_on(asset, on) or old_cc
 	out = {
 		"asset": asset,
@@ -265,6 +270,10 @@ def movement_cost_centre_impact(
 	}
 	if not company or old_cc == target_cost_center:
 		return out
+	pending = None if cint(already_applied) else {
+		"transaction_date": on, "target_cost_center": target_cost_center,
+		"source_cost_center": old_cc,
+	}
 
 	rows = frappe.db.sql(
 		"""
@@ -280,26 +289,28 @@ def movement_cost_centre_impact(
 	)
 	for r in rows:
 		end = getdate(r.schedule_date)
-		days = cint(r.days_in_period) or 1
-		start = add_days(end, -(days - 1))
+		start = add_days(end, -((cint(r.days_in_period) or 1) - 1))
 		if start <= on <= end:
-			# The transfer DAY ITSELF belongs to the centre giving the
-			# asset up, so it counts INSIDE the "before" bucket — the same
-			# rule `cost_centre_timeline` applies by starting the receiving
-			# centre the following day (ruling 07/09, client workbook
-			# 02/09). Without the +1 this preview promised 12/19 for a
-			# 13th-of-the-month transfer while the entry posted 13/18, so
-			# the dialog and the permanent "Effect on depreciation" comment
-			# contradicted the ledger they were describing.
-			before = min(days, max(0, date_diff(on, start) + 1))
-			after = days - before
-			old_part = fa_module_round(flt(r.depreciation_amount) * before / days, company)
+			segments = attribution_split(
+				asset, start, end, flt(r.depreciation_amount), company,
+				fallback=old_cc, pending=pending, with_days=True,
+			)
+			if len({cc for cc, _dims, _part, _from, _days in segments}) < 2:
+				continue  # nothing changes centre inside the period
+			# The transfer day belongs to the centre giving the asset up
+			# (D-009): segments starting after it are the receiving side.
+			before = [seg for seg in segments if getdate(seg[3]) <= on]
+			after = [seg for seg in segments if getdate(seg[3]) > on]
 			out["split"] = {
 				"period_end": str(end),
-				"days_before": before,
-				"days_after": after,
-				"old_amount": old_part,
-				"new_amount": fa_module_round(flt(r.depreciation_amount) - old_part, company),
+				"days_before": sum(seg[4] for seg in before),
+				"days_after": sum(seg[4] for seg in after),
+				"old_amount": flt(sum(seg[2] for seg in before)),
+				"new_amount": flt(sum(seg[2] for seg in after)),
+				"segments": [
+					{"cost_center": cc, "from": str(frm), "days": days, "amount": part}
+					for cc, _dims, part, frm, days in segments
+				],
 			}
 		elif end < on:
 			out["earlier_unposted"].append(

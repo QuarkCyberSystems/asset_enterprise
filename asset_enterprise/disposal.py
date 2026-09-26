@@ -449,7 +449,26 @@ def get_gl_entries_on_asset_disposal_wrapper(core_fn):
 						row["account"] = override
 		except Exception:
 			pass
+		_control_category_legs(asset, gl)
 		return gl
 
 	wrapped._asset_enterprise_wrapper = True
 	return wrapped
+
+
+def _control_category_legs(asset, gl):
+	"""D-053 on core's disposal map (a sale through Sales Invoice): core
+	takes the centre from the asset's CURRENT `cost_center`, which a
+	transfer rewrote. A Control Category asset's legs carry its
+	acquisition attribution, and the asset dimension so the project
+	reader can recognise them. Ordinary assets are left as core built them."""
+	from asset_enterprise.gl_attribution import apply_control_attribution, control_category_attribution
+
+	held = control_category_attribution(asset.name)
+	if held is None:
+		return
+	has_asset_column = frappe.get_meta("GL Entry").has_field("asset")
+	for row in gl:
+		apply_control_attribution(row, held)
+		if has_asset_column:
+			row["asset"] = asset.name
