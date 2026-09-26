@@ -1963,6 +1963,77 @@ def e38():
 	return True, "36-period/500-residual input becomes one 6000 charge, one day, zero NBV; legacy gradual posting refused"
 
 
+
+@case("E-39", "R217 / VR-036 / D-033", "a superseded control row is refused as superseded; a posted control row is never re-priced")
+def e39():
+	ok, detail = e28()
+	assert ok, detail
+	from asset_enterprise import control_category
+	from asset_enterprise.depreciation import _post_one, post_schedule_entries, supersede_and_regenerate
+	from asset_enterprise.setup.verify_tc import _location
+	company = _company()
+	date = getdate(nowdate())
+	asset = frappe.get_doc({"doctype": "Asset", "company": company,
+		"asset_name": "E39 Superseded Control", "asset_category": "E28 Control Tools",
+		"item_code": "E28-CTRL-ITEM", "location": _location(), "asset_type": "Existing Asset",
+		"purchase_amount": 6000, "net_purchase_amount": 6000,
+		"purchase_date": date, "available_for_use_date": date, "calculate_depreciation": 1,
+		"finance_books": [{"depreciation_method": "Straight Line",
+			"total_number_of_depreciations": 12, "frequency_of_depreciation": 1,
+			"depreciation_start_date": date}]})
+	asset.insert(ignore_permissions=True)
+	asset.submit()
+
+	def rows(schedule):
+		return frappe.db.sql(
+			"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+			          ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+			          ds.daily_rate, ds.days_in_period, ds.idx, ds.journal_entry
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ds.parent = %s order by ds.idx""", schedule, as_dict=True)
+
+	# 1. Post the live one-day row, then make the booked row look gradual:
+	# the Control Category check must leave booked history alone.
+	old = frappe.db.get_value("Asset Depreciation Schedule",
+		{"asset": asset.name, "status": "Active", "docstatus": 1}, "name")
+	posted = post_schedule_entries(old, date=str(date))
+	booked = rows(old)[0]
+	assert posted and booked.journal_entry, f"posted={posted}"
+	frappe.db.set_value("Depreciation Schedule", booked.row_name, "days_in_period", 30)
+	booked.days_in_period = 30
+	messages = []
+	skipped = True
+	for shape in (booked, frappe._dict(booked, journal_entry=None)):  # stamped / read from the row
+		try:
+			control_category.validate_posting(asset, shape)
+		except frappe.ValidationError as exc:
+			skipped, messages = False, messages + [str(exc)]
+	# The same gradual shape on an unposted row is still refused.
+	unbooked = frappe._dict(booked, journal_entry=None, row_name=None, name=None)
+	refused_unposted, _msg = _refused(lambda: control_category.validate_posting(asset, unbooked))
+
+	# 2. Supersede the generation (it holds a posted row, so it is kept
+	# for audit). A caller still holding the gradual row as unposted must
+	# get the Superseded Schedule answer, never the Control Category one.
+	supersede_and_regenerate(asset.name, reason="E-39 supersession")
+	assert frappe.db.get_value("Asset Depreciation Schedule", old, "status") == "Superseded"
+	stale = frappe._dict(booked, journal_entry=None)
+	frappe.db.set_value("Depreciation Schedule", stale.row_name, "journal_entry", None)
+	refusals = []
+	for attempt in (lambda: _post_one(stale, date), lambda: post_schedule_entries(old, date=str(date))):
+		try:
+			attempt()
+			return False, "a row on a superseded control schedule posted"
+		except frappe.ValidationError as exc:
+			refusals.append(str(exc))
+	superseded_msg = all("Active" in m and "Superseded" in m and "Control Category" not in m for m in refusals)
+	messages += refusals
+	ok = superseded_msg and skipped and refused_unposted
+	return ok, (f"superseded {old}: {[m[:70] for m in messages[:2]]}; booked row {booked.journal_entry} "
+		f"re-validated without refusal={skipped}; unposted gradual refused={refused_unposted}")
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(
