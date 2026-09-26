@@ -2304,6 +2304,37 @@ def e41():
 	if not refused(lambda: repair(returned, 100), "left to capitalize"):
 		problems.append("a repair on a fully returned line was admitted (M-3)")
 
+	# chief r6 S-1: a debit-note row with no link back to its invoice row
+	# still nets the line (the project ledger's reader nets it there too)
+	unlinked = invoice([1_000])
+	note = make_debit_note(unlinked.name)
+	note.items[0].qty = -1
+	note.items[0].rate = 400
+	note.items[0].purchase_invoice_item = None
+	note.flags.ignore_permissions = True
+	note.insert()
+	note.submit()
+	if frappe.db.get_value("Purchase Invoice Item", note.items[0].name, "purchase_invoice_item"):
+		problems.append("the unlinked debit note kept its row link (fixture)")
+	if not refused(lambda: repair(unlinked, 1_000), "left to capitalize"):
+		problems.append("a repair of 1,000 on a line an unlinked debit note took 400 from was admitted (S-1)")
+	within = repair(unlinked, 600)
+	notes.append(f"unlinked debit note: 1,000 refused, {[flt(ln.amount) for ln in within.consumed_cost_lines]} admitted")
+
+	# cross-app r4: an invoice a standing repair consumed is governed - its
+	# cancellation and any reversal document of it are refused without a
+	# route (the platform vetoes valuation's Create Cancellation)
+	from asset_enterprise.platform import AssetLedgerAdapter
+
+	adapter = AssetLedgerAdapter()
+	answer = adapter.can_cancel(pi) if adapter.governs(pi) else None
+	if not answer or answer.route is not None or two.name not in answer.message:
+		problems.append(f"a consumed invoice is not vetoed while {two.name} stands: {answer}")
+	if adapter.governs(frappe.get_doc("Purchase Invoice", invoice([50]).name)):
+		problems.append("an invoice nothing consumed is governed")
+	if not frappe.db.sql("show index from `tabFinancial Treatment` where Column_name = 'journal_entry'"):
+		problems.append("Financial Treatment.journal_entry is not indexed (cross-app r4, RULES §4)")
+
 	item, warehouse = _stock_item("E41-REPAIR-STOCK"), _warehouse(company)
 	_stock_in(company, item, warehouse, 5, 100)
 	stocked = repair(invoice([300]), 300, stock=[(item, warehouse, 2)])
@@ -2340,6 +2371,17 @@ def e41():
 		if not journal or not standalone_reversal_refusal(journal):
 			problems.append(f"the service journal {journal} is not guarded while {cap.name} stands (M-4)")
 		notes.append(f"service journal {journal} guarded")
+		# the Reversal's mirror journal names the route that exists (cross-app r4)
+		cap.reload()
+		cap.flags.ignore_permissions = True
+		cap.cancel()
+		reversal = frappe.db.get_value("Asset Capitalization", {"reversal_of_capitalization": cap.name}, "name")
+		mirror = frappe.db.get_value("Financial Treatment", {"source_doctype": "Asset Capitalization",
+			"source_name": reversal, "journal_entry": ("is", "set")}, "journal_entry")
+		final = standalone_reversal_refusal(mirror) if mirror else None
+		if not final or "fresh Capitalized Maintenance" not in final[1] or standalone_reversal_refusal(journal):
+			problems.append(f"reversal mirror {mirror}: {final}; original journal after cancel: "
+				f"{standalone_reversal_refusal(journal)}")
 	else:
 		notes.append("no project dimension installed: M-2/M-4 shapes not applicable")
 

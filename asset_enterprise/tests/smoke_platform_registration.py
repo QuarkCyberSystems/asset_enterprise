@@ -140,7 +140,40 @@ class Fixtures:
 			return self.capitalization_issue()
 		if doctype == "Journal Entry":
 			return self.service_journal()
+		if doctype == "Purchase Invoice":
+			return self.consumed_invoice()[0]
 		return None
+
+	def invoice(self, submit=True):
+		from asset_enterprise.setup.test_fixtures import _supplier
+
+		doc = frappe.get_doc({"doctype": "Purchase Invoice", "company": self.company, "supplier": _supplier(),
+			"posting_date": nowdate(), "items": [{"item_code": tc._service_item(), "qty": 1, "rate": 1_000,
+			"expense_account": service_expense_account(self.company),
+			"cost_center": frappe.db.get_value("Company", self.company, "cost_center")}]})
+		doc.flags.ignore_permissions = True
+		doc.insert()
+		if submit:
+			doc.submit()
+		return doc
+
+	def consumed_invoice(self):
+		"""An invoice a standing capitalized repair consumes: governed while
+		the repair stands (cross-app r4 X2)."""
+		pi = self.invoice()
+		asset = tc._plain_asset(self.company, self.cat, f"AE-PLAT Consumer {_tag()}", 50_000)
+		asset.submit()
+		repair = frappe.get_doc({
+			"doctype": "Asset Repair", "asset": asset.name, "company": self.company, "failure_date": nowdate(),
+			"repair_status": "Completed", "completion_date": nowdate(), "capitalize_repair_cost": 1,
+			"cost_center": frappe.db.get_value("Asset", asset.name, "cost_center"),
+			"invoices": [{"purchase_invoice": pi.name, "expense_account": service_expense_account(self.company),
+				"repair_cost": 600}],
+		})
+		repair.flags.ignore_permissions = True
+		repair.insert()
+		repair.submit()
+		return frappe.get_doc("Purchase Invoice", pi.name), repair
 
 	def service_journal(self):
 		"""The journal a Capitalized Maintenance posts its service cost
@@ -175,6 +208,8 @@ class Fixtures:
 			return self.plain_issue(submit=False)
 		if doctype == "Journal Entry":
 			return self.plain_journal(submit=False)
+		if doctype == "Purchase Invoice":
+			return self.invoice(submit=False)
 		if doctype == "Scrap Transaction":
 			asset = tc._plain_asset(self.company, self.cat, f"AE-PLAT Scrap Draft {_tag()}", 40_000)
 			asset.submit()
@@ -192,6 +227,8 @@ class Fixtures:
 			return self.plain_issue()
 		if doctype == "Journal Entry":
 			return self.plain_journal()
+		if doctype == "Purchase Invoice":
+			return self.invoice()
 		return None
 
 	def with_dependent(self, doctype):
@@ -249,6 +286,19 @@ def _a_cases(fixtures, adapter, checks):
 		checks("A-08 the service journal's cancel is refused while its capitalization stands, naming it",
 			refusal is not None and refusal.route is None and "cannot be reversed or cancelled on its own" in refusal.message,
 			str(refusal))
+
+	# A-09 an invoice a standing repair consumed is not reversed while the
+	# repair stands - no route, so the platform vetoes valuation's
+	# Create Cancellation too (cross-app r4 X2; core refuses native cancel)
+	with isolated():
+		invoice, repair = fixtures.consumed_invoice()
+		refusal = adapter.can_cancel(invoice)
+		checks("A-09 a consumed invoice's cancel is refused without a route, naming the repair",
+			refusal is not None and refusal.route is None and repair.name in refusal.message, str(refusal))
+		state = ui_state("Purchase Invoice", invoice.name)
+		checks("A-09 ui_state hides Cancel and offers the repair",
+			state["hide_cancel"] and [a["label"] for a in state["actions"]] == [f"Open Asset Repair {repair.name}"],
+			str(state["actions"]))
 
 	# A-07 the receipt's cascade hook is declared, so the overlap check passes
 	checks("A-07 pr_before_cancel is declared as a legacy hook", ("Purchase Receipt", "before_cancel") in get_registration().legacy_hooks)
