@@ -105,8 +105,21 @@ def depreciation_journal(doc, event=None):
 
 
 def enterprise_site(doc=None, event=None):
-	"""A repost on an Enterprise Assets site: it rebuilds the GL of every
-	voucher its walk reaches through that voucher's `get_gl_entries` -
-	receipts and invoices with asset legs included - and which vouchers it
-	reaches is not known at its submit."""
+	"""Any document of the rule's doctypes on an Enterprise Assets site:
+	- a receipt or invoice - `consumption` reads every invoice line by its
+	  GL row's voucher row (P8), whatever the row is (end review 0.2 M-1);
+	- a repost - it rebuilds the GL of every voucher its walk reaches
+	  through that voucher's `get_gl_entries`, and which vouchers it
+	  reaches is not known at its submit."""
 	return enterprise_enabled()
+
+
+def landed_cost_rebuilds_gl(doc=None, event=None):
+	"""A Landed Cost Voucher that rebuilds its receipts' GL inside its own
+	submit or cancel: Immutable Ledger off (upstream `update_landed_cost`
+	-> `make_gl_entries`, through `get_gl_entries` and `get_gl_dict`) on
+	an Enterprise Assets site. With the ledger on it creates a repost,
+	which is gated at its own submit and start (end review 0.2 S-1)."""
+	from qcs_platform.core.guards import is_immutable_ledger_enabled
+
+	return enterprise_enabled() and not is_immutable_ledger_enabled()

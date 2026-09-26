@@ -365,6 +365,35 @@ def _routed_issue_case(fixtures, adapter, checks):
 			checks("X-AE valuation's Cancellation document is refused at validate", "asset_enterprise" in exc.owners, str(exc.owners))
 
 
+def _capability_use_cases(checks):
+	"""End review 0.2 M-1 / S-1: the P8 use covers every receipt and
+	invoice on an Enterprise Assets site (consumption reads every invoice
+	line by its voucher row), the purchase GL socket stays on asset rows,
+	and a Landed Cost Voucher with the Immutable Ledger off is a rebuilder."""
+	from asset_enterprise import platform_sockets as ps
+	from asset_enterprise.platform import GL_VOUCHER_ROW, PURCHASE_GL, capability_uses
+
+	rules = capability_uses()
+	purchases = {"Purchase Receipt", "Purchase Invoice"}
+	p8 = [r for r in rules if set(r.doctypes) == purchases and GL_VOUCHER_ROW in r.names]
+	checks(
+		"M-1 P8 is relied on for every receipt and invoice on an Enterprise Assets site (submit)",
+		len(p8) == 1 and p8[0].applies is ps.enterprise_site and p8[0].events == ("submit",),
+		str(p8),
+	)
+	gl = [r for r in rules if set(r.doctypes) == purchases and PURCHASE_GL in r.names]
+	checks("M-1 the purchase GL socket stays on receipts / invoices with an asset row", len(gl) == 1 and gl[0].applies is ps.purchase_with_asset_rows, str(gl))
+	service = frappe.get_doc({"doctype": "Purchase Invoice", "items": [{"item_name": "service", "qty": 1}]})
+	checks("M-1 ... a service invoice (no asset row) is covered by the P8 rule, not by the socket's", p8 and p8[0].applies(service, "submit") and not ps.purchase_with_asset_rows(service, "submit"))
+	lcv = [r for r in rules if "Landed Cost Voucher" in r.doctypes]
+	checks(
+		"S-1 Landed Cost Voucher declared a rebuilder: P8 and the purchase GL socket, submit and cancel, Immutable Ledger off",
+		len(lcv) == 1 and set(lcv[0].names) == {GL_VOUCHER_ROW, PURCHASE_GL} and set(lcv[0].events) == {"submit", "cancel"}
+		and lcv[0].applies is ps.landed_cost_rebuilds_gl,
+		str(lcv),
+	)
+
+
 def run():
 	from qcs_platform.testkit import Checks, contract, throwaway_site_only
 
@@ -381,6 +410,7 @@ def run():
 		contract.ledger_adapter(adapter, fixtures, checks)
 		_a_cases(fixtures, adapter, checks)
 		_routed_issue_case(fixtures, adapter, checks)
+		_capability_use_cases(checks)
 	finally:
 		frappe.db.rollback()
 	checks.summary()

@@ -179,7 +179,8 @@ DEPRECIATION_LINK = "depreciation_journal_link_policy"
 # P8, the platform's GL voucher row: gl_attribution finds a purchase leg's
 # line through the GL row's voucher_detail_no, which core leaves blank on
 # the asset legs - without P8 the attribution finds no line and posts the
-# leg unattributed, silently (seen on a site whose get_gl_dict drifted).
+# leg unattributed, silently (seen on a site whose get_gl_dict drifted);
+# and consumption reads every invoice line by it (end review 0.2 M-1).
 GL_VOUCHER_ROW = "P8"
 REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, DEPRECIATION_LINK, GL_VOUCHER_ROW)
 
@@ -192,21 +193,31 @@ PLATFORM_TOO_OLD = (
 
 def capability_uses():
 	"""Which postings rely on which socket (step-0 review S-1), answered on
-	the document being posted or cancelled - new ones included:
+	the document being posted or cancelled - new ones included. The rule
+	(end review 0.2 M-1): a use covers every document whose ledger rows this
+	app later READS through the capability, not only the ones it writes or
+	attributes at submit, and every rebuilder of those rows.
+	- every receipt / invoice on an Enterprise Assets site: P8 (submit) -
+	  `consumption` keys each invoice line on its GL row's
+	  `voucher_detail_no` (a capitalizing repair or maintenance consumes
+	  the line, a debit note nets against it), and without P8 a two-row
+	  service invoice posts one merged row with no line;
 	- a receipt / invoice with a fixed-asset row: its GL's asset legs
-	  (submit: the purchase GL socket and P8, which gives the legs the
-	  voucher row the attribution reads), its assets on cancel;
+	  (submit: the purchase GL socket), its assets on cancel;
 	- a Depreciation Entry journal with an asset row: its schedule-row link
 	  (submit);
 	- a repost on an Enterprise Assets site: it rebuilds reached receipts'
-	  and invoices' GL through `get_gl_entries` (submit)."""
+	  and invoices' GL through `get_gl_entries` and `get_gl_dict` (submit);
+	- a Landed Cost Voucher with the Immutable Ledger off on an Enterprise
+	  Assets site: it rebuilds its receipts' GL inside its own submit and
+	  cancel (upstream `update_landed_cost` -> `make_gl_entries`; with the
+	  ledger on it goes through a repost, gated above) (end review 0.2 S-1)."""
 	from asset_enterprise import platform_sockets as ps
 
 	purchases = ("Purchase Receipt", "Purchase Invoice")
 	return (
-		CapabilityUse(
-			doctypes=purchases, names=(PURCHASE_GL, GL_VOUCHER_ROW), events=("submit",), applies=ps.purchase_with_asset_rows
-		),
+		CapabilityUse(doctypes=purchases, names=(GL_VOUCHER_ROW,), events=("submit",), applies=ps.enterprise_site),
+		CapabilityUse(doctypes=purchases, names=(PURCHASE_GL,), events=("submit",), applies=ps.purchase_with_asset_rows),
 		CapabilityUse(doctypes=purchases, names=(RECEIPT_ASSETS,), events=("cancel",), applies=ps.purchase_with_asset_rows),
 		CapabilityUse(doctypes=("Journal Entry",), names=(DEPRECIATION_LINK,), events=("submit",), applies=ps.depreciation_journal),
 		CapabilityUse(
@@ -214,6 +225,12 @@ def capability_uses():
 			names=(PURCHASE_GL, GL_VOUCHER_ROW),
 			events=("submit",),
 			applies=ps.enterprise_site,
+		),
+		CapabilityUse(
+			doctypes=("Landed Cost Voucher",),
+			names=(PURCHASE_GL, GL_VOUCHER_ROW),
+			events=("submit", "cancel"),
+			applies=ps.landed_cost_rebuilds_gl,
 		),
 	)
 
