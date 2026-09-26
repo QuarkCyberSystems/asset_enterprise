@@ -15,137 +15,6 @@ from frappe.utils import cint, date_diff, flt, month_diff, nowdate
 from asset_enterprise.rounding import fa_module_round
 
 
-def _posted_ft_sums(asset_name):
-	# Row-backed engine depreciation (source = Asset Depreciation
-	# Schedule) is ALREADY counted through the posted schedule rows —
-	# folding its accum_delta again double-counts (Phase 11 F0 fix).
-	# Standalone Depreciation FTs (e.g. Expense-Immediately on merge)
-	# have no row and must keep folding.
-	row = frappe.db.sql(
-		"""
-		select
-			coalesce(sum(hav_delta), 0)         as hav_delta,
-			coalesce(sum(case when source_doctype = 'Asset Depreciation Schedule'
-			                  then 0 else accum_delta end), 0) as accum_delta,
-			coalesce(sum(life_delta_months), 0) as life_delta_months
-		from `tabFinancial Treatment`
-		where asset = %s
-		  and status = 'Posted'
-		  and ifnull(reversal_reference, '') = ''
-		""",
-		asset_name,
-		as_dict=True,
-	)[0]
-	return row
-
-
-def _posted_depreciation_total(asset_name):
-	"""Sum of posted schedule-row amounts from the ACTIVE schedule only.
-
-	Posted rows are copied verbatim into every superseding generation
-	(GAP-031/032), so the Active schedule alone is the complete record —
-	summing across Superseded generations would double-count.
-	"""
-	return flt(
-		frappe.db.sql(
-			"""
-			select coalesce(sum(ds.depreciation_amount), 0)
-			from `tabDepreciation Schedule` ds
-			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-			where ads.asset = %s
-			  and ads.docstatus = 1
-			  and ads.status = 'Active'
-			  and ifnull(ds.journal_entry, '') != ''
-			  and ifnull(ds.reversal_journal_entry, '') = ''
-			""",
-			asset_name,
-		)[0][0]
-	)
-
-
-def _category_accounts(asset):
-	row = frappe.db.get_value(
-		"Asset Category Account",
-		{"parent": asset.asset_category, "company_name": asset.company},
-		["fixed_asset_account", "accumulated_depreciation_account"],
-		as_dict=True,
-	)
-	return row or frappe._dict({})
-
-
-def _counted_vouchers(asset_name):
-	"""Journal Entries and GL vouchers already represented in the fold —
-	schedule rows and Financial Treatments. Anything else on the asset's
-	accounts is a manual posting.
-
-	Treatments that post under their OWN voucher (Capitalized Repair,
-	GA-0006 settlement runs — `voucher_type`/`voucher_no` on the FT) are
-	counted too: without this, the manual-GL sweep re-added their GL as
-	an "unrepresented" manual posting and the derived HAV double-counted
-	the capitalized cost (client, 2026-08-25)."""
-	names = set()
-	for je, rev in frappe.db.sql(
-		"""select ds.journal_entry, ds.reversal_journal_entry
-		   from `tabDepreciation Schedule` ds
-		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-		   where ads.asset = %s""",
-		asset_name,
-	):
-		names.update(x for x in (je, rev) if x)
-	for row in frappe.get_all(
-		"Financial Treatment",
-		filters={"asset": asset_name},
-		fields=["journal_entry", "voucher_no"],
-	):
-		if row.journal_entry:
-			names.add(row.journal_entry)
-		if row.voucher_no:
-			names.add(row.voucher_no)
-	return names
-
-
-def _manual_gl_adjustments(asset):
-	"""§5.1 / TC-010: the values are LEDGER-derived. A journal entry
-	posted straight to the asset's fixed-asset or accumulated-
-	depreciation account — outside the schedule and outside any
-	Financial Treatment — still moves the asset's value, and the
-	Recalculate button must pick it up."""
-	accounts = _category_accounts(asset)
-	if not (accounts.get("fixed_asset_account") or accounts.get("accumulated_depreciation_account")):
-		return 0.0, 0.0
-
-	rows = frappe.db.sql(
-		"""select gle.account, gle.voucher_no, gle.debit, gle.credit
-		   from `tabGL Entry` gle
-		   where gle.is_cancelled = 0
-		     and gle.against_voucher_type = 'Asset'
-		     and gle.against_voucher = %s
-		     and gle.account in %s""",
-		(
-			asset.name,
-			tuple(
-				a
-				for a in (
-					accounts.get("fixed_asset_account"),
-					accounts.get("accumulated_depreciation_account"),
-				)
-				if a
-			),
-		),
-		as_dict=True,
-	)
-	counted = _counted_vouchers(asset.name)
-	hav_delta = accum_delta = 0.0
-	for row in rows:
-		if row.voucher_no in counted:
-			continue
-		if row.account == accounts.get("fixed_asset_account"):
-			hav_delta += flt(row.debit) - flt(row.credit)
-		else:
-			accum_delta += flt(row.credit) - flt(row.debit)
-	return hav_delta, accum_delta
-
-
 def calendar_remaining_life_months(asset):
 	"""C33: original UL − elapsed months since the posting-basis date.
 	Calendar time to the end of life — what a merged component still
@@ -198,31 +67,12 @@ def _remaining_life_months(asset, life_delta_months):
 def fold_asset_values(asset_name):
 	"""Treatment-based preview/audit; never writes operational values."""
 	asset = frappe.get_doc("Asset", asset_name)
-	company = asset.company
-	ft = _posted_ft_sums(asset_name)
-
-	manual_hav, manual_accum = _manual_gl_adjustments(asset)
-
-	hav = fa_module_round(
-		flt(asset.net_purchase_amount) + flt(ft.hav_delta) + flt(manual_hav), company
+	values = AssetValueBatch([asset_name]).fold(asset_name)
+	rul_months = _remaining_life_months(asset, 0)
+	values.update(
+		remaining_useful_life_months=rul_months,
+		remaining_useful_life_years=flt(rul_months / 12, 2),
 	)
-	accum = fa_module_round(
-		flt(asset.opening_accumulated_depreciation)
-		+ _posted_depreciation_total(asset_name)
-		+ flt(ft.accum_delta)
-		+ flt(manual_accum),
-		company,
-	)
-	nbv = fa_module_round(hav - accum, company)
-	rul_months = _remaining_life_months(asset, ft.life_delta_months)
-
-	values = {
-		"historical_asset_value": hav,
-		"accumulated_depreciation_value": accum,
-		"net_book_value": nbv,
-		"remaining_useful_life_months": rul_months,
-		"remaining_useful_life_years": flt(rul_months / 12, 2),
-	}
 	return values
 
 
@@ -315,34 +165,199 @@ def assert_nbv_covers_reversal(asset_name, amount, context=None):
 
 def gl_asset_values(asset_name):
 	"""C1/D1: strictly dimension-keyed posted balances; never infer a key."""
-	return _gl_asset_balances(asset_name, reference_key=False)
+	return AssetValueBatch([asset_name]).gl(asset_name)
 
 
 def reference_gl_asset_values(asset_name):
 	"""Independent reference-key comparison for detecting attribution gaps."""
-	return _gl_asset_balances(asset_name, reference_key=True)
+	return AssetValueBatch([asset_name]).reference(asset_name)
 
 
-def _gl_asset_balances(asset_name, reference_key):
-	asset = frappe.get_doc("Asset", asset_name)
-	accounts = _category_accounts(asset)
-	fa = accounts.get("fixed_asset_account")
-	accum = accounts.get("accumulated_depreciation_account")
-	if fa and fa == accum:
-		frappe.throw("Fixed Asset and Accumulated Depreciation accounts must be distinct "
-			"to derive asset balances from GL. Review the asset category accounts.")
-	key_condition = "against_voucher_type = 'Asset' and against_voucher = %(asset)s" if reference_key else "asset = %(asset)s"
-	balances = frappe.db.sql(
-		f"""select account, sum(debit - credit) as balance
-		    from `tabGL Entry`
-		    where company = %(company)s and is_cancelled = 0
-		      and {key_condition} and account in %(accounts)s
-		    group by account""",
-		{"company": asset.company, "asset": asset_name, "accounts": tuple(a for a in (fa, accum) if a) or ("",)},
-		as_dict=True,
-	)
-	by_account = {r.account: flt(r.balance) for r in balances}
-	hav = fa_module_round(by_account.get(fa, 0), asset.company)
-	accumulated = fa_module_round(-by_account.get(accum, 0), asset.company)
-	return {"historical_asset_value": hav, "accumulated_depreciation_value": accumulated,
-		"net_book_value": fa_module_round(hav - accumulated, asset.company)}
+class AssetValueBatch:
+	"""The three value readings — the treatment fold, the dimension-keyed
+	GL balances and the reference-keyed GL balances — for a SET of assets
+	in a fixed number of set-based queries (RULES §4: no per-asset query
+	loop on an Asset / GL path). The single-asset functions above are a
+	batch of one, so the arithmetic exists once.
+
+	Remaining useful life is not part of it: no set reader needs it, and
+	`fold_asset_values` adds it for the one asset it is asked about.
+	"""
+
+	def __init__(self, asset_names):
+		self.names = tuple(dict.fromkeys(n for n in asset_names if n))
+		self.assets = {}
+		if not self.names:
+			return
+		params = {"assets": self.names}
+		self.assets = {
+			a.name: a
+			for a in frappe.db.sql(
+				"""select name, company, asset_category, net_purchase_amount,
+				          opening_accumulated_depreciation
+				   from `tabAsset` where name in %(assets)s""",
+				params,
+				as_dict=True,
+			)
+		}
+		self.accounts = {
+			(r.parent, r.company_name): r
+			for r in frappe.db.sql(
+				"""select parent, company_name, fixed_asset_account, accumulated_depreciation_account
+				   from `tabAsset Category Account`
+				   where parenttype = 'Asset Category'
+				     and parent in (select asset_category from `tabAsset` where name in %(assets)s)""",
+				params,
+				as_dict=True,
+			)
+		}
+		# `_posted_ft_sums`, grouped
+		self.ft = {
+			r.asset: r
+			for r in frappe.db.sql(
+				"""select asset,
+				          coalesce(sum(hav_delta), 0) as hav_delta,
+				          coalesce(sum(case when source_doctype = 'Asset Depreciation Schedule'
+				                            then 0 else accum_delta end), 0) as accum_delta
+				   from `tabFinancial Treatment`
+				   where asset in %(assets)s and status = 'Posted'
+				     and ifnull(reversal_reference, '') = ''
+				   group by asset""",
+				params,
+				as_dict=True,
+			)
+		}
+		# `_posted_depreciation_total` and `_counted_vouchers`' schedule half:
+		# one read of every generation's rows
+		self.posted_depreciation, self.counted = {}, {}
+		for asset, status, docstatus, je, rev, amount in frappe.db.sql(
+			"""select ads.asset, ads.status, ads.docstatus, ds.journal_entry,
+			          ds.reversal_journal_entry, ds.depreciation_amount
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset in %(assets)s""",
+			params,
+		):
+			self.counted.setdefault(asset, set()).update(x for x in (je, rev) if x)
+			if status == "Active" and docstatus == 1 and je and not rev:
+				self.posted_depreciation[asset] = self.posted_depreciation.get(asset, 0.0) + flt(amount)
+		# `_counted_vouchers`' treatment half
+		for asset, je, voucher in frappe.db.sql(
+			"""select asset, journal_entry, voucher_no from `tabFinancial Treatment`
+			   where asset in %(assets)s""",
+			params,
+		):
+			self.counted.setdefault(asset, set()).update(x for x in (je, voucher) if x)
+		# reference-keyed rows (`against_voucher`), per voucher so the fold
+		# can drop the counted ones; the reference balance sums them all
+		self.reference_rows = {}
+		for asset, company, account, voucher_no, balance in frappe.db.sql(
+			"""select against_voucher, company, account, voucher_no, sum(debit - credit)
+			   from `tabGL Entry`
+			   where is_cancelled = 0 and against_voucher_type = 'Asset'
+			     and against_voucher in %(assets)s
+			   group by against_voucher, company, account, voucher_no""",
+			params,
+		):
+			self.reference_rows.setdefault(asset, []).append((company, account, voucher_no, flt(balance)))
+		self._dimension_rows = None  # read on the first `gl()` — the fold never needs it
+
+	def _asset(self, name):
+		asset = self.assets.get(name)
+		if not asset:
+			frappe.throw(frappe._("Asset {0} not found").format(name), frappe.DoesNotExistError)
+		return asset
+
+	def category_accounts(self, asset):
+		return self.accounts.get((asset.asset_category, asset.company)) or frappe._dict({})
+
+	def fold(self, name):
+		"""`fold_asset_values` without remaining life."""
+		asset = self._asset(name)
+		company = asset.company
+		ft = self.ft.get(name) or frappe._dict(hav_delta=0, accum_delta=0)
+		manual_hav, manual_accum = self._manual_gl_adjustments(asset)
+		hav = fa_module_round(
+			flt(asset.net_purchase_amount) + flt(ft.hav_delta) + flt(manual_hav), company
+		)
+		accum = fa_module_round(
+			flt(asset.opening_accumulated_depreciation)
+			+ flt(self.posted_depreciation.get(name))
+			+ flt(ft.accum_delta)
+			+ flt(manual_accum),
+			company,
+		)
+		return {
+			"historical_asset_value": hav,
+			"accumulated_depreciation_value": accum,
+			"net_book_value": fa_module_round(hav - accum, company),
+		}
+
+	def _manual_gl_adjustments(self, asset):
+		"""§5.1 / TC-010: the values are LEDGER-derived. A journal entry
+		posted straight to the asset's fixed-asset or accumulated-
+		depreciation account — outside the schedule and outside any
+		Financial Treatment — still moves the asset's value, and the
+		Recalculate button must pick it up."""
+		accounts = self.category_accounts(asset)
+		fa, accum = accounts.get("fixed_asset_account"), accounts.get("accumulated_depreciation_account")
+		if not (fa or accum):
+			return 0.0, 0.0
+		counted = self.counted.get(asset.name, set())
+		hav_delta = accum_delta = 0.0
+		for _company, account, voucher_no, balance in self.reference_rows.get(asset.name, ()):
+			if voucher_no in counted or account not in (fa, accum):
+				continue
+			if account == fa:
+				hav_delta += balance
+			else:
+				accum_delta -= balance
+		return hav_delta, accum_delta
+
+	def acquisition_key_missing(self, name):
+		"""No live GL row keyed to the asset on its fixed-asset account."""
+		asset = self._asset(name)
+		fa = self.category_accounts(asset).get("fixed_asset_account")
+		self.gl(name)
+		return not any(
+			company == asset.company and account == fa
+			for company, account, _balance in self._dimension_rows.get(name, ())
+		)
+
+	def gl(self, name):
+		"""C1/D1: strictly dimension-keyed posted balances."""
+		if self._dimension_rows is None:
+			self._dimension_rows = {}
+			for asset, company, account, balance in frappe.db.sql(
+				"""select asset, company, account, sum(debit - credit)
+				   from `tabGL Entry`
+				   where is_cancelled = 0 and asset in %(assets)s
+				   group by asset, company, account""",
+				{"assets": self.names},
+			):
+				self._dimension_rows.setdefault(asset, []).append((company, account, flt(balance)))
+		return self._balances(name, self._dimension_rows.get(name, ()))
+
+	def reference(self, name):
+		"""Reference-keyed balances, for detecting attribution gaps."""
+		return self._balances(
+			name,
+			[(company, account, balance) for company, account, _v, balance in self.reference_rows.get(name, ())],
+		)
+
+	def _balances(self, name, rows):
+		asset = self._asset(name)
+		accounts = self.category_accounts(asset)
+		fa = accounts.get("fixed_asset_account")
+		accum = accounts.get("accumulated_depreciation_account")
+		if fa and fa == accum:
+			frappe.throw("Fixed Asset and Accumulated Depreciation accounts must be distinct "
+				"to derive asset balances from GL. Review the asset category accounts.")
+		by_account = {}
+		for company, account, balance in rows:
+			if company == asset.company and account in (fa, accum):
+				by_account[account] = by_account.get(account, 0.0) + balance
+		hav = fa_module_round(by_account.get(fa, 0), asset.company)
+		accumulated = fa_module_round(-by_account.get(accum, 0), asset.company)
+		return {"historical_asset_value": hav, "accumulated_depreciation_value": accumulated,
+			"net_book_value": fa_module_round(hav - accumulated, asset.company)}

@@ -1684,7 +1684,7 @@ def backfill_rate_breakdown(company=None, asset=None, dry_run=1):
 	return rows
 
 
-def backfill_generation_basis(company=None, asset=None, dry_run=1):
+def backfill_generation_basis(company=None, asset=None, dry_run=1, modified_after=None, commit=True):
 	"""Stamp Generation Basis on schedules generated before the field
 	existed (16/09), DERIVED from what each generation already records:
 
@@ -1705,10 +1705,17 @@ def backfill_generation_basis(company=None, asset=None, dry_run=1):
 	rate x remaining days = base AND value - accumulated - salvage =
 	base, to the cent — so a generation whose history cannot be
 	reconstructed is reported, not guessed.
+
+	`modified_after` limits the scan to generations changed since a
+	previous run (the migrate path keeps that mark, so a generation found
+	underivable once is not re-derived on every migrate); `commit=False`
+	leaves the transaction to the caller.
 	"""
 	from asset_enterprise.depreciation import _row_segments
 
 	filters = {"docstatus": 1, "basis_daily_rate": ("in", (0, None))}
+	if modified_after:
+		filters["modified"] = (">", modified_after)
 	if company:
 		filters["company"] = company
 	if asset:
@@ -1782,7 +1789,7 @@ def backfill_generation_basis(company=None, asset=None, dry_run=1):
 				"basis_depreciable_base": base, "basis_remaining_days": remaining,
 				"basis_daily_rate": rate, "basis_end_of_life": end_of_life,
 			}, update_modified=False)
-	if not dry_run:
+	if not dry_run and commit:
 		frappe.db.commit()
 	print(f"{len(gens)} generation(s) without a basis: {len(written)} derived, {len(skipped)} left blank")
 	for name, a, st, rf, nbv, rem, rate in written[:10]:
@@ -2006,24 +2013,22 @@ def audit_gl_value_keying(company=None):
 	before enabling the GL-derived build on an existing site. Repair the
 	listed acquisition keys with backfill_asset_dimension after review.
 	"""
-	from asset_enterprise.asset_values import (
-		_category_accounts, fold_asset_values, gl_asset_values, reference_gl_asset_values,
-	)
+	from asset_enterprise.asset_values import AssetValueBatch
+
 	filters = {"docstatus": 1, "is_group_node": 0}
 	if company:
 		filters["company"] = company
 	issues, checked = [], 0
-	for name in frappe.get_all("Asset", filters=filters, pluck="name"):
-		asset = frappe.get_doc("Asset", name)
+	names = frappe.get_all("Asset", filters=filters, pluck="name")
+	values = AssetValueBatch(names)  # set-based: fixed query count
+	for name in names:
+		asset = values.assets[name]
 		checked += 1
 		try:
-			ledger = gl_asset_values(name)
-			reference = reference_gl_asset_values(name)
-			fold = fold_asset_values(name)
-			fa = _category_accounts(asset).get("fixed_asset_account")
-			missing = not frappe.db.exists("GL Entry", {
-				"company": asset.company, "asset": name, "account": fa, "is_cancelled": 0,
-			})
+			ledger = values.gl(name)
+			reference = values.reference(name)
+			fold = values.fold(name)
+			missing = values.acquisition_key_missing(name)
 			fold_diff = {key: fa_module_round(fold[key] - ledger[key], asset.company) for key in ledger}
 			key_diff = {key: fa_module_round(reference[key] - ledger[key], asset.company) for key in ledger}
 			if missing or any(fold_diff.values()) or any(key_diff.values()):

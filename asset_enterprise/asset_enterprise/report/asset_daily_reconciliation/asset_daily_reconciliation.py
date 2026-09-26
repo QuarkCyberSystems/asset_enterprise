@@ -11,24 +11,31 @@ from frappe.utils import flt
 def execute(filters=None):
 	filters = filters or {}
 	from asset_enterprise.accounts import get_last_period_tolerance
-	from asset_enterprise.asset_values import fold_asset_values, gl_asset_values, reference_gl_asset_values
+	from asset_enterprise.asset_values import AssetValueBatch
 	from asset_enterprise.rounding import fa_module_round
 
 	asset_filters = {"docstatus": 1}
 	if filters.get("company"):
 		asset_filters["company"] = filters["company"]
 
-	rows = []
-	for a in frappe.get_all(
+	assets = frappe.get_all(
 		"Asset",
 		filters=asset_filters,
 		fields=["name", "company", "historical_asset_value", "accumulated_depreciation_value", "net_book_value"],
-	):
-		derived = fold_asset_values(a.name)
-		ledger = gl_asset_values(a.name)
-		reference = reference_gl_asset_values(a.name)
+	)
+	# RULES §4: every reading is set-based — a fixed number of queries
+	# whatever the asset count — then compared in memory.
+	values = AssetValueBatch([a.name for a in assets])
+	tolerances = {}
+	rows = []
+	for a in assets:
+		derived = values.fold(a.name)
+		ledger = values.gl(a.name)
+		reference = values.reference(a.name)
+		if a.company not in tolerances:
+			tolerances[a.company] = get_last_period_tolerance(a.company)
+		tolerance = tolerances[a.company]
 		key_mismatch = any(fa_module_round(reference[key] - ledger[key], a.company) for key in ledger)
-		tolerance = get_last_period_tolerance(a.company)
 		hav_diff = fa_module_round(ledger["historical_asset_value"] - flt(a.historical_asset_value), a.company)
 		nbv_diff = fa_module_round(ledger["net_book_value"] - flt(a.net_book_value), a.company)
 		accum_diff = fa_module_round(ledger["accumulated_depreciation_value"] - flt(a.accumulated_depreciation_value), a.company)

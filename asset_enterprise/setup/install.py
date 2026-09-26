@@ -55,10 +55,34 @@ def sync_customizations():
 	register_asset_accounting_dimension()
 	rebuild_asset_tree_nodes()
 	extend_assets_sidebar()
-	from asset_enterprise.repair import backfill_generation_basis, backfill_rate_breakdown
+	from asset_enterprise.repair import backfill_rate_breakdown
 
 	backfill_rate_breakdown(dry_run=0)
-	backfill_generation_basis(dry_run=0)
+	backfill_generation_basis_since_last_migrate()
+
+
+GENERATION_BASIS_MARK = "asset_enterprise_generation_basis_scanned_to"
+
+
+def backfill_generation_basis_since_last_migrate():
+	"""Derive a Generation Basis only for generations changed since the
+	previous migrate. Every generation made since the fields exist is
+	stamped when it is generated, so what this finds after the first run
+	is legacy residue the derivation could not reconstruct — reported
+	then, and not re-scanned (three queries each) on every later migrate.
+	The mark is the newest submitted generation's `modified`; the bench
+	command `repair.backfill_generation_basis` still re-scans everything
+	on demand. Migrate owns the transaction, so nothing commits here."""
+	from asset_enterprise.repair import backfill_generation_basis
+
+	since = frappe.db.get_global(GENERATION_BASIS_MARK)
+	newest = frappe.db.sql(
+		"select max(modified) from `tabAsset Depreciation Schedule` where docstatus = 1"
+	)[0][0]
+	if not newest or (since and str(newest) <= since):
+		return
+	backfill_generation_basis(dry_run=0, modified_after=since or None, commit=False)
+	frappe.db.set_global(GENERATION_BASIS_MARK, str(newest))
 
 
 ENTERPRISE_SIDEBAR_GROUP = "Enterprise Assets"
