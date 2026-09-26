@@ -176,7 +176,12 @@ PLATFORM_CONTRACT = "0.2"
 PURCHASE_GL = "purchase_gl_post_processors"
 RECEIPT_ASSETS = "receipt_asset_delete_policy"
 DEPRECIATION_LINK = "depreciation_journal_link_policy"
-REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, DEPRECIATION_LINK)
+# P8, the platform's GL voucher row: gl_attribution finds a purchase leg's
+# line through the GL row's voucher_detail_no, which core leaves blank on
+# the asset legs - without P8 the attribution finds no line and posts the
+# leg unattributed, silently (seen on a site whose get_gl_dict drifted).
+GL_VOUCHER_ROW = "P8"
+REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, DEPRECIATION_LINK, GL_VOUCHER_ROW)
 
 PLATFORM_TOO_OLD = (
 	"asset_enterprise is written against qcs_platform contract {0} (Build 0.2 step 4 or later: the purchase GL, "
@@ -189,7 +194,8 @@ def capability_uses():
 	"""Which postings rely on which socket (step-0 review S-1), answered on
 	the document being posted or cancelled - new ones included:
 	- a receipt / invoice with a fixed-asset row: its GL's asset legs
-	  (submit), its assets on cancel;
+	  (submit: the purchase GL socket and P8, which gives the legs the
+	  voucher row the attribution reads), its assets on cancel;
 	- a Depreciation Entry journal with an asset row: its schedule-row link
 	  (submit);
 	- a repost on an Enterprise Assets site: it rebuilds reached receipts'
@@ -198,12 +204,14 @@ def capability_uses():
 
 	purchases = ("Purchase Receipt", "Purchase Invoice")
 	return (
-		CapabilityUse(doctypes=purchases, names=(PURCHASE_GL,), events=("submit",), applies=ps.purchase_with_asset_rows),
+		CapabilityUse(
+			doctypes=purchases, names=(PURCHASE_GL, GL_VOUCHER_ROW), events=("submit",), applies=ps.purchase_with_asset_rows
+		),
 		CapabilityUse(doctypes=purchases, names=(RECEIPT_ASSETS,), events=("cancel",), applies=ps.purchase_with_asset_rows),
 		CapabilityUse(doctypes=("Journal Entry",), names=(DEPRECIATION_LINK,), events=("submit",), applies=ps.depreciation_journal),
 		CapabilityUse(
 			doctypes=("Repost Item Valuation", "Repost Accounting Ledger"),
-			names=(PURCHASE_GL,),
+			names=(PURCHASE_GL, GL_VOUCHER_ROW),
 			events=("submit",),
 			applies=ps.enterprise_site,
 		),
