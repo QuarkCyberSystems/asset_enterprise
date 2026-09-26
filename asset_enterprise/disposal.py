@@ -427,7 +427,22 @@ def _freeze_schedule(asset_name, as_of_date, reason):
 def get_gl_entries_on_asset_disposal_wrapper(core_fn):
 	"""Patch #3 (build plan §2.3): swap the loss account in core disposal
 	GL (e.g. sale via Sales Invoice) with the §3.5 chain result."""
+	return _asset_gl_map_wrapper(core_fn)
 
+
+def get_gl_entries_on_asset_regain_wrapper(core_fn):
+	"""The same treatment for core's REGAIN map — the rows a Sales Invoice
+	return posts to bring a sold asset back (Dr fixed asset, Cr
+	accumulated, and the reversed gain or loss). The return undoes the
+	sale, so its rows take the account the sale's rows took and the
+	attribution the sale's rows carried; core instead reads the asset's
+	CURRENT cost centre and stamps no `asset` at all, so a control asset's
+	regain debit was indistinguishable from an ordinary project cost
+	(review 2026-09-26 B-1 (iii), D-053)."""
+	return _asset_gl_map_wrapper(core_fn)
+
+
+def _asset_gl_map_wrapper(core_fn):
 	def wrapped(asset, *args, **kwargs):
 		from asset_enterprise.depreciation import enterprise_enabled
 
@@ -449,6 +464,7 @@ def get_gl_entries_on_asset_disposal_wrapper(core_fn):
 						row["account"] = override
 		except Exception:
 			pass
+		_stamp_asset(asset, gl)
 		_control_category_legs(asset, gl)
 		return gl
 
@@ -456,19 +472,29 @@ def get_gl_entries_on_asset_disposal_wrapper(core_fn):
 	return wrapped
 
 
+def _stamp_asset(asset, gl):
+	"""Every row of an asset's disposal or regain map names the asset.
+	Core builds them from the Asset doc, which has no `asset` dimension
+	value of its own, and the invoice's `get_gl_dict` then applies the
+	row's (blank) key last — so neither a sale's derecognising credit nor
+	a return's regain debit reached the asset's ledger. Stamped on both
+	maps and for every asset, so GL-derived values see a sale and its
+	return symmetrically."""
+	if frappe.get_meta("GL Entry").has_field("asset"):
+		for row in gl:
+			row["asset"] = asset.name
+
+
 def _control_category_legs(asset, gl):
-	"""D-053 on core's disposal map (a sale through Sales Invoice): core
-	takes the centre from the asset's CURRENT `cost_center`, which a
-	transfer rewrote. A Control Category asset's legs carry its
-	acquisition attribution, and the asset dimension so the project
-	reader can recognise them. Ordinary assets are left as core built them."""
+	"""D-053 on core's disposal and regain maps (a sale through a Sales
+	Invoice, and its return): core takes the centre from the asset's
+	CURRENT `cost_center`, which a transfer rewrote. A Control Category
+	asset's legs carry its acquisition attribution. Ordinary assets are
+	left as core built them."""
 	from asset_enterprise.gl_attribution import apply_control_attribution, control_category_attribution
 
 	held = control_category_attribution(asset.name)
 	if held is None:
 		return
-	has_asset_column = frappe.get_meta("GL Entry").has_field("asset")
 	for row in gl:
 		apply_control_attribution(row, held)
-		if has_asset_column:
-			row["asset"] = asset.name

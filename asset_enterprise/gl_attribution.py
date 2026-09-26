@@ -238,15 +238,70 @@ def control_category_attribution(asset_name):
 	return acquisition_cost_center(asset_name), acquisition_dimensions(asset_name)
 
 
+# Journal entries this app posts as an asset's ACQUISITION — the booking
+# of an asset brought in without a purchase document (GAP-001) and the
+# booking of a reclassification target (§12.13). Each is recorded as an
+# "Addition" Financial Treatment naming that journal entry.
+ACQUISITION_JOURNAL_TYPES = ("Existing-Asset Opening", "Reclassification — In")
+
+
+def acquisition_voucher_sql(gl="gl", asset="ast"):
+	"""A boolean SQL expression: GL row `gl` sits on the LIVE voucher that
+	acquired asset row `asset` (both are table aliases in the caller's
+	query).
+
+	The acquisition is the voucher the asset records, not any entry that
+	happens to post the same account and sign:
+
+	    Purchase Receipt / Purchase Invoice   the asset's own purchase link
+	    Asset                                 core's booking (CWIP -> FA)
+	    Asset Capitalization                  the capitalization targeting it
+	    Journal Entry                         the Existing-Asset Opening or
+	                                          Reclassification-In booking,
+	                                          through its Financial Treatment
+
+	"Live" means the voucher is still submitted (a cancelled receipt's
+	rows stay on the ledger under the Immutable Ledger) and, for the
+	journal bookings, that the Addition has not been reversed. Anything
+	else posting to the asset — reversal mirrors, restore, a sale's
+	cancellation rows, a return's regain rows, adjustments, disposals — is
+	not on one of these vouchers and so is never the acquisition.
+
+	One indexed probe per branch; the caller bounds the rows it asks
+	about. project_accounting reads it for the Control Category source
+	rule (D-051 / D-053)."""
+	types = ", ".join(frappe.db.escape(t) for t in ACQUISITION_JOURNAL_TYPES)
+	return f"""(
+		({gl}.voucher_type = 'Purchase Receipt' AND {gl}.voucher_no = {asset}.purchase_receipt
+		 AND EXISTS (SELECT 1 FROM `tabPurchase Receipt` acq_pr
+		             WHERE acq_pr.name = {gl}.voucher_no AND acq_pr.docstatus = 1))
+		OR ({gl}.voucher_type = 'Purchase Invoice' AND {gl}.voucher_no = {asset}.purchase_invoice
+		 AND EXISTS (SELECT 1 FROM `tabPurchase Invoice` acq_pi
+		             WHERE acq_pi.name = {gl}.voucher_no AND acq_pi.docstatus = 1))
+		OR ({gl}.voucher_type = 'Asset' AND {gl}.voucher_no = {asset}.name AND {asset}.docstatus = 1)
+		OR ({gl}.voucher_type = 'Asset Capitalization'
+		 AND EXISTS (SELECT 1 FROM `tabAsset Capitalization` acq_cap
+		             WHERE acq_cap.name = {gl}.voucher_no AND acq_cap.target_asset = {asset}.name
+		               AND acq_cap.docstatus = 1))
+		OR ({gl}.voucher_type = 'Journal Entry'
+		 AND EXISTS (SELECT 1 FROM `tabFinancial Treatment` acq_ft
+		             JOIN `tabJournal Entry` acq_je ON acq_je.name = acq_ft.journal_entry
+		             WHERE acq_ft.journal_entry = {gl}.voucher_no AND acq_ft.asset = {asset}.name
+		               AND acq_ft.transaction_category = 'Addition' AND acq_ft.status = 'Posted'
+		               AND acq_ft.transaction_type IN ({types}) AND acq_je.docstatus = 1))
+	)"""
+
+
 def apply_control_attribution(row, attribution):
 	"""Put a Control Category asset's acquisition attribution on one leg
 	(a JE row or a gl dict). Assigned, not filled — a blank acquisition
 	dimension clears an inherited one."""
 	centre, dimensions = attribution
+	assign = row.__setitem__ if isinstance(row, dict) else row.set
 	if centre:
-		row["cost_center"] = centre
+		assign("cost_center", centre)
 	for field, value in dimensions.items():
-		row[field] = value
+		assign(field, value)
 
 
 def apply_asset_cost_centre_policy(doc, method=None):
@@ -293,10 +348,14 @@ def apply_asset_cost_centre_policy(doc, method=None):
 	the centre is already the company's — which is precisely the defect
 	(UAT ACC-ASS-2026-00185 booked its cost to Plant A and every
 	depreciation credit to Main, leaving Main 410,000 short of an asset
-	it never held). Only rows that name an Asset AND land on that
-	asset's own fixed-asset or accumulated-depreciation account are
-	touched; everything else, including a manual entry elsewhere in the
-	chart, is left exactly as written.
+	it never held).
+
+	What is touched: for an ordinary asset, only rows that name it AND
+	land on its own fixed-asset or accumulated-depreciation account; for
+	a Control Category asset, EVERY row that names it, whatever the
+	account, so a manual journal row naming a control asset has its
+	centre and dimensions reassigned too (D-053). Rows that name no asset
+	are left exactly as written.
 	"""
 	# D-026: a reversal must preserve the original attribution verbatim.
 	if doc.get("is_reversal") or doc.get("reversal_of"):
@@ -307,14 +366,21 @@ def apply_asset_cost_centre_policy(doc, method=None):
 	if not enterprise_enabled():
 		return
 
-	from asset_enterprise.overrides.asset_category import is_control_category
-
-	category_accounts, centres, dimensions = {}, {}, {}
+	category_accounts, centres, dimensions, control_held = {}, {}, {}, {}
 	for row in doc.get("accounts") or []:
 		asset_name = row.get("asset") or (
 			row.get("reference_name") if row.get("reference_type") == "Asset" else None
 		)
 		if not asset_name or not row.get("account"):
+			continue
+		# D-053: every leg of a Control Category asset is P&L of the
+		# project that bought it, so the rule covers all of its rows —
+		# asked of the single answer, not re-derived here.
+		if asset_name not in control_held:
+			control_held[asset_name] = control_category_attribution(asset_name)
+		held = control_held[asset_name]
+		if held is not None:
+			apply_control_attribution(row, held)
 			continue
 		asset = frappe.db.get_value(
 			"Asset",
@@ -333,10 +399,7 @@ def apply_asset_cost_centre_policy(doc, method=None):
 				as_dict=True,
 			)
 		aca = category_accounts[key]
-		# D-053: every leg of a Control Category asset is P&L of the
-		# project that bought it, so the rule covers all of its rows.
-		control = is_control_category(asset.asset_category)
-		if not control and (
+		if (
 			not aca
 			or row.account
 			not in (

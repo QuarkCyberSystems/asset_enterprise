@@ -36,11 +36,24 @@ class TestRegressionCapture(unittest.TestCase):
 			):
 				apply_asset_cost_centre_policy({marker: 1})
 
-	def test_migration_runs_both_backfills_after_custom_fields(self):
+	def _migrate(self, mark, newest):
+		"""Run after_migrate with every sync step and both backfills
+		recorded, the migrate mark at `mark` and the newest submitted
+		generation at `newest` - whatever this site actually holds."""
 		import contextlib
+
+		import frappe
+
 		from asset_enterprise.setup import install
 
-		calls = []
+		calls, marks = [], []
+		real_sql, real_get_global = frappe.db.sql, frappe.db.get_global
+
+		def sql(query, *args, **kwargs):
+			if "max(modified)" in query and "Asset Depreciation Schedule" in query:
+				return [[newest]]
+			return real_sql(query, *args, **kwargs)
+
 		with contextlib.ExitStack() as stack:
 			for name in (
 				"create_custom_fields", "apply_property_setters", "_ava_property_setters",
@@ -50,13 +63,52 @@ class TestRegressionCapture(unittest.TestCase):
 			):
 				stack.enter_context(patch.object(install, name,
 					side_effect=lambda *a, _name=name, **kw: calls.append(_name)))
-			for name in ("backfill_rate_breakdown", "backfill_generation_basis"):
-				stack.enter_context(patch("asset_enterprise.repair." + name,
-					side_effect=lambda *, dry_run, _name=name: calls.append((_name, dry_run))))
+			stack.enter_context(patch("asset_enterprise.repair.backfill_rate_breakdown",
+				side_effect=lambda **kw: calls.append(("backfill_rate_breakdown", kw))))
+			stack.enter_context(patch("asset_enterprise.repair.backfill_generation_basis",
+				side_effect=lambda **kw: calls.append(("backfill_generation_basis", kw))))
+			stack.enter_context(patch.object(frappe.db, "sql", side_effect=sql))
+			stack.enter_context(patch.object(frappe.db, "get_global",
+				side_effect=lambda key, *a, **kw: mark if key == install.GENERATION_BASIS_MARK
+				else real_get_global(key, *a, **kw)))
+			stack.enter_context(patch.object(frappe.db, "set_global",
+				side_effect=lambda key, value, *a, **kw: marks.append((key, value))))
 			install.after_migrate()
+		return calls, marks
+
+	def test_migration_runs_both_backfills_after_custom_fields(self):
+		"""First migrate (no mark): both backfills run after the custom
+		fields, the generation basis over everything, inside migrate's
+		transaction, and the mark is written."""
+		from asset_enterprise.setup import install
+
+		calls, marks = self._migrate(mark=None, newest="2026-09-26 10:00:00")
 		self.assertEqual(calls[0], "create_custom_fields")
 		self.assertEqual(calls[-2:], [
-			("backfill_rate_breakdown", 0), ("backfill_generation_basis", 0)])
+			("backfill_rate_breakdown", {"dry_run": 0}),
+			("backfill_generation_basis", {"dry_run": 0, "modified_after": None, "commit": False}),
+		])
+		self.assertEqual(marks, [(install.GENERATION_BASIS_MARK, "2026-09-26 10:00:00")])
+
+	def test_migration_rescans_only_since_the_mark(self):
+		"""A newer generation than the mark: only that range is scanned."""
+		from asset_enterprise.setup import install
+
+		calls, marks = self._migrate(mark="2026-09-20 00:00:00", newest="2026-09-26 10:00:00")
+		self.assertEqual(calls[-1], ("backfill_generation_basis",
+			{"dry_run": 0, "modified_after": "2026-09-20 00:00:00", "commit": False}))
+		self.assertEqual(marks, [(install.GENERATION_BASIS_MARK, "2026-09-26 10:00:00")])
+
+	def test_migration_skips_generation_basis_when_mark_is_current(self):
+		"""Mark current (or no submitted generation at all): the rate
+		breakdown still runs, the generation basis is not re-scanned and
+		the mark is left alone."""
+		for mark, newest in (("2026-09-26 10:00:00", "2026-09-26 10:00:00"), (None, None)):
+			with self.subTest(mark=mark, newest=newest):
+				calls, marks = self._migrate(mark=mark, newest=newest)
+				self.assertEqual(calls[-1], ("backfill_rate_breakdown", {"dry_run": 0}))
+				self.assertNotIn("backfill_generation_basis", [c[0] for c in calls if isinstance(c, tuple)])
+				self.assertEqual(marks, [])
 
 	def test_skipped_coverage_is_not_green(self):
 		self.assertEqual(_verdict(None, "E-24 SKIP missing project fixture"), "INCOMPLETE")

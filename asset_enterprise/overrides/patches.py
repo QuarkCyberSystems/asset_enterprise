@@ -12,6 +12,10 @@ override_whitelisted_methods and are wrapped here (see build plan §2.3):
 3. erpnext.assets.doctype.asset.depreciation
    .get_gl_entries_on_asset_disposal
    -> Scrape Type account resolution chain (Phase 6)
+3b. erpnext.assets.doctype.asset.depreciation
+   .get_gl_entries_on_asset_regain
+   -> the same for a Sales Invoice return, plus the asset stamp and
+      the Control Category acquisition attribution (D-053)
 4. erpnext.assets.doctype.asset.depreciation.validate_disposal_date
    -> tolerate the optional available-for-use date (GAP-002)
 5. erpnext.assets.doctype.asset.depreciation
@@ -41,6 +45,7 @@ PATCH_TARGETS = [
 	),
 	("erpnext.assets.doctype.asset.depreciation", "make_depreciation_entry", 1),
 	("erpnext.assets.doctype.asset.depreciation", "get_gl_entries_on_asset_disposal", 1),
+	("erpnext.assets.doctype.asset.depreciation", "get_gl_entries_on_asset_regain", 1),
 	("erpnext.assets.doctype.asset.depreciation", "validate_disposal_date", 3),
 	(
 		"erpnext.assets.doctype.asset.depreciation",
@@ -61,6 +66,7 @@ WRAPPED_ATTRS = {
 	"reschedule_depreciation",
 	"make_depreciation_entry",
 	"get_gl_entries_on_asset_disposal",
+	"get_gl_entries_on_asset_regain",
 	"validate_disposal_date",
 	"get_value_after_depreciation_on_disposal_date",
 	"get_asset_value_after_depreciation",
@@ -584,4 +590,15 @@ def apply_patches():
 	# import time — without the rebind, an asset SOLD through a Sales
 	# Invoice kept core's loss account instead of the §3.5 chain result.
 	_rebind("get_gl_entries_on_asset_disposal", core_disposal_gl, disposal_gl)
+
+	# Patch #3b — the regain map a Sales Invoice RETURN posts: the same
+	# account swap, the `asset` stamp and the D-053 acquisition attribution
+	# as the sale it undoes (review 2026-09-26 B-1 (iii)). sales_invoice.py
+	# imports it at its own import time, hence the rebind.
+	from asset_enterprise.disposal import get_gl_entries_on_asset_regain_wrapper
+
+	core_regain_gl = core_depr.get_gl_entries_on_asset_regain
+	regain_gl = get_gl_entries_on_asset_regain_wrapper(core_regain_gl)
+	core_depr.get_gl_entries_on_asset_regain = regain_gl
+	_rebind("get_gl_entries_on_asset_regain", core_regain_gl, regain_gl)
 	_PATCHED = True
