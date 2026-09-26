@@ -15,12 +15,15 @@ Two disciplines make it worth running:
    cannot claim something it did not measure.
 
 Each case is independent: it runs inside a savepoint that is always
-rolled back, so a failure never poisons the next one.
+rolled back, so a failure never poisons the next one. Each case runs
+under the asset-value modes it declares (legacy fold and/or GL-derived,
+see `value_mode`), never under whatever the site happens to be set to.
 
     bench --site <site> execute asset_enterprise.setup.verify_edge.run
     ... .run --kwargs "{'only': 'E-07'}"
 """
 
+import contextlib
 import traceback
 
 import frappe
@@ -28,13 +31,41 @@ from frappe.utils import add_days, add_months, cint, date_diff, flt, get_first_d
 
 CASES = []
 
+# Operational asset values come from one of two sources, chosen per site
+# by site_config.asset_enterprise_gl_values_ready (asset_values.
+# recalculate_asset_values): LEGACY folds the Active schedule and the
+# Financial Treatments; GL derives them from the posted ledger. A case's
+# verdict must not depend on how the site running it is configured, so
+# every case names the value modes it exercises and runs once under
+# each; it passes only if every mode passes.
+LEGACY, GL = "legacy", "gl"
+BOTH = (LEGACY, GL)
+_MODE_FLAG = {LEGACY: 0, GL: 1}
 
-def case(case_id, design_ref, title):
+
+def case(case_id, design_ref, title, modes=BOTH):
 	def wrap(fn):
-		CASES.append((case_id, design_ref, title, fn))
+		CASES.append((case_id, design_ref, title, fn, tuple(modes)))
 		return fn
 
 	return wrap
+
+
+@contextlib.contextmanager
+def value_mode(mode):
+	"""Run the body with asset values sourced as `mode`, restoring the
+	site's own setting afterwards (in-process only; site_config.json is
+	never written)."""
+	key = "asset_enterprise_gl_values_ready"
+	had, before = key in frappe.conf, frappe.conf.get(key)
+	frappe.conf[key] = _MODE_FLAG[mode]
+	try:
+		yield
+	finally:
+		if had:
+			frappe.conf[key] = before
+		else:
+			frappe.conf.pop(key, None)
 
 
 def _company():
@@ -1720,7 +1751,8 @@ def e33():
 	return ok, f"unattributed GL leg: {row}"
 
 
-@case("E-34", "§5.1 / R053", "posted GL, not treatment metadata, controls operational values")
+@case("E-34", "§5.1 / R053", "posted GL, not treatment metadata, controls operational values",
+	modes=(GL,))  # the GL-derived rule itself; the legacy fold reads treatments by design
 def e34():
 	from asset_enterprise import tcc
 	from asset_enterprise.asset_values import recalculate_asset_values
@@ -1939,23 +1971,30 @@ def run(only=None):
 		"Asset Settings", "enable_enterprise_assets", cache=False
 	)
 	tally = {"PASS": 0, "FAIL": 0, "ERROR": 0, "SKIP": 0}
-	for case_id, design_ref, title, fn in CASES:
+	rank = {"PASS": 0, "SKIP": 1, "FAIL": 2, "ERROR": 3}
+	for case_id, design_ref, title, fn, modes in CASES:
 		if wanted and case_id not in wanted:
 			continue
-		frappe.db.savepoint("edge_case")
-		try:
-			frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
-			ok, detail = fn()
-			status = "SKIP" if ok is None else ("PASS" if ok else "FAIL")
-		except Exception as exc:
-			status, detail = "ERROR", f"{type(exc).__name__}: {str(exc)[:150]}"
-			if frappe.flags.get("edge_traceback"):
-				traceback.print_exc()
-		finally:
-			frappe.db.rollback(save_point="edge_case")
+		outcomes = []
+		for mode in modes:
+			frappe.db.savepoint("edge_case")
+			try:
+				with value_mode(mode):
+					frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
+					ok, detail = fn()
+				status = "SKIP" if ok is None else ("PASS" if ok else "FAIL")
+			except Exception as exc:
+				status, detail = "ERROR", f"{type(exc).__name__}: {str(exc)[:150]}"
+				if frappe.flags.get("edge_traceback"):
+					traceback.print_exc()
+			finally:
+				frappe.db.rollback(save_point="edge_case")
+			outcomes.append((mode, status, detail))
+		status = max((o[1] for o in outcomes), key=rank.get)
 		tally[status] += 1
-		print(f"{case_id:<6} {status:<6} [{design_ref}] {title}")
-		print(f"          {detail}")
+		print(f"{case_id:<6} {status:<6} [{design_ref}] {title} ({'+'.join(modes)})")
+		for mode, mode_status, detail in outcomes:
+			print(f"          [{mode} {mode_status}] {detail}")
 	frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", switch_before)
 	print(f"\nEDGE TALLY: " + ", ".join(f"{k}={v}" for k, v in tally.items() if v))
 	return tally
