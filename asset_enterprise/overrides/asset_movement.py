@@ -49,7 +49,7 @@ class EnterpriseAssetMovement(AssetMovement):
 			if not projects:
 				frappe.throw(_("Leave Project requires a registered project accounting dimension."))
 			if any(d.get(field) for field in projects):
-				frappe.throw(_("Choose a destination project or Leave Project, not both (D-031)."))
+				frappe.throw(_("Choose a destination project or Leave Project, not both."))
 		for field in projects:
 			if d.get(field):
 				doctype = d.meta.get_field(field).options
@@ -77,7 +77,7 @@ class EnterpriseAssetMovement(AssetMovement):
 			frappe.throw(
 				_(
 					"Row {0}: set at least one of Target Location, To Employee or "
-					"Target Cost Center, a dimension, or Leave Project (VR-026 / D-031)."
+					"Target Cost Center, a dimension, or Leave Project (VR-026)."
 				).format(d.idx)
 			)
 

@@ -1901,7 +1901,7 @@ def e37():
 	try:
 		move(23, leave_project=1, **{field: project})
 	except frappe.ValidationError as exc:
-		assert "D-031" in str(exc)
+		assert "not both" in str(exc) and "D-0" not in str(exc), str(exc)
 	else:
 		return False, "contradictory exit/destination accepted"
 	segments = attribution_split(asset.name, date, get_last_day(date), 300, company)
