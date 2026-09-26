@@ -1221,7 +1221,7 @@ def e27():
 	)
 
 
-@case("E-28", "GAP-037 / client 14/09", "a control category never touches the balance sheet")
+@case("E-28", "GAP-037 / D-053", "a control category never touches the balance sheet; every leg keeps the acquisition attribution")
 def e28():
 	"""Control Category: tracked for control, expensed on purchase. Every
 	account on the category is an expense account — the fixed-asset and
@@ -1230,11 +1230,18 @@ def e28():
 	in P&L, and no GL row for the asset ever carries an Asset-side
 	account.
 
-	Three assertions, because the feature is three rules:
+	Four assertions, because the feature is four rules:
 	  1. the flag ENFORCES expense accounts — a Fixed Asset-type account
 	     on a control category is refused;
 	  2. the whole life cycle posts to P&L only;
-	  3. the flag LOCKS once a submitted asset exists.
+	  3. D-053: every leg of the five review shapes (plain charge,
+	     prior-fiscal-year charge with its PYA split, transfer then
+	     charge, Leave Project then charge, scrap before any charge)
+	     carries the acquisition cost centre and dimensions;
+	  4. the flag LOCKS once a submitted asset exists.
+
+	Which of those rows project_accounting settles is its own suite's
+	question (phase35, on these same shapes).
 	"""
 	from asset_enterprise import disposal
 	from asset_enterprise.depreciation import enable_depreciation, post_schedule_entries
@@ -1297,12 +1304,6 @@ def e28():
 		"purchase_date": get_first_day(add_months(nowdate(), -1)),
 		"asset_type": "Existing Asset", "calculate_depreciation": 0,
 	})
-	from asset_enterprise.setup.test_fixtures import dimension_fixture
-	from asset_enterprise.depreciation import project_dimension_fields
-	pa_project = None
-	if "project_accounting" in project_dimension_fields():
-		pa_project = dimension_fixture("project_accounting", company)
-		asset.project_accounting = pa_project
 	asset.flags.ignore_permissions = True
 	asset.insert()
 	asset.submit()
@@ -1324,20 +1325,8 @@ def e28():
 	assert je
 	post_schedule_entries(schedule.name, date=str(charge_date))
 	assert frappe.db.count("GL Entry", {"voucher_no": je, "is_cancelled": 0}) == 2
-	if pa_project:
-		from project_accounting.settlement.sources import get_eligible_source_lines
-		sources = get_eligible_source_lines(company, pa_project)
-		# D-051: the acquisition is the one settleable source; the one-day
-		# depreciation pair is never a project source line.
-		assert not any(r.voucher_no == je for r in sources), "control depreciation offered as a source"
 	one_day_ok = True  # one-day completion checks above succeeded
 	disposal.scrap_asset(asset.name, scrap_date=nowdate(), scrapping_type="Damage")
-	if pa_project:
-		# D-051: disposal legs on the accumulated / depreciation accounts are
-		# part of the pair, so they are not sources either
-		pair = {contra, dep_expense}
-		assert not any(r.original_account in pair for r in get_eligible_source_lines(company, pa_project)), \
-			"control depreciation-pair row offered as a source after scrap"
 
 	legs = frappe.db.sql(
 		"""select gle.account, acc.root_type, gle.debit, gle.credit
@@ -1351,7 +1340,10 @@ def e28():
 		asset.name,
 	)[0][0]
 
-	# 3. lock
+	# 3. D-053: the five shapes, every leg on the acquisition attribution
+	shapes_ok, shapes_detail = _control_shapes_keep_acquisition(company)
+
+	# 4. lock
 	cat.reload()
 	cat.is_control_category = 0
 	locked = False
@@ -1360,12 +1352,65 @@ def e28():
 	except frappe.ValidationError:
 		locked = True
 
-	ok = refused and legs and not on_balance_sheet and vouchers >= 3 and locked and one_day_ok
+	ok = refused and legs and not on_balance_sheet and vouchers >= 3 and locked and one_day_ok and shapes_ok
 	return ok, (
 		f"balance-sheet account refused={refused} (want True); {vouchers} voucher(s) / "
 		f"{len(legs)} GL rows over the life cycle, {len(on_balance_sheet)} on an Asset-side "
-		f"account (want 0); flag locked={locked}; full one-day charge posted; PA depreciation eligibility checked={bool(pa_project)}"
+		f"account (want 0); flag locked={locked}; full one-day charge posted; {shapes_detail}"
 	)
+
+
+def _control_shapes_keep_acquisition(company):
+	"""D-053 through the real paths: every GL row carrying a Control
+	Category asset — booking, one-day charge, PYA, accumulated credit,
+	disposal, loss — carries the centre and dimensions it was acquired
+	under, whatever a later movement said."""
+	from asset_enterprise.depreciation import movement_dimension_fields, project_dimension_fields
+	from asset_enterprise.setup.test_fixtures import (
+		CONTROL_SHAPES, control_asset_legs, control_category_fixture, control_shape, dimension_fixture,
+	)
+
+	fixture = control_category_fixture(company, "E28 Shapes")
+	centres = frappe.get_all("Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2)
+	acquisition_cc = frappe.get_cached_value("Company", company, "cost_center")
+	other_cc = next((c for c in centres if c != acquisition_cc), None)
+	projects = project_dimension_fields()
+	field = projects[0] if projects else None
+	acquired, moved = {}, {}
+	if field:
+		acquired[field] = dimension_fixture(field, company)
+		moved[field] = dimension_fixture(field, company)
+	if other_cc:
+		moved["target_cost_center"] = other_cc
+	fields = [f for f in movement_dimension_fields() if frappe.get_meta("GL Entry").has_field(f)]
+
+	failures, counts = [], []
+	for shape in CONTROL_SHAPES:
+		run = control_shape(fixture, shape, acquired, moved_to=moved)
+		legs = control_asset_legs(run.asset, fields)
+		accounts = {leg.account for leg in legs}
+		expect_leg = {
+			"prior_fiscal_year": fixture.pya_expense_account,
+			"scrap": None,  # the loss account comes from the Scrapping Type
+		}.get(shape, fixture.depreciation_expense_account)
+		if expect_leg and expect_leg not in accounts:
+			failures.append(f"{shape}: no {expect_leg} leg")
+		if shape == "scrap" and not any(
+			leg.debit and leg.account not in (fixture.fixed_asset_account, fixture.accumulated_depreciation_account)
+			for leg in legs
+		):
+			failures.append("scrap: no loss leg")
+		if shape == "transfer" and other_cc and frappe.db.get_value("Asset", run.asset, "cost_center") != other_cc:
+			failures.append("transfer: custody centre not recorded on the asset")
+		for leg in legs:
+			wrong = [f for f in fields if (leg.get(f) or None) != (acquired.get(f) or None)]
+			if leg.cost_center != acquisition_cc or wrong:
+				failures.append(f"{shape}: {leg.voucher_no} {leg.account} cc={leg.cost_center} "
+				                f"{ {f: leg.get(f) for f in wrong} }")
+		counts.append(f"{shape} {len(legs)}")
+	detail = (f"D-053 shapes ({', '.join(counts)} legs) on acquisition cc {acquisition_cc}"
+	          f"{f' and {field}' if field else ''}: " + ("OK" if not failures else "; ".join(failures[:4])))
+	return not failures, detail
 
 
 @case("E-29", "client 16/09 (ACC-ASS-2026-00019)", "two events in one unposted month price the days between them exactly")
@@ -2035,13 +2080,22 @@ def e39():
 
 
 
-@case("E-40", "R218 / D-050", "legacy fold: unlinked repair treatment is found, linked once, and HAV stops double-counting", modes=(LEGACY,))
+@case("E-40", "R218 / D-050", "legacy fold: unlinked repair treatment is found, linked once, HAV stops double-counting and the inflated schedule is rebuilt", modes=(LEGACY,))
 def e40():
-	"""The deploy precondition for a site that stays on the legacy fold:
-	find is read-only, the dry run writes nothing, the live link removes
-	the double count, and a second live run is a no-op."""
+	"""The deploy precondition for a site that stays on the legacy fold
+	(runbook Step A): find is read-only, the dry run writes nothing, the
+	live link removes the double count, the future rows that were spread
+	over the double-counted NBV are rebuilt, and a second live run is a
+	no-op.
+
+	The legacy shape is rebuilt faithfully: the treatment loses its link
+	and the schedule is then regenerated while it is unlinked, so the
+	future rows carry the inflated NBV exactly as a legacy site's do
+	(review 2026-09-26 S-5 — without it the fixture reported
+	schedule-rebuild-needed=False and the rebuild path went unexercised)."""
 	from asset_enterprise import repair as repair_mod
 	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import last_posted_schedule_date, supersede_and_regenerate
 	from asset_enterprise.setup.verify_tc import _repaired_depreciating_asset
 
 	asset = _repaired_depreciating_asset("E-40 Unlinked Repair").name
@@ -2049,9 +2103,28 @@ def e40():
 		filters={"asset": asset, "transaction_type": "Capitalized Repair"}, pluck="name")[0]
 	frappe.db.set_value("Financial Treatment", ft, {"voucher_type": None, "voucher_no": None},
 		update_modified=False)
+	supersede_and_regenerate(asset, as_of_date=getdate(last_posted_schedule_date(asset)),
+		reason="E-40: regenerated over the double-counted NBV (legacy shape)")
+
+	def active():
+		return frappe.db.get_value("Asset Depreciation Schedule",
+			{"asset": asset, "status": "Active", "docstatus": 1}, "name")
+
+	def rows():
+		return frappe.db.sql(
+			"""select count(*), coalesce(sum(case when ifnull(ds.journal_entry, '') = ''
+			                                  then ds.depreciation_amount else 0 end), 0),
+			          sum(ifnull(ds.journal_entry, '') <> '')
+			   from `tabDepreciation Schedule` ds where ds.parent = %s""", active())[0]
 
 	def hav():
 		return flt(recalculate_asset_values(asset, save=False)["historical_asset_value"])
+
+	def nbv():
+		return flt(recalculate_asset_values(asset, save=False)["net_book_value"])
+
+	inflated_generation, (_n, inflated_unposted, posted_before) = active(), rows()
+	inflated_nbv = nbv()
 
 	def found():
 		return [r.name for r in repair_mod.find_unlinked_repair_treatments(asset=asset)]
@@ -2064,20 +2137,32 @@ def e40():
 	frappe.db.commit = lambda *a, **k: None
 	try:
 		repair_mod.link_repair_voucher_references(asset=asset, dry_run="1")
-		after_dry = (found(), hav())
+		after_dry = (found(), hav(), active())
 		repair_mod.link_repair_voucher_references(asset=asset, dry_run="0")
 		after_live = (found(), hav(), frappe.db.get_value("Financial Treatment", ft, "voucher_no"))
+		rebuilt_generation, (_n, rebuilt_unposted, posted_after) = active(), rows()
+		corrected_nbv = nbv()
 		second = repair_mod.link_repair_voucher_references(asset=asset, dry_run=0)
-		after_second = (found(), hav())
+		after_second = (found(), hav(), active())
 	finally:
 		frappe.db.commit = real_commit
+	salvage = flt(frappe.db.get_value("Asset Finance Book", {"parent": asset},
+		"expected_value_after_useful_life") or 0)
+	superseded = frappe.db.get_value("Asset Depreciation Schedule", inflated_generation, "status")
 	ok = (first_find == [ft] and abs(unlinked_hav - 18_000) > 0.01
-		and after_dry == (first_find, unlinked_hav)
+		and abs(inflated_unposted - (inflated_nbv - salvage)) < 0.01   # the legacy shape is real
+		and after_dry == (first_find, unlinked_hav, inflated_generation)
 		and after_live[0] == [] and abs(after_live[1] - 18_000) < 0.01 and after_live[2]
-		and second == [] and after_second == ([], after_live[1]))
-	return ok, (f"unlinked HAV {unlinked_hav:,.2f}, find={first_find}; dry run left {after_dry}; "
-		f"live link -> find={after_live[0]}, HAV {after_live[1]:,.2f}, voucher {after_live[2]}; "
-		f"second live run touched {len(second)}, HAV {after_second[1]:,.2f}")
+		and rebuilt_generation != inflated_generation and superseded == "Superseded"
+		and abs(rebuilt_unposted - (corrected_nbv - salvage)) < 0.01
+		and rebuilt_unposted < inflated_unposted - 0.01 and posted_after == posted_before
+		and second == [] and after_second == ([], after_live[1], rebuilt_generation))
+	return ok, (f"unlinked HAV {unlinked_hav:,.2f}, find={first_find}; inflated schedule {inflated_generation} "
+		f"spreads {inflated_unposted:,.2f} (NBV {inflated_nbv:,.2f}); dry run left find/HAV/generation "
+		f"unchanged={after_dry == (first_find, unlinked_hav, inflated_generation)}; live link -> find={after_live[0]}, "
+		f"HAV {after_live[1]:,.2f}, voucher {after_live[2]}; rebuilt {inflated_generation} ({superseded}) -> "
+		f"{rebuilt_generation} spreading {rebuilt_unposted:,.2f} (NBV {corrected_nbv:,.2f} - salvage {salvage:,.2f}), "
+		f"posted rows {posted_before} -> {posted_after}; second live run touched {len(second)}")
 
 
 def run(only=None):

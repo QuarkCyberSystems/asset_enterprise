@@ -206,3 +206,138 @@ def dimension_fixture(fieldname, company, doctype="Asset Movement Item"):
 		}).insert(ignore_permissions=True).name
 	filters = {"company": company} if frappe.get_meta(link.options).has_field("company") else {}
 	return frappe.db.get_value(link.options, filters, "name")
+
+
+# ------------------------------------------------ Control Category (D-053)
+# The five shapes review 2026-09-26 probed, posted through this app's real
+# paths (Existing-Asset booking, enable_depreciation, post_schedule_entries,
+# Asset Movement, scrap_asset). asset_enterprise's E-28 asserts the legs;
+# project_accounting's phase35 asserts the settlement source on the same
+# scenarios (PA -> AE is the permitted edge). Writes: the caller owns the
+# savepoint or the throwaway site.
+CONTROL_SHAPES = ("plain", "prior_fiscal_year", "transfer", "leave_project", "scrap")
+
+
+def _expense_account(company, label):
+	parent = frappe.db.get_value(
+		"Account", {"company": company, "root_type": "Expense", "is_group": 1, "parent_account": ("is", "set")},
+		"name", order_by="lft desc",
+	)
+	return frappe.get_doc({
+		"doctype": "Account", "account_name": f"{label} {frappe.generate_hash(length=6)}",
+		"company": company, "parent_account": parent, "is_group": 0, "account_type": "Expense Account",
+	}).insert(ignore_permissions=True).name
+
+
+def control_category_fixture(company, label="AE Control"):
+	"""A Control Category with distinct Expense-root cost, accumulated and
+	depreciation-expense accounts (D-033), its own Prior Year Adjustment
+	account and a suspense account for the Existing-Asset booking."""
+	accounts = frappe._dict(
+		fixed_asset_account=_expense_account(company, f"{label} Cost"),
+		accumulated_depreciation_account=_expense_account(company, f"{label} Accumulated"),
+		depreciation_expense_account=_expense_account(company, f"{label} Depreciation"),
+		pya_expense_account=_expense_account(company, f"{label} PYA"),
+		asset_suspense_account=pick_plain_account(company, "Liability"),
+	)
+	category = frappe.get_doc({
+		"doctype": "Asset Category",
+		"asset_category_name": f"{label} {frappe.generate_hash(length=6)}",
+		"is_control_category": 1,
+		"accounts": [{"company_name": company, **accounts}],
+	}).insert(ignore_permissions=True)
+	item = frappe.get_doc({
+		"doctype": "Item", "item_code": f"{category.name} Item", "item_name": f"{category.name} Item",
+		"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"),
+		"is_fixed_asset": 1, "is_stock_item": 0, "asset_category": category.name,
+	}).insert(ignore_permissions=True)
+	return frappe._dict(category=category.name, item=item.name, company=company, **accounts)
+
+
+def control_asset(fixture, amount, available_for_use_date, dimensions=None, cost_center=None):
+	"""A submitted Existing Asset in the fixture's category, acquired under
+	`dimensions`; its booking entry is the acquisition."""
+	asset = frappe.get_doc({
+		"doctype": "Asset", "company": fixture.company, "asset_name": f"{fixture.category} asset",
+		"asset_category": fixture.category, "item_code": fixture.item, "location": _ensure_location(),
+		"purchase_amount": amount, "net_purchase_amount": amount,
+		"available_for_use_date": available_for_use_date, "purchase_date": available_for_use_date,
+		"asset_type": "Existing Asset", "calculate_depreciation": 0,
+		"cost_center": cost_center or frappe.get_cached_value("Company", fixture.company, "cost_center"),
+		**(dimensions or {}),
+	})
+	asset.flags.ignore_permissions = True
+	asset.insert()
+	asset.submit()
+	return asset.name
+
+
+def _control_charge(asset_name, charge_date, posting_date):
+	from asset_enterprise.depreciation import enable_depreciation, post_schedule_entries
+
+	enable_depreciation(asset_name, total_number_of_depreciations=1, depreciation_start_date=charge_date)
+	schedule = frappe.db.get_value(
+		"Asset Depreciation Schedule", {"asset": asset_name, "status": "Active", "docstatus": 1}, "name")
+	posted = post_schedule_entries(schedule, date=str(posting_date))
+	if len(posted) != 1:
+		frappe.throw(f"control charge on {asset_name}: {len(posted)} row(s) posted, want 1")
+	return frappe.db.get_value("Depreciation Schedule", posted[0], "journal_entry")
+
+
+def _move(asset_name, company, on_date, **row):
+	doc = frappe.get_doc({"doctype": "Asset Movement", "company": company, "purpose": "Transfer",
+		"transaction_date": str(on_date), "assets": [{"asset": asset_name, **row}]})
+	doc.insert(ignore_permissions=True)
+	doc.submit()
+	return doc.name
+
+
+def control_shape(fixture, shape, acquired_under, moved_to=None, amount=12_000):
+	"""Run one D-053 shape on a new Control Category asset and return
+	frappe._dict(asset, acquisition, vouchers, shape).
+
+	`acquired_under` / `moved_to` are {dimension field: value}; moved_to
+	also takes `target_cost_center`. Dates are relative to today so the
+	one-day charge is due, and the prior-fiscal-year shape charges a day
+	of the previous fiscal year posted today (the §4.7 PYA split)."""
+	from frappe.utils import add_days, get_first_day, getdate
+
+	from asset_enterprise import disposal
+
+	company = fixture.company
+	if shape == "prior_fiscal_year":
+		from erpnext.accounts.utils import get_fiscal_year
+
+		start = get_fiscal_year(nowdate(), company=company, as_dict=True).year_start_date
+		day0 = add_days(getdate(start), -7)
+		charge_on, post_on = day0, getdate(nowdate())
+	else:
+		day0 = getdate(get_first_day(add_months(nowdate(), -1)))
+		charge_on = post_on = add_days(day0, 5)
+	asset = control_asset(fixture, amount, day0, dimensions=acquired_under)
+	acquisition = frappe.db.get_value("Journal Entry Account",
+		{"reference_type": "Asset", "reference_name": asset, "docstatus": 1}, "parent")
+	vouchers = [acquisition]
+	if shape == "transfer":
+		vouchers.append(_move(asset, company, add_days(day0, 2), **(moved_to or {})))
+	elif shape == "leave_project":
+		vouchers.append(_move(asset, company, add_days(day0, 2), leave_project=1))
+	if shape == "scrap":
+		vouchers.append(disposal.scrap_asset(asset, scrap_date=str(add_days(day0, 3)), scrapping_type="Damage"))
+	else:
+		vouchers.append(_control_charge(asset, charge_on, post_on))
+	return frappe._dict(asset=asset, acquisition=acquisition, vouchers=vouchers, shape=shape, amount=amount)
+
+
+def control_asset_legs(asset_name, fields):
+	"""Every live GL row carrying the asset, with its account's root type,
+	cost centre and the named dimension fields."""
+	return frappe.db.sql(
+		f"""select gle.name, gle.voucher_type, gle.voucher_no, gle.account, acc.root_type,
+		          gle.debit, gle.credit, gle.cost_center
+		          {''.join(f', gle.`{f}`' for f in fields)}
+		   from `tabGL Entry` gle join `tabAccount` acc on acc.name = gle.account
+		   where gle.is_cancelled = 0 and gle.asset = %s
+		   order by gle.posting_date, gle.creation""",
+		asset_name, as_dict=True,
+	)
