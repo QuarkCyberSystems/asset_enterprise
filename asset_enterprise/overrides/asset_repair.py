@@ -155,6 +155,84 @@ class EnterpriseAssetRepair(AssetRepair):
 				title=_("Not a Manual Transaction Type"),
 			)
 
+	# ---------------------------------------------- consumed cost lines
+	def before_submit(self):
+		parent = getattr(super(), "before_submit", None)
+		if parent:
+			parent()
+		self._allocate_consumed_lines()
+
+	def _allocate_consumed_lines(self):
+		"""D-054 (chief r4 B-1): the invoice cost lines this repair
+		capitalizes, decided once and recorded (asset_enterprise.consumption)
+		- an invoice row names the invoice and account only."""
+		from asset_enterprise import consumption
+
+		if not self.meta.has_field(consumption.TABLE):
+			return
+		if self.get("transaction_type") == "Reversal" or not self.get("capitalize_repair_cost"):
+			self.set(consumption.TABLE, [])
+			return
+		dims = consumption.header_dimensions(self)
+		consumption.allocate(
+			self,
+			[
+				(row.name, row.purchase_invoice, row.expense_account, flt(row.repair_cost), dims, self.cost_center)
+				for row in self.get("invoices") or []
+				if row.purchase_invoice and flt(row.repair_cost)
+			],
+		)
+
+	def get_gl_entries_for_repair_cost(self, gl_entries, fixed_asset_account):
+		"""One capitalizing credit per consumed invoice line (its voucher row
+		is the line's record), on the consumed line's dimensions; core's one
+		credit per invoice row, merged by account, named no line. The asset
+		debit is core's."""
+		from asset_enterprise import consumption
+
+		lines = self.get(consumption.TABLE) or []
+		if not lines or flt(self.repair_cost) <= 0:
+			return super().get_gl_entries_for_repair_cost(gl_entries, fixed_asset_account)
+		for line in lines:
+			gl_entries.append(
+				self.get_gl_dict(
+					{
+						"account": line.expense_account,
+						"credit": flt(line.amount),
+						"credit_in_account_currency": flt(line.amount),
+						"against": fixed_asset_account,
+						"voucher_type": self.doctype,
+						"voucher_no": self.name,
+						"voucher_detail_no": line.name,
+						"cost_center": self.cost_center,
+						"posting_date": self.completion_date,
+						"company": self.company,
+						**consumption.line_dimensions(line),
+					},
+					item=self,
+				)
+			)
+			if line.gl_voucher_no != self.name:
+				consumption.mark_voucher(line, self.doctype, self.name, line.name)
+		gl_entries.append(
+			self.get_gl_dict(
+				{
+					"account": fixed_asset_account,
+					"debit": self.repair_cost,
+					"debit_in_account_currency": self.repair_cost,
+					"against": ", ".join({line.expense_account for line in lines}),
+					"voucher_type": self.doctype,
+					"voucher_no": self.name,
+					"cost_center": self.cost_center,
+					"posting_date": self.completion_date,
+					"against_voucher_type": "Asset",
+					"against_voucher": self.asset,
+					"company": self.company,
+				},
+				item=self,
+			)
+		)
+
 	def _submit_reversal(self):
 		"""Reversal Repair on_submit — replaces the core forward path."""
 		source_name = self.get("reversal_of_repair")

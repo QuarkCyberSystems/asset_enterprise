@@ -636,8 +636,11 @@ def capitalize_service_costs(cap_doc):
 			)
 		return None
 
+	from asset_enterprise import consumption
+
 	total = 0.0
 	accounts = []
+	line_rows = []  # (index in accounts, consumed line)
 	for row in rows:
 		if not row.get("expense_account"):
 			frappe.throw(
@@ -645,13 +648,28 @@ def capitalize_service_costs(cap_doc):
 				  "side of the capitalization (§12.3).").format(row.idx, row.item_code)
 			)
 		amount = fa_module_round(flt(row.amount), target.company)
-		accounts.append(
-			{
-				"account": row.expense_account,
-				"credit_in_account_currency": amount,
-				"cost_center": row.get("cost_center") or target.get("cost_center"),
-			}
-		)
+		consumed = consumption.lines_for(cap_doc, row.name)
+		if consumed:
+			# D-054: one credit per consumed invoice line, on its dimensions;
+			# the line records which journal row carries it (marked below)
+			for line in consumed:
+				accounts.append(
+					{
+						"account": row.expense_account,
+						"credit_in_account_currency": fa_module_round(flt(line.amount), target.company),
+						"cost_center": row.get("cost_center") or target.get("cost_center"),
+						**consumption.line_dimensions(line),
+					}
+				)
+				line_rows.append((len(accounts) - 1, line))
+		else:
+			accounts.append(
+				{
+					"account": row.expense_account,
+					"credit_in_account_currency": amount,
+					"cost_center": row.get("cost_center") or target.get("cost_center"),
+				}
+			)
 		total = fa_module_round(total + amount, target.company)
 
 	tgt_accounts = _category_accounts(target)
@@ -677,6 +695,11 @@ def capitalize_service_costs(cap_doc):
 		}
 	)
 	je.flags.ignore_permissions = True
+	if line_rows:
+		je.insert()
+		# the asset debit is inserted first, so every credit sits one row on
+		for index, line in line_rows:
+			consumption.mark_voucher(line, "Journal Entry", je.name, je.accounts[index + 1].name)
 	je.submit()
 
 	tcc.apply(

@@ -314,6 +314,63 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 		):
 			return  # a reversal carries no consumed items by design
 		super().before_submit()
+		self._allocate_consumed_lines()
+
+	def _allocate_consumed_lines(self):
+		"""D-054 (Vivek 26 Sep, "it consumes the line"): a service row that
+		names the invoice it was bought on capitalizes that invoice's cost
+		lines, decided once and recorded (asset_enterprise.consumption)."""
+		from asset_enterprise import consumption
+
+		if not self.meta.has_field(consumption.TABLE):
+			return
+		header = consumption.header_dimensions(self)
+		requests = []
+		for row in self.get("service_items") or []:
+			if not (row.get("purchase_invoice") and row.get("expense_account") and flt(row.amount)):
+				continue
+			dims = {d: row.get(d) or header.get(d) for d in header}
+			requests.append((row.name, row.purchase_invoice, row.expense_account, flt(row.amount), dims,
+				row.get("cost_center") or self.get("cost_center")))
+		consumption.allocate(self, requests)
+
+	def get_gl_entries_for_consumed_service_items(self, gl_entries, target_account, target_against, precision):
+		"""Standard Capitalization: a service row that consumed invoice lines
+		credits each line once (voucher row = the line's record, the line's
+		dimensions); any other row is core's."""
+		from asset_enterprise import consumption
+
+		lines = self.get(consumption.TABLE) or []
+		if not lines:
+			return super().get_gl_entries_for_consumed_service_items(gl_entries, target_account, target_against, precision)
+		for item_row in self.service_items:
+			consumed = consumption.lines_for(self, item_row.name)
+			if not consumed:
+				saved, self.service_items = self.service_items, [item_row]
+				try:
+					super().get_gl_entries_for_consumed_service_items(gl_entries, target_account, target_against, precision)
+				finally:
+					self.service_items = saved
+				continue
+			target_against.add(item_row.expense_account)
+			for line in consumed:
+				gl_entries.append(
+					self.get_gl_dict(
+						{
+							"account": line.expense_account,
+							"against": target_account,
+							"cost_center": item_row.cost_center,
+							"project": item_row.get("project") or self.get("project"),
+							"remarks": self.get("remarks") or "Accounting Entry for Stock",
+							"credit": flt(line.amount, precision),
+							"voucher_detail_no": line.name,
+							**consumption.line_dimensions(line),
+						},
+						item=item_row,
+					)
+				)
+				if line.gl_voucher_no != self.name:
+					consumption.mark_voucher(line, self.doctype, self.name, line.name)
 
 	def on_submit(self):
 		ttype = self.get("transaction_type") or "Standard Capitalization"

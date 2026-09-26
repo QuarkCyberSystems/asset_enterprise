@@ -256,6 +256,18 @@ CUSTOM_FIELDS = {
 	# ---------------------------------------------------- Asset Capitalization
 	"Asset Capitalization": [
 		{
+			# D-054 (Vivek 26 Sep, "it consumes the line"): the invoice cost
+			# lines the service rows capitalize, one GL credit each.
+			"fieldname": "consumed_cost_lines",
+			"fieldtype": "Table",
+			"label": "Consumed Cost Lines",
+			"options": "Asset Consumed Cost Line",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "service_items",
+			"depends_on": "eval:(doc.consumed_cost_lines || []).length",
+		},
+		{
 			"fieldname": "transaction_type",
 			"fieldtype": "Select",
 			"label": "Transaction Type",
@@ -420,8 +432,36 @@ CUSTOM_FIELDS = {
 			"description": "The capitalization that consumed these materials.",
 		},
 	],
+	# ------------------------------------- Asset Capitalization Service Item
+	"Asset Capitalization Service Item": [
+		{
+			# The invoice the service was bought on: its cost line is what
+			# the capitalization consumes (D-054), the way a repair's
+			# invoice row names it.
+			"fieldname": "purchase_invoice",
+			"fieldtype": "Link",
+			"label": "Purchase Invoice",
+			"options": "Purchase Invoice",
+			"insert_after": "expense_account",
+			"description": "The invoice the service cost was booked on. Its cost line is capitalized and no longer counts as expense.",
+		},
+	],
 	# ----------------------------------------------------------- Asset Repair
 	"Asset Repair": [
+		{
+			# D-054 (B-1 r4): the invoice cost lines a capitalized repair
+			# consumes, one GL credit each (asset_enterprise.consumption) -
+			# an invoice row names only the invoice and the account, and
+			# one credit per row landed wholly on one of its lines.
+			"fieldname": "consumed_cost_lines",
+			"fieldtype": "Table",
+			"label": "Consumed Cost Lines",
+			"options": "Asset Consumed Cost Line",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "invoices",
+			"depends_on": "eval:(doc.consumed_cost_lines || []).length",
+		},
 		{
 			# Core's Increase In Asset Life is months-only; days follow the
 			# AVA rule — they move the end of life, not the period count.
