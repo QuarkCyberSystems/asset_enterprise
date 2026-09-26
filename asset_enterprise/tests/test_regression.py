@@ -60,3 +60,23 @@ class TestRegressionCapture(unittest.TestCase):
 
 	def test_skipped_coverage_is_not_green(self):
 		self.assertEqual(_verdict(None, "E-24 SKIP missing project fixture"), "INCOMPLETE")
+
+	def test_gl_rollout_requires_explicit_site_activation(self):
+		import frappe
+		from asset_enterprise import asset_values
+
+		asset = frappe._dict(name="TEST", docstatus=1)
+		legacy = {"historical_asset_value": 99}
+		ledger = {"historical_asset_value": 42}
+		for enabled in (0, 1):
+			with self.subTest(enabled=enabled), patch.object(
+				frappe, "conf", {"asset_enterprise_gl_values_ready": enabled}
+			), patch.object(frappe, "get_doc", return_value=asset), patch(
+				"asset_enterprise.depreciation.enterprise_enabled", return_value=True
+			), patch.object(asset_values, "fold_asset_values", return_value=legacy) as fold, patch.object(
+				asset_values, "gl_asset_values", return_value=dict(ledger)
+			) as gl, patch.object(asset_values, "_remaining_life_months", return_value=12):
+				values = asset_values.recalculate_asset_values("TEST", save=False)
+				self.assertEqual(values["historical_asset_value"], 42 if enabled else 99)
+				self.assertEqual(gl.call_count, enabled)
+				self.assertEqual(fold.call_count, 1 - enabled)

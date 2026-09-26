@@ -70,6 +70,8 @@ class EnterpriseAsset(Asset):
 		return super().validate_asset_values()
 
 	def validate(self):
+		from asset_enterprise.control_category import configure_asset
+		configure_asset(self)
 		self._validate_group_node()
 		if self._enterprise():
 			self._apply_receiving_date_basis()
@@ -155,6 +157,8 @@ class EnterpriseAsset(Asset):
 			)
 
 	def validate_update_after_submit(self):
+		from asset_enterprise.control_category import configure_asset
+		configure_asset(self)
 		# Submitted-doc saves skip validate() — re-run the tree check so
 		# a parent_asset edit after submit cannot create a cycle (VR-009).
 		super().validate_update_after_submit()
@@ -163,7 +167,13 @@ class EnterpriseAsset(Asset):
 			self._guard_merge_log()
 
 	def on_update(self):
-		super().on_update()
+		previous_submission = frappe.flags.get("ae_asset_submission")
+		if self._action == "submit":
+			frappe.flags.ae_asset_submission = self.name
+		try:
+			super().on_update()
+		finally:
+			frappe.flags.ae_asset_submission = previous_submission
 		self._sync_asset_tree()
 
 	def on_update_after_submit(self):
@@ -294,6 +304,9 @@ class EnterpriseAsset(Asset):
 		# §3.2: core's booking GL is absorbed by the TCC like every other
 		# financial event (must follow super(), which posts it).
 		self._record_acquisition_treatment()
+		if self._enterprise():
+			# Monetary schedule bases must see the posted opening GL.
+			self._post_existing_asset_opening()
 		# VR-005 / TC-006: the receipt row is flagged as soon as a live
 		# asset references it. The PR-submit hook only sees assets that
 		# already existed, so an asset created against the row later
@@ -341,8 +354,6 @@ class EnterpriseAsset(Asset):
 				_("Replaced by Asset {0} (GAP-016 Path 2).").format(self.name),
 				transaction_type="Replacement",
 			)
-		if self._enterprise():
-			self._post_existing_asset_opening()
 
 	def _is_opening_balance_asset(self):
 		if self.get("is_group_node"):

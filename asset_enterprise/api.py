@@ -34,6 +34,7 @@ def enable_depreciation_defaults(asset_name):
 	if not asset:
 		return {}
 
+
 	# §4.4 basis prefill: the asset's own in-service date, else the
 	# receipt posting date it arrived on (Ruba, 18/08).
 	afu = asset.available_for_use_date or (
@@ -42,6 +43,13 @@ def enable_depreciation_defaults(asset_name):
 	)
 	if not asset.asset_category:
 		return {"available_for_use_date": afu}
+
+	from asset_enterprise.control_category import applies
+	if applies(asset):
+		return {"control_category_one_day": True, "total_number_of_depreciations": 1,
+			"frequency_of_depreciation": 1, "expected_value_after_useful_life": 0,
+			"available_for_use_date": afu, "depreciation_start_date": afu,
+			"finance_book": frappe.db.get_value("Company", asset.company, "default_finance_book")}
 
 	rows = frappe.get_all(
 		"Asset Finance Book",

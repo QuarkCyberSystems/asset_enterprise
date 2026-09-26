@@ -941,6 +941,10 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 	schedule over the real calendar span, giving a different rate inside
 	a leap year). Posted rows are preserved verbatim; only future rows
 	are regenerated, so this is safe on assets already depreciating."""
+	from asset_enterprise.control_category import applies
+	if applies(frappe.get_doc("Asset", asset_name)):
+		return None  # the schedule controller already produces the one-day row
+
 	# §4.3's daily-rate model IS straight line — rebuilding a Written
 	# Down Value (or Double Declining) schedule here would silently
 	# replace the declining curve with flat rows (19/08 caller audit).
@@ -1270,6 +1274,13 @@ def enable_depreciation(
 	):
 		frappe.throw(_("Asset {0} already has an Active depreciation schedule.").format(asset_name))
 
+	from asset_enterprise.control_category import applies
+	control = applies(asset)
+	if control:
+		total_number_of_depreciations = frequency_of_depreciation = 1
+		expected_value_after_useful_life = 0
+		depreciation_method = "Straight Line"
+
 	months = cint(total_number_of_depreciations) * (cint(frequency_of_depreciation) or 1)
 	if months <= 0:
 		frappe.throw(_("Total useful life must be positive."))
@@ -1355,6 +1366,11 @@ def enable_depreciation(
 		first_posting_date=first_posting,
 		# Denominator = actual calendar days (CH-12 amended, 2026-09-01).
 	)
+
+	if control:
+		start = end_of_life = first_posting or start
+		rows = [{"schedule_date": start, "period_end_date": start,
+			"amount": base, "days_in_period": 1, "daily_rate": base}]
 
 	fb_row = frappe.get_doc(
 		{
@@ -1513,6 +1529,8 @@ def post_schedule_entries(schedule_name, date=None, sch_start_idx=None, sch_end_
 			continue
 		if sch_end_idx and row.idx > cint(sch_end_idx):
 			continue
+		from asset_enterprise.control_category import validate_posting
+		validate_posting(frappe.get_doc("Asset", row.asset), row)
 		if final_row_requires_manual_post(row):
 			continue
 		_post_one(row, posting_date)
@@ -1725,6 +1743,13 @@ def _origin_cost_centre(asset_name, first_move, fallback):
 	return acquisition_cost_center(asset_name) or fallback
 
 
+def project_dimension_fields():
+	"""Project dimensions supported by the explicit Leave project action."""
+	meta = frappe.get_meta("Asset Movement Item")
+	return [field for field in movement_dimension_fields()
+	        if meta.get_field(field).options in ("Project", "Project Accounting")]
+
+
 def attribution_timeline(asset_name, fallback=None):
 	"""Who held this asset, from when, and under which dimensions.
 
@@ -1739,9 +1764,9 @@ def attribution_timeline(asset_name, fallback=None):
 	the new centre whenever they posted late (client, TC-035, 20/08).
 
 	Dimensions travel the same way, and for the same reason: a project
-	that took the asset in September did not hold it in August, so only
-	the segments from the day after the transfer carry it (Vivek,
-	08/09 — "only post transfer"). A movement leaving a dimension blank
+	that took the asset in September did not hold it in August. Under
+	D-031 project changes/exits apply from the effective day; cost-centre
+	and other dimensions retain the next-day boundary. A blank dimension
 	changes nothing about it, matching how VR-026 already treats a blank
 	target location or custodian; the asset's own values open the
 	timeline, so an asset that was created under a project keeps it.
@@ -1764,13 +1789,16 @@ def attribution_timeline(asset_name, fallback=None):
 	)
 	for fieldname in fields:
 		query = query.select(ami[fieldname])
+	has_exit = frappe.get_meta("Asset Movement Item").has_field("leave_project")
+	if has_exit:
+		query = query.select(ami.leave_project)
 	# A movement may change dimensions WITHOUT changing the cost centre,
 	# so unlike the pre-dimension query this cannot filter on a target
 	# centre; rows that change neither are dropped below instead.
 	moves = [
 		move
 		for move in query.run(as_dict=True)
-		if move.target_cost_center or any(move.get(f) for f in fields)
+		if move.target_cost_center or move.get("leave_project") or any(move.get(f) for f in fields)
 	]
 
 	if fallback is None:
@@ -1784,26 +1812,25 @@ def attribution_timeline(asset_name, fallback=None):
 	current_cc = _origin_cost_centre(asset_name, moves[0], fallback)
 	current_dims = dict(opening)
 	timeline = [(None, current_cc, dict(current_dims))]
-	for move in moves:
-		current_cc = move.target_cost_center or current_cc
-		for fieldname in fields:
-			if move.get(fieldname):
-				current_dims[fieldname] = move.get(fieldname)
-		# The transfer DAY ITSELF belongs to the centre giving the asset
-		# up; the receiving centre holds it from the following day. The
-		# client's "Cost Center Transfer" workbook (Belal, 02/09) splits a
-		# 13 July transfer as 1-13 July to the old centre (13 days) and
-		# 14-31 to the new (18) — §GAP-021 says "days before" and "days
-		# after" the transfer, which leaves the transfer day itself in
-		# neither bucket and accounts for only 30 of July's 31 days.
-		#
-		# Shifting the TIMELINE rather than the split arithmetic keeps
-		# cost_centre_on() and cost_centre_split() answering the same
-		# question the same way; fixing only the split would have left
-		# them disagreeing about who held the asset on the transfer date.
-		timeline.append(
-			(add_days(getdate(move.transaction_date), 1), current_cc, dict(current_dims))
-		)
+	# D-031: project changes take effect that day; D-009: CC changes
+	# take effect the next day. Sort events before replaying, including
+	# adjacent/same-day movements, instead of mutating a future CC early.
+	projects = set(project_dimension_fields())
+	events = []
+	for order, move in enumerate(moves):
+		date = getdate(move.transaction_date)
+		project_changes = {f: move.get(f) for f in projects if move.get(f)}
+		if move.get("leave_project"):
+			project_changes.update({f: None for f in projects})
+		if project_changes:
+			events.append((date, order, None, project_changes))
+		other_changes = {f: move.get(f) for f in fields if f not in projects and move.get(f)}
+		if move.target_cost_center or other_changes:
+			events.append((add_days(date, 1), order, move.target_cost_center, other_changes))
+	for date, order, cc, dimensions in sorted(events, key=lambda event: (event[0], event[1])):
+		current_cc = cc or current_cc
+		current_dims.update(dimensions)
+		timeline.append((date, current_cc, dict(current_dims)))
 	return timeline
 
 
@@ -1968,8 +1995,8 @@ def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount,
 						"reference_type": "Asset",
 						"reference_name": asset.name,
 						# Expense follows use, and so does the dimension it
-						# was used under: only the segments from the day
-						# after a transfer carry the receiving project.
+						# was used under: D-031 project assignment starts
+						# on the effective date, with CC next-day under D-009.
 						**dims,
 					}
 				)
@@ -2030,6 +2057,9 @@ def _post_one(row, posting_date):
 
 	_assert_row_is_live(row)
 	asset = frappe.get_doc("Asset", row.asset)
+	from asset_enterprise.control_category import validate_posting
+	validate_posting(asset, row)
+
 	company = asset.company
 	aca = frappe.db.get_value(
 		"Asset Category Account",

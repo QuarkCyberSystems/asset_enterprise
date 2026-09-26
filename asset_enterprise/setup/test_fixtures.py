@@ -160,3 +160,22 @@ def ensure_enterprise_test_defaults():
 				frappe.throw(f"Test company {company} lacks a plain {root} account")
 			frappe.db.set_value("Company", company, field, account)
 	return company
+
+
+def dimension_fixture(fieldname, company, doctype="Asset Movement Item"):
+	"""Create an isolated project in the caller's rollback-only savepoint."""
+	link = frappe.get_meta(doctype).get_field(fieldname)
+	if not link:
+		return None
+	if link.options == "Project Accounting":
+		return frappe.get_doc({
+			"doctype": "Project Accounting", "project_name": "AE Dimension " + frappe.generate_hash(length=8),
+			"company": company, "project_type": "Opex", "status": "Open",
+		}).insert(ignore_permissions=True).name
+	if link.options == "Project":
+		return frappe.get_doc({
+			"doctype": "Project", "project_name": "AE Dimension " + frappe.generate_hash(length=8),
+			"company": company,
+		}).insert(ignore_permissions=True).name
+	filters = {"company": company} if frappe.get_meta(link.options).has_field("company") else {}
+	return frappe.db.get_value(link.options, filters, "name")

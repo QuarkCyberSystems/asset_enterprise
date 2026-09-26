@@ -16,8 +16,8 @@ class EnterpriseAssetRepair(AssetRepair):
 	the destructive core path (make_gl_entries(cancel=True) +
 	update_asset_value db_set). Instead a Reversal Asset Repair
 	(same doctype, transaction_type=Reversal) is auto-created and
-	submitted; its on_submit posts the mirror JE via
-	make_reverse_gl_entries, returns consumed stock via a Material
+	submitted; its on_submit posts mirrored GL under its own reversal
+	voucher, returns consumed stock via a Material
 	Receipt Stock Entry (Sales-Return-style, per 2026-07-14 meeting),
 	pairs the FTs through tcc.reverse, and supersedes the schedule.
 
@@ -133,6 +133,8 @@ class EnterpriseAssetRepair(AssetRepair):
 				).format(self.asset),
 				title=_("Grouping Asset Has No Value"),
 			)
+		if self._enterprise() and self.get("reversal_of_repair"):
+			self._fully_depreciated_gate(frappe.get_doc("Asset Repair", self.reversal_of_repair))
 		super().validate()
 		# Same rule as the capitalization reversal (client, 25/08): a
 		# Reversal Repair is created when a capitalized repair is
@@ -162,10 +164,27 @@ class EnterpriseAssetRepair(AssetRepair):
 
 		self._fully_depreciated_gate(source)
 
-		# 1. Mirror JE of the source repair's GL (original stays posted).
-		from erpnext.accounts.general_ledger import make_reverse_gl_entries
+		# Repair posts under its own voucher, not a Journal Entry. Preserve
+		# the original rows and post their mirror under THIS reversal voucher.
+		from erpnext.accounts.general_ledger import make_gl_entries
 
-		make_reverse_gl_entries(voucher_type="Asset Repair", voucher_no=source.name)
+		reversal_date = getdate(self.completion_date or nowdate())
+		original_gl = frappe.get_all("GL Entry",
+			filters={"voucher_type": "Asset Repair", "voucher_no": source.name, "is_cancelled": 0},
+			fields=["*"], order_by="creation, name")
+		gl_map = []
+		for original in original_gl:
+			row = frappe._dict(original)
+			for field in ("name", "creation", "modified", "owner", "modified_by"):
+				row.pop(field, None)
+			row.update(voucher_no=self.name, posting_date=reversal_date, is_cancelled=0,
+				remarks=_("Reversal Repair {0} of {1}").format(self.name, source.name))
+			for debit, credit in (("debit", "credit"),
+				("debit_in_account_currency", "credit_in_account_currency"),
+				("debit_in_transaction_currency", "credit_in_transaction_currency")):
+				row[debit], row[credit] = original.get(credit), original.get(debit)
+			gl_map.append(row)
+		make_gl_entries(gl_map, merge_entries=False)
 
 		# 2. Stock return — Material Receipt of the consumed items
 		#    (Sales-Return pattern; valuation per Item method, GA-0003).
@@ -176,7 +195,8 @@ class EnterpriseAssetRepair(AssetRepair):
 					"doctype": "Stock Entry",
 					"stock_entry_type": "Material Receipt",
 					"company": self.company or source.company,
-					"posting_date": nowdate(),
+					"posting_date": reversal_date,
+					"set_posting_time": 1,
 					"items": [
 						{
 							"item_code": row.item_code,
@@ -212,8 +232,8 @@ class EnterpriseAssetRepair(AssetRepair):
 				# C3: the reversal's own completion date (chosen in the
 				# dialog, default today) anchors the FT pairing.
 				posting_date=getdate(self.completion_date or nowdate()),
-				# The Reversal Repair's GL is posted under ITS voucher
-				# (make_reverse_gl_entries) — link it so the mirror FT
+				# The Reversal Repair's GL is posted under ITS voucher;
+				# link it so the mirror FT
 				# points at the right voucher and the fold's counted set
 				# covers the reversal GL too.
 				voucher_type="Asset Repair",
@@ -251,7 +271,7 @@ class EnterpriseAssetRepair(AssetRepair):
 
 		add_snapshot_activity(
 			self.asset,
-			_("Repair {0} reversed via Reversal Repair {1}; original JE remains posted.").format(
+			_("Repair {0} reversed via Reversal Repair {1}; original ledger entries remain posted.").format(
 				source.name, self.name
 			),
 			transaction_type="Reversal",

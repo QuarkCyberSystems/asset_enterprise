@@ -1,32 +1,16 @@
-"""Treatment-derived asset values; independent GL reconciliation below.
+"""GL-derived posted asset values — GAP-006 / §5.1.
 
-The production fold remains an open deviation from GAP-006 / §5.1.
-
-The Asset form's Enterprise tab shows values DERIVED, not stored-and-
-mutated:
-
-    HAV   = net_purchase_amount  (v16 field; v15 gross_purchase_amount)
-            + sum(Posted Financial Treatment.hav_delta)
-    Accum = opening_accumulated_depreciation
-            + sum(posted Depreciation Schedule row amounts, all books)
-            + sum(Posted Financial Treatment.accum_delta)
-    NBV   = HAV − Accum
-    RUL   = total useful life − elapsed since depreciation start
-            + sum(Posted Financial Treatment.life_delta_months)      (C33)
-
-Financial Treatments carry SIGNED deltas set by the TCC handler that
-created them, so this module never re-derives category semantics — it
-just folds. Reversal pairs contribute nothing: the original flips to
-status Reversed (excluded by status) and the mirror FT carries
-reversal_reference back to it (excluded by that reference), so the
-pair nets out of the fold while both remain visible for audit.
-
-Recalculation triggers: after every tcc.apply / tcc.reverse, and the
-manual Recalculate button (Phase 8 JS).
+Sites explicitly enabled after the C1 keying audit read submitted/cancelled
+asset cost and accumulated depreciation from
+posted GL keyed by the asset accounting dimension. Missing keys are
+reported separately; reference keys never silently enter the value math.
+Drafts have no posting yet and show the treatment-based preview. The old
+fold remains a separately named diagnostic and the legacy calculation
+until site_config.asset_enterprise_gl_values_ready is enabled.
 """
 
 import frappe
-from frappe.utils import date_diff, flt, month_diff, nowdate
+from frappe.utils import cint, date_diff, flt, month_diff, nowdate
 
 from asset_enterprise.rounding import fa_module_round
 
@@ -211,8 +195,8 @@ def _remaining_life_months(asset, life_delta_months):
 	return flt(unposted)
 
 
-def recalculate_asset_values(asset_name, save=True):
-	"""Re-derive HAV / Accum / NBV / RUL for one asset. Returns the dict."""
+def fold_asset_values(asset_name):
+	"""Treatment-based preview/audit; never writes operational values."""
 	asset = frappe.get_doc("Asset", asset_name)
 	company = asset.company
 	ft = _posted_ft_sums(asset_name)
@@ -239,9 +223,29 @@ def recalculate_asset_values(asset_name, save=True):
 		"remaining_useful_life_months": rul_months,
 		"remaining_useful_life_years": flt(rul_months / 12, 2),
 	}
+	return values
+
+
+def recalculate_asset_values(asset_name, save=True):
+	"""Use GL on audited, explicitly enabled sites; drafts remain previews.
+
+	The rollout switch is site-wide, never a per-asset fallback for missing
+	keys. Legacy sites must complete the C1 audit/backfill before activation.
+	"""
+	asset = frappe.get_doc("Asset", asset_name)
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if asset.docstatus == 0 or not enterprise_enabled() or not cint(
+		frappe.conf.get("asset_enterprise_gl_values_ready", 0)
+	):
+		values = fold_asset_values(asset_name)
+	else:
+		values = gl_asset_values(asset_name)
+		rul = _remaining_life_months(asset, 0)
+		values.update(remaining_useful_life_months=rul, remaining_useful_life_years=flt(rul / 12, 2))
 	if save:
 		frappe.db.set_value("Asset", asset_name, values, update_modified=False)
-		_sync_core_bookkeeping(asset, nbv, accum)
+		_sync_core_bookkeeping(asset, values["net_book_value"], values["accumulated_depreciation_value"])
 	return values
 
 
@@ -308,34 +312,37 @@ def assert_nbv_covers_reversal(asset_name, amount, context=None):
 		)
 
 
-def gl_asset_values(asset_name):
-	"""Independent posted-ledger balances for VR-008 reconciliation.
 
-	Use the asset dimension, with the legacy against-voucher reference only
-	when the dimension is blank. Never count another asset's dimensioned leg.
-	No purchase amount, schedule row, or Financial Treatment enters this read.
-	"""
+def gl_asset_values(asset_name):
+	"""C1/D1: strictly dimension-keyed posted balances; never infer a key."""
+	return _gl_asset_balances(asset_name, reference_key=False)
+
+
+def reference_gl_asset_values(asset_name):
+	"""Independent reference-key comparison for detecting attribution gaps."""
+	return _gl_asset_balances(asset_name, reference_key=True)
+
+
+def _gl_asset_balances(asset_name, reference_key):
 	asset = frappe.get_doc("Asset", asset_name)
 	accounts = _category_accounts(asset)
 	fa = accounts.get("fixed_asset_account")
 	accum = accounts.get("accumulated_depreciation_account")
+	if fa and fa == accum:
+		frappe.throw("Fixed Asset and Accumulated Depreciation accounts must be distinct "
+			"to derive asset balances from GL. Review the asset category accounts.")
+	key_condition = "against_voucher_type = 'Asset' and against_voucher = %(asset)s" if reference_key else "asset = %(asset)s"
 	balances = frappe.db.sql(
-		"""select account, sum(debit - credit) as balance
-		   from `tabGL Entry`
-		   where company = %(company)s and is_cancelled = 0
-		     and (asset = %(asset)s or
-		          (ifnull(asset, '') = '' and against_voucher_type = 'Asset'
-		           and against_voucher = %(asset)s))
-		     and account in %(accounts)s
-		   group by account""",
+		f"""select account, sum(debit - credit) as balance
+		    from `tabGL Entry`
+		    where company = %(company)s and is_cancelled = 0
+		      and {key_condition} and account in %(accounts)s
+		    group by account""",
 		{"company": asset.company, "asset": asset_name, "accounts": tuple(a for a in (fa, accum) if a) or ("",)},
 		as_dict=True,
 	)
 	by_account = {r.account: flt(r.balance) for r in balances}
 	hav = fa_module_round(by_account.get(fa, 0), asset.company)
 	accumulated = fa_module_round(-by_account.get(accum, 0), asset.company)
-	return {
-		"historical_asset_value": hav,
-		"accumulated_depreciation_value": accumulated,
-		"net_book_value": fa_module_round(hav - accumulated, asset.company),
-	}
+	return {"historical_asset_value": hav, "accumulated_depreciation_value": accumulated,
+		"net_book_value": fa_module_round(hav - accumulated, asset.company)}

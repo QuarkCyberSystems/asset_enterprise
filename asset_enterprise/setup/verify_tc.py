@@ -25,7 +25,7 @@ Run:  bench --site <site> execute asset_enterprise.setup.verify_tc.run
 import traceback
 
 import frappe
-from frappe.utils import add_days, add_months, flt, get_last_day, getdate, nowdate
+from frappe.utils import add_days, add_months, flt, get_first_day, get_last_day, getdate, nowdate
 
 CHECKS = []
 
@@ -2795,8 +2795,13 @@ def tc047d():
 	repair.flags.ignore_permissions = True
 	repair.insert()
 	repair.submit()
-	frappe.db.set_value("Asset", asset.name, "status", "Fully Depreciated", update_modified=False)
-	frappe.db.set_value("Asset", asset.name, "is_fully_depreciated", 1, update_modified=False)
+	from asset_enterprise.depreciation import enable_depreciation, post_schedule_entries
+
+	enable_depreciation(asset.name, total_number_of_depreciations=1,
+		depreciation_start_date=get_first_day(nowdate()))
+	schedule = frappe.db.get_value("Asset Depreciation Schedule",
+		{"asset": asset.name, "docstatus": 1, "status": "Active"}, "name")
+	post_schedule_entries(schedule, get_last_day(nowdate()))
 	try:
 		repair.reload()
 		repair.cancel()
@@ -2835,7 +2840,7 @@ def tc047e():
 	) or frappe.db.get_value("Company", company, "cost_center")
 	item = _stock_item()
 	warehouse = _warehouse(company)
-	_stock_in(company, item, warehouse, 200, 200)
+	_stock_in(company, item, warehouse, 200, 1000)
 	asset = _plain_asset(company, cat, "TC-047e Repair HAV", 2_000)
 	asset.submit()
 
@@ -3031,13 +3036,12 @@ def tc047f():
 
 
 # ============================================================== TC-047g
-@tc("TC-047g", "Capitalized Repair — backfill repairs an already-corrupted asset")
+@tc("TC-047g", "Capitalized Repair — missing treatment links cannot corrupt GL values")
 def tc047g():
-	"""The forward fix protects new repairs; assets repaired BEFORE it
-	still carry the double-count, and the backfill utility is what
-	corrects them. It must fix both halves — the derived HAV and the
-	future schedule rows the inflated NBV was spread over — and its dry
-	run must report that truthfully while writing nothing.
+	"""Missing treatment metadata must not change GL-derived values.
+
+	The link backfill must restore the audit reference, preserve correct
+	values and schedules, and leave all records untouched in dry-run mode.
 	"""
 	from asset_enterprise import repair as repair_mod
 	from asset_enterprise.asset_values import recalculate_asset_values
@@ -3050,17 +3054,16 @@ def tc047g():
 		pluck="name",
 	)[0]
 
-	# Recreate the pre-fix state: treatment with no voucher link, and a
-	# future schedule already spread over the inflated NBV.
+	# Remove audit metadata and regenerate: ledger values must stay correct.
 	frappe.db.set_value("Financial Treatment", ft,
 		{"voucher_type": None, "voucher_no": None}, update_modified=False)
 	recalculate_asset_values(asset.name, save=True)
 	supersede_and_regenerate(
 		asset.name, as_of_date=last_posted_schedule_date(asset.name),
-		reason="TC-047g: reproduce the pre-fix corruption",
+		reason="TC-047g: regenerate with missing treatment metadata",
 	)
-	corrupt_hav = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"])
-	corrupt_sched = _unposted_schedule_total(asset.name)
+	unlinked_hav = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"])
+	unlinked_sched = _unposted_schedule_total(asset.name)
 
 	# The utility commits, as a CLI repair tool should — but a COMMIT
 	# releases the harness savepoint and this fixture would outlive the
@@ -3072,7 +3075,7 @@ def tc047g():
 		repair_mod.link_repair_voucher_references(asset=asset.name, dry_run=1)
 		dry_clean = (
 			not frappe.db.get_value("Financial Treatment", ft, "voucher_no")
-			and abs(_unposted_schedule_total(asset.name) - corrupt_sched) < 0.01
+			and abs(_unposted_schedule_total(asset.name) - unlinked_sched) < 0.01
 		)
 		repair_mod.link_repair_voucher_references(asset=asset.name, dry_run=0)
 	finally:
@@ -3084,13 +3087,14 @@ def tc047g():
 	fixed_sched = _unposted_schedule_total(asset.name)
 	expected = flt(18_000 - flt(values["accumulated_depreciation_value"]) - salvage, 2)
 
-	corrupted_ok = corrupt_hav > 18_000.01           # the fixture really was broken
+	unlinked_ok = abs(unlinked_hav - 18_000) < 0.01
+	linked_ok = bool(frappe.db.get_value("Financial Treatment", ft, "voucher_no"))
 	hav_ok = abs(flt(values["historical_asset_value"]) - 18_000) < 0.01
 	sched_ok = abs(fixed_sched - expected) < 0.01
-	ok = corrupted_ok and dry_clean and hav_ok and sched_ok
+	ok = unlinked_ok and linked_ok and dry_clean and hav_ok and sched_ok
 	return (
 		("PASS" if ok else "FAIL"),
-		f"corrupted HAV {corrupt_hav:,.2f} / schedule {corrupt_sched:,.2f}; dry run "
+		f"unlinked HAV {unlinked_hav:,.2f} / schedule {unlinked_sched:,.2f}; dry run "
 		f"left it untouched={dry_clean}; after backfill HAV "
 		f"{values['historical_asset_value']:,.2f} (want 18,000) and schedule "
 		f"{fixed_sched:,.2f} (want {expected:,.2f})",

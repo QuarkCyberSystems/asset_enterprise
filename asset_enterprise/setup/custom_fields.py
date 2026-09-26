@@ -768,6 +768,13 @@ CUSTOM_FIELDS = {
 	# ------------------------------------------------- Asset Movement Item
 	"Asset Movement Item": [
 		{
+			"fieldname": "leave_project",
+			"fieldtype": "Check",
+			"label": "Leave Project",
+			"insert_after": "target_cost_center",
+			"description": "Clear project assignment from this date. Blank project fields otherwise keep the current project. Cannot be combined with a destination project.",
+		},
+		{
 			"fieldname": "source_cost_center",
 			"fieldtype": "Link",
 			"label": "Source Cost Center",

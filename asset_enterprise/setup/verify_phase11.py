@@ -2611,10 +2611,23 @@ def _run():
 
 		bump_useful_life_periods(e2.name, 12)
 		je_before2 = frappe.db.count("Journal Entry", {"voucher_type": "Depreciation Entry"})
+		# A treatment records the addition; only its posted GL creates value.
+		e2_fa = frappe.db.get_value("Asset Category Account",
+			{"parent": e2.asset_category, "company_name": company}, "fixed_asset_account")
+		addition_je = frappe.get_doc({
+			"doctype": "Journal Entry", "voucher_type": "Journal Entry", "company": company,
+			"posting_date": nowdate(), "accounts": [
+				{"account": e2_fa, "debit_in_account_currency": 1_200,
+				 "reference_type": "Asset", "reference_name": e2.name},
+				{"account": pick_plain_account(company, "Liability"), "credit_in_account_currency": 1_200},
+			],
+		})
+		addition_je.flags.ignore_permissions = True
+		addition_je.submit()
 		tcc_e2.apply(
 			source_doc=("Asset", e2.name), category="Addition",
 			transaction_type="t35 value with extended life", asset=e2.name,
-			posting_date=nowdate(), amount=1_200, hav_delta=1_200,
+			posting_date=nowdate(), amount=1_200, hav_delta=1_200, journal_entry=addition_je.name,
 		)
 		regenerate_after_value_change(
 			e2.name, nowdate(), "t35 extension",

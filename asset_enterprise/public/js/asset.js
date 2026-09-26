@@ -343,11 +343,13 @@ function open_enable_depreciation_dialog(frm, defaults) {
 	const d = new frappe.ui.Dialog({
 		title: __("Enable Depreciation — {0}", [frm.doc.name]),
 		fields: [
+			{fieldtype: "HTML", options: defaults.control_category_one_day ? __("Control Category: the full remaining value is depreciated in one day on the selected posting date, with zero residual value.") : ""},
 			{
 				fieldname: "total_number_of_depreciations",
 				fieldtype: "Int",
 				label: __("Number of Depreciations"),
 				default: defaults.total_number_of_depreciations,
+				read_only: !!defaults.control_category_one_day,
 				reqd: 1,
 			},
 			{
@@ -355,6 +357,7 @@ function open_enable_depreciation_dialog(frm, defaults) {
 				fieldtype: "Int",
 				label: __("Frequency (Months)"),
 				default: defaults.frequency_of_depreciation || 1,
+				hidden: !!defaults.control_category_one_day,
 				reqd: 1,
 			},
 			{
@@ -381,6 +384,7 @@ function open_enable_depreciation_dialog(frm, defaults) {
 				fieldtype: "Currency",
 				label: __("Salvage Value"),
 				default: defaults.expected_value_after_useful_life || 0,
+				read_only: !!defaults.control_category_one_day,
 			},
 			{
 				fieldname: "finance_book",

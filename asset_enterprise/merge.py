@@ -1082,35 +1082,18 @@ def reverse_merge(reversal_doc):
 	if not orig_jes:
 		frappe.throw(_("Journal Entry for capitalization {0} not found.").format(source_cap.name))
 
-	mirror = None
+	from asset_enterprise.restore import _mirror_je
+
+	mirrors = {}
 	for je_name in orig_jes:
-		orig_je = frappe.get_doc("Journal Entry", je_name)
-		m = frappe.get_doc(
-			{
-				"doctype": "Journal Entry",
-				"voucher_type": orig_je.voucher_type,
-				"company": orig_je.company,
-				"posting_date": posting_date,
-				"user_remark": _("Reversal of Capitalized Maintenance {0} via {1} (mirrors {2})").format(
-					source_cap.name, reversal_doc.name, je_name
-				),
-				"accounts": [
-					{
-						"account": a.account,
-						"debit_in_account_currency": a.credit_in_account_currency,
-						"credit_in_account_currency": a.debit_in_account_currency,
-						"cost_center": a.cost_center,
-						"reference_type": a.reference_type,
-						"reference_name": a.reference_name,
-					}
-					for a in orig_je.accounts
-				],
-			}
+		mirrors[je_name] = _mirror_je(
+			je_name,
+			_("Reversal of Capitalized Maintenance {0} via {1} (mirrors {2})").format(
+				source_cap.name, reversal_doc.name, je_name
+			),
+			posting_date=posting_date,
 		)
-		m.flags.ignore_permissions = True
-		m.flags.ignore_links = True
-		m.submit()
-		mirror = mirror or m
+	mirror_name = next(iter(mirrors.values()))
 
 	# Pair every FT the merge created.
 	for ft_name in frappe.get_all(
@@ -1122,7 +1105,9 @@ def reverse_merge(reversal_doc):
 		},
 		pluck="name",
 	):
-		tcc.reverse(ft_name, reversal_doc, posting_date=posting_date, journal_entry=mirror.name)
+		original_je = frappe.db.get_value("Financial Treatment", ft_name, "journal_entry")
+		tcc.reverse(ft_name, reversal_doc, posting_date=posting_date,
+			journal_entry=mirrors.get(original_je, mirror_name))
 
 	# Merge Log rows -> Reversed (never deleted).
 	target = frappe.get_doc("Asset", source_cap.target_asset)
@@ -1138,4 +1123,4 @@ def reverse_merge(reversal_doc):
 		)
 
 	_resupersede(target.name, posting_date, reversal_doc)
-	return mirror.name
+	return mirror_name

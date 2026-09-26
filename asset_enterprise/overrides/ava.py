@@ -164,6 +164,18 @@ class EnterpriseAVA(AssetValueAdjustment):
 				).format(_(ttype))
 			)
 
+	def make_asset_revaluation_entry(self):
+		if not (self._enterprise() and self.get("reversal_of_ava")):
+			return super().make_asset_revaluation_entry()
+		from asset_enterprise.restore import _mirror_je
+
+		original = frappe.db.get_value("Asset Value Adjustment", self.reversal_of_ava, "journal_entry")
+		if original:
+			mirror = _mirror_je(original,
+				_("Reversal AVA {0} of {1}").format(self.name, self.reversal_of_ava),
+				posting_date=self.date)
+			self.db_set("journal_entry", mirror)
+
 	# ------------------------------------------------------------- submit
 	def on_submit(self):
 		# VR-043 (client, 10/09): an impairment or revaluation is measured

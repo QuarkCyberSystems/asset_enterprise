@@ -19,6 +19,8 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 
 	def validate(self):
 		super().validate()
+		from asset_enterprise.control_category import normalize_schedule
+		normalize_schedule(self)
 		self._protect_posted_rows()
 		self._render_rate_breakdowns()
 

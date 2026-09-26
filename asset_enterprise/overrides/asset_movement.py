@@ -41,6 +41,23 @@ class EnterpriseAssetMovement(AssetMovement):
 		if not self._enterprise():
 			return super().validate_movement(d)
 
+		from asset_enterprise.depreciation import movement_dimension_fields, project_dimension_fields
+
+		dimensions = movement_dimension_fields()
+		projects = project_dimension_fields()
+		if d.get("leave_project"):
+			if not projects:
+				frappe.throw(_("Leave Project requires a registered project accounting dimension."))
+			if any(d.get(field) for field in projects):
+				frappe.throw(_("Choose a destination project or Leave Project, not both (D-031)."))
+		for field in projects:
+			if d.get(field):
+				doctype = d.meta.get_field(field).options
+				if frappe.get_meta(doctype).has_field("company"):
+					company = frappe.db.get_value(doctype, d.get(field), "company")
+					if company and company != self.company:
+						frappe.throw(_("Destination project must belong to the movement company."))
+
 		# The source side is a FACT read from the asset, not user input
 		# (client, 20/08): location, custodian and cost centre are filled
 		# server-side and shown read-only — the user only picks targets.
@@ -55,11 +72,12 @@ class EnterpriseAssetMovement(AssetMovement):
 			if d.get("target_cost_center") and not d.get("source_cost_center"):
 				d.source_cost_center = state.cost_center
 
-		if not (d.get("target_location") or d.get("to_employee") or d.get("target_cost_center")):
+		if not (d.get("target_location") or d.get("to_employee") or d.get("target_cost_center")
+		        or d.get("leave_project") or any(d.get(f) for f in dimensions)):
 			frappe.throw(
 				_(
 					"Row {0}: set at least one of Target Location, To Employee or "
-					"Target Cost Center (VR-026)."
+					"Target Cost Center, a dimension, or Leave Project (VR-026 / D-031)."
 				).format(d.idx)
 			)
 
@@ -129,20 +147,23 @@ class EnterpriseAssetMovement(AssetMovement):
 		if not self._enterprise():
 			return super().get_latest_location_and_custodian(asset)
 
-		row = frappe.db.sql(
-			"""
-			select asm_item.target_location, asm_item.to_employee
-			from `tabAsset Movement Item` asm_item
-			join `tabAsset Movement` asm on asm_item.parent = asm.name
-			where asm_item.asset = %(asset)s
-			  and asm.company = %(company)s
-			  and asm.docstatus = 1
-			order by asm.transaction_date desc, asm.creation desc
-			limit 1
-			""",
-			{"asset": asset, "company": self.company},
+		rows = frappe.db.sql(
+			"""select ami.target_location, ami.to_employee, am.purpose
+			   from `tabAsset Movement Item` ami
+			   join `tabAsset Movement` am on ami.parent = am.name
+			   where ami.asset = %(asset)s and am.company = %(company)s and am.docstatus = 1
+			   order by am.transaction_date desc, am.creation desc, ami.idx desc""",
+			{"asset": asset, "company": self.company}, as_dict=True,
 		)
-		return (row[0][0], row[0][1]) if row else ("", "")
+		location = next((r.target_location for r in rows if r.target_location), "")
+		# Blank employee on a project/CC/location transfer keeps custody.
+		# A Receipt still explicitly returns the asset from its custodian.
+		employee = ""
+		for row in rows:
+			if row.to_employee or row.purpose == "Receipt":
+				employee = row.to_employee or ""
+				break
+		return location, employee
 
 	def on_submit(self):
 		super().on_submit()
@@ -155,6 +176,12 @@ class EnterpriseAssetMovement(AssetMovement):
 			# GAP-022 / §5.2 (Phase 11b): ONE history row summarising all
 			# changes of this movement, with the value snapshot.
 			changes = []
+			from asset_enterprise.depreciation import movement_dimension_fields
+			for field in movement_dimension_fields():
+				if d.get(field):
+					changes.append(_("{0} → {1}").format(d.meta.get_field(field).label, d.get(field)))
+			if d.get("leave_project"):
+				changes.append(_("left project from {0}").format(self.transaction_date))
 			if d.get("target_location"):
 				changes.append(_("location → {0}").format(d.target_location))
 			if d.get("to_employee"):

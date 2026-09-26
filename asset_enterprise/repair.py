@@ -1980,3 +1980,72 @@ def align_terminal_rows_to_month_end(company=None, asset=None, dry_run=1):
 	print(f"  {moved} re-dated, {skipped} left alone"
 	      f"{' (dry run — nothing written)' if dry_run else ''}")
 	return rows
+
+
+def audit_gl_value_keying(company=None):
+	"""C1 preflight: read-only key coverage and GL/fold/reference comparison.
+
+	Does not backfill, revalue, recalculate stored counters or commit. Run
+	before enabling the GL-derived build on an existing site. Repair the
+	listed acquisition keys with backfill_asset_dimension after review.
+	"""
+	from asset_enterprise.asset_values import (
+		_category_accounts, fold_asset_values, gl_asset_values, reference_gl_asset_values,
+	)
+	filters = {"docstatus": 1, "is_group_node": 0}
+	if company:
+		filters["company"] = company
+	issues, checked = [], 0
+	for name in frappe.get_all("Asset", filters=filters, pluck="name"):
+		asset = frappe.get_doc("Asset", name)
+		checked += 1
+		try:
+			ledger = gl_asset_values(name)
+			reference = reference_gl_asset_values(name)
+			fold = fold_asset_values(name)
+			fa = _category_accounts(asset).get("fixed_asset_account")
+			missing = not frappe.db.exists("GL Entry", {
+				"company": asset.company, "asset": name, "account": fa, "is_cancelled": 0,
+			})
+			fold_diff = {key: fa_module_round(fold[key] - ledger[key], asset.company) for key in ledger}
+			key_diff = {key: fa_module_round(reference[key] - ledger[key], asset.company) for key in ledger}
+			if missing or any(fold_diff.values()) or any(key_diff.values()):
+				issues.append({"asset": name, "missing_acquisition_key": missing,
+					"fold_minus_gl": fold_diff, "reference_minus_dimension": key_diff})
+		except frappe.ValidationError as exc:
+			issues.append({"asset": name, "error": str(exc)})
+	unkeyed = frappe.db.sql(
+		"""select gle.name, gle.company, gle.account, gle.voucher_type, gle.voucher_no,
+		          gle.voucher_detail_no, gle.against_voucher_type, gle.against_voucher,
+		          gle.debit, gle.credit
+		   from `tabGL Entry` gle
+		   where gle.is_cancelled = 0 and ifnull(gle.asset, '') = ''
+		     and (%(company)s is null or gle.company = %(company)s)
+		     and exists (select 1 from `tabAsset Category Account` aca
+		                 where aca.company_name = gle.company
+		                   and gle.account in (aca.fixed_asset_account, aca.accumulated_depreciation_account))
+		   order by gle.company, gle.posting_date, gle.name""", {"company": company}, as_dict=True,
+	)
+	result = {"assets_checked": checked, "assets_with_issues": len(issues),
+		"unkeyed_gl_rows": len(unkeyed), "issues": issues, "unkeyed_rows": unkeyed}
+	print(f"GL keying preflight: {checked} assets; {len(issues)} with issues; {len(unkeyed)} unkeyed account rows")
+	return result
+
+
+def audit_control_category_depreciation(company=None):
+	"""D-031 rollout review only: identify legacy schedules without changing them."""
+	rows = frappe.db.sql(
+		"""select a.name as asset, a.company, a.calculate_depreciation,
+		          ads.name as schedule, ads.status as schedule_status,
+		          (select count(*) from `tabDepreciation Schedule` ds
+		           where ds.parent = ads.name and ifnull(ds.journal_entry, '') != '') as posted_rows
+		   from `tabAsset` a
+		   join `tabAsset Category` ac on ac.name = a.asset_category
+		   left join `tabAsset Depreciation Schedule` ads on ads.asset = a.name and ads.docstatus < 2
+		   where a.docstatus = 1 and ac.is_control_category = 1
+		     and (a.calculate_depreciation = 1 or ads.name is not null)
+		     and (%(company)s is null or a.company = %(company)s)
+		   order by a.name, ads.creation""", {"company": company}, as_dict=True,
+	)
+	print(f"D-031 legacy review: {len({row.asset for row in rows})} Control Category assets; {len(rows)} asset/schedule records")
+	return rows

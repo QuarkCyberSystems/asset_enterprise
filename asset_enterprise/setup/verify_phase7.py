@@ -145,6 +145,12 @@ def _run():
 			{"debit": 2_000, "debit_in_account_currency": 2_000, "asset": None},
 			update_modified=False,
 		)
+		from asset_enterprise.asset_values import recalculate_asset_values
+
+		legacy_values = [recalculate_asset_values(name, save=False)["historical_asset_value"] for name in assets]
+		legacy_ok = legacy_values == [0, 0]  # no silent allocation from the receipt reference
+		print(f"prlegacy missing acquisition keys produce zero GL balance (flagged for backfill): {legacy_values} {'OK' if legacy_ok else 'FAIL'}")
+		ok = ok and legacy_ok
 		real_commit = frappe.db.commit
 		frappe.db.commit = lambda *a, **k: None   # keep the suite's savepoint
 		try:
@@ -165,6 +171,7 @@ def _run():
 			and {row.asset for row in rebuilt} == set(assets)
 			and abs(flt(sum(flt(row.debit) for row in rebuilt)) - 2_000) < 0.01
 			and abs(voucher_balance) < 0.01
+			and all(recalculate_asset_values(name, save=False)["historical_asset_value"] == 1_000 for name in assets)
 		)
 		print(
 			f"prbf   backfill rebuilt {len(rebuilt)} legs (want 2) totalling "

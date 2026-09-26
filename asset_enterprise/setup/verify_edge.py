@@ -733,7 +733,7 @@ def e21():
 	)
 
 
-@case("E-22", "GAP-021 / ruling 08/09", "a transfer's DIMENSIONS bind only the days after it")
+@case("E-22", "D-031 / D-009", "project starts on the transfer date; cost centre starts the next day")
 def e22():
 	"""The client moved an asset to a project and the depreciation entry
 	came back with the Project Accounting and WBS columns empty (UAT
@@ -742,7 +742,8 @@ def e22():
 	Core lists `Asset Movement Item` in `accounting_dimension_doctypes`,
 	so registering a dimension makes it fillable on a transfer; nothing
 	then read it back, because a movement posts no GL of its own. The
-	dimension now rides the same day-split the cost centre already used:
+	dimension uses D-031's start-of-day boundary, separate from the
+	cost centre's next-day boundary:
 	a project that took the asset on the 9th is debited for the 9th
 	onward and for nothing before it (Vivek, 08/09 — "only post
 	transfer").
@@ -756,9 +757,10 @@ def e22():
 	fields = movement_dimension_fields()
 	if not fields:
 		return None, "no registered dimension on Asset Movement Item — nothing to bind (skipped)"
-	field = fields[0]
-	value = frappe.get_all(frappe.get_meta("Asset Movement Item").get_field(field).options,
-	                       limit=1, pluck="name")
+	field = next((f for f in fields if f == "project_accounting"), fields[0])
+	from asset_enterprise.setup.test_fixtures import dimension_fixture
+
+	value = dimension_fixture(field, _company())
 	if not value:
 		return None, f"no {field} record to transfer to (skipped)"
 
@@ -782,7 +784,7 @@ def e22():
 		"assets": [{
 			"asset": asset.name, "source_cost_center": old_cc, "target_cost_center": new_cc,
 			"source_location": frappe.db.get_value("Asset", asset.name, "location"),
-			field: value[0],
+			field: value,
 		}],
 	})
 	move.flags.ignore_permissions = True
@@ -791,13 +793,11 @@ def e22():
 
 	period_start, period_end = get_first_day(transfer), get_last_day(transfer)
 	segments = attribution_split(asset.name, period_start, period_end, 84.931506849, company)
-	before = [s for s in segments if s[0] == old_cc]
-	after = [s for s in segments if s[0] == new_cc]
 	split_ok = (
-		len(before) == 1
-		and len(after) == 1
-		and not before[0][1].get(field)      # 1-13: the project did not hold it
-		and after[0][1].get(field) == value[0]  # 14-end: it did
+		len(segments) == 3
+		and segments[0][0] == old_cc and not segments[0][1].get(field)
+		and segments[1][0] == old_cc and segments[1][1].get(field) == value
+		and segments[2][0] == new_cc and segments[2][1].get(field) == value
 	)
 
 	# The split is only half the claim: prove the dimension reaches the
@@ -825,9 +825,9 @@ def e22():
 		debits = [g for g in gl if flt(g.debit)]
 		credits = [g for g in gl if flt(g.credit)]
 		posted_ok = (
-			len(debits) == 2
+			len(debits) == 3
 			and {bool(g.dim) for g in debits} == {True, False}   # one segment each
-			and all(g.dim == value[0] for g in debits if g.dim)
+			and all(g.dim == value for g in debits if g.dim)
 			and credits and not any(g.dim for g in credits)      # contra stays clean (V-08)
 		)
 		gl_detail = (
@@ -837,9 +837,8 @@ def e22():
 		)
 
 	return (split_ok and posted_ok), (
-		f"{field}={value[0]} on the transfer of {transfer}: "
-		f"pre-transfer segment {before[0][1].get(field) if before else '—'} (want none), "
-		f"post-transfer segment {after[0][1].get(field) if after else '—'} (want {value[0]}); "
+		f"{field}={value} on the transfer of {transfer}: "
+		f"three date/dimension segments correct={split_ok}; "
 		+ gl_detail
 	)
 
@@ -867,16 +866,18 @@ def e24():
 	field = next((f for f in fields if f == "project_accounting"), fields[0] if fields else None)
 	if not field:
 		return None, "no registered dimension on Asset — nothing to contra (skipped)"
-	value = frappe.get_all(
-		frappe.get_meta("Asset").get_field(field).options, limit=1, pluck="name"
-	)
+	from asset_enterprise.setup.test_fixtures import dimension_fixture
+
+	value = dimension_fixture(field, _company(), doctype="Asset")
 	if not value:
 		return None, f"no {field} record (skipped)"
 
 	company = _company()
-	asset = make_test_asset(company, gross=3_000, submit=True, with_depreciation=True)
-	# Acquired UNDER the project, as core's make_asset would leave it.
-	frappe.db.set_value("Asset", asset.name, field, value[0], update_modified=False)
+	asset = make_test_asset(company, gross=3_000, submit=False, with_depreciation=True)
+	# Establish the acquisition dimension BEFORE the acquisition GL posts.
+	asset.set(field, value)
+	asset.save(ignore_permissions=True)
+	asset.submit()
 
 	schedule = frappe.get_all(
 		"Asset Depreciation Schedule",
@@ -902,12 +903,12 @@ def e24():
 	debits = [g for g in gl if flt(g.debit)]
 	ok = (
 		bool(credits)
-		and all(g.dim == value[0] for g in credits)   # contra follows the cost
-		and all(g.dim == value[0] for g in debits)    # never moved: expense agrees
-		and acquisition_dimensions(asset.name).get(field) == value[0]
+		and all(g.dim == value for g in credits)   # contra follows the cost
+		and all(g.dim == value for g in debits)    # never moved: expense agrees
+		and acquisition_dimensions(asset.name).get(field) == value
 	)
 	return ok, (
-		f"acquired under {field}={value[0]}: contra "
+		f"acquired under {field}={value}: contra "
 		+ ", ".join(f"{flt(g.credit):.2f}/{g.dim or 'none'}" for g in credits)
 		+ " (want the project on it); expense "
 		+ ", ".join(f"{flt(g.debit):.2f}/{g.dim or 'none'}" for g in debits)
@@ -1211,7 +1212,7 @@ def e28():
 	"""Control Category: tracked for control, expensed on purchase. Every
 	account on the category is an expense account — the fixed-asset and
 	accumulated-depreciation accounts included — so the opening booking,
-	each depreciation entry, a partial scrap and the final scrap all land
+	the one-day depreciation entry and final scrap land
 	in P&L, and no GL row for the asset ever carries an Asset-side
 	account.
 
@@ -1254,6 +1255,20 @@ def e28():
 	if not refused:
 		return False, "a Fixed Asset-type account was accepted on a control category"
 
+	# Cost and accumulated balances need distinct GL accounts even though
+	# both are Expense-root accounts for a control category.
+	contra = frappe.get_doc({
+		"doctype": "Account", "account_name": "E28 Contra " + frappe.generate_hash(length=6),
+		"company": company, "parent_account": frappe.db.get_value("Account", expense, "parent_account"),
+		"is_group": 0, "account_type": "Expense Account",
+	}).insert(ignore_permissions=True).name
+	dep_expense = frappe.get_doc({
+		"doctype": "Account", "account_name": "E28 Depreciation " + frappe.generate_hash(length=6),
+		"company": company, "parent_account": frappe.db.get_value("Account", expense, "parent_account"),
+		"is_group": 0, "account_type": "Expense Account",
+	}).insert(ignore_permissions=True).name
+	cat.accounts[0].depreciation_expense_account = dep_expense
+	cat.accounts[0].accumulated_depreciation_account = contra
 	# now all-expense: accepted
 	cat.accounts[0].fixed_asset_account = expense
 	cat.insert()
@@ -1268,21 +1283,40 @@ def e28():
 		"purchase_date": get_first_day(add_months(nowdate(), -1)),
 		"asset_type": "Existing Asset", "calculate_depreciation": 0,
 	})
+	from asset_enterprise.setup.test_fixtures import dimension_fixture
+	from asset_enterprise.depreciation import project_dimension_fields
+	pa_project = None
+	if "project_accounting" in project_dimension_fields():
+		pa_project = dimension_fixture("project_accounting", company)
+		asset.project_accounting = pa_project
 	asset.flags.ignore_permissions = True
 	asset.insert()
 	asset.submit()
-	enable_depreciation(
-		asset.name, total_number_of_depreciations=12, frequency_of_depreciation=1,
-		depreciation_start_date=get_last_day(asset.available_for_use_date),
-		expected_value_after_useful_life=0,
-	)
-	sched = frappe.db.get_value(
-		"Asset Depreciation Schedule", {"asset": asset.name, "status": "Active", "docstatus": 1}, "name"
-	)
-	post_schedule_entries(sched, date=str(get_last_day(asset.available_for_use_date)))
-	disposal.partial_scrap_asset(
-		asset.name, scrap_value=2_000, scrapping_type="Damage", scrap_date=nowdate()
-	)
+	charge_date = getdate(asset.available_for_use_date)
+	enable_depreciation(asset.name, total_number_of_depreciations=48,
+		depreciation_start_date=charge_date, expected_value_after_useful_life=1000)
+	schedule = frappe.get_doc("Asset Depreciation Schedule", {
+		"asset": asset.name, "status": "Active", "docstatus": 1})
+	assert len(schedule.depreciation_schedule) == 1
+	row = schedule.depreciation_schedule[0]
+	assert row.days_in_period == 1 and flt(row.depreciation_amount) == 12000
+	assert getdate(row.schedule_date) == charge_date
+	assert schedule.expected_value_after_useful_life == 0
+	post_schedule_entries(schedule.name, date=str(charge_date))
+	from asset_enterprise.asset_values import recalculate_asset_values
+	assert abs(recalculate_asset_values(asset.name, save=False)["net_book_value"]) < 0.01
+	schedule.reload()
+	je = schedule.depreciation_schedule[0].journal_entry
+	assert je
+	post_schedule_entries(schedule.name, date=str(charge_date))
+	assert frappe.db.count("GL Entry", {"voucher_no": je, "is_cancelled": 0}) == 2
+	if pa_project:
+		from project_accounting.settlement.sources import get_eligible_source_lines
+		sources = get_eligible_source_lines(company, pa_project)
+		# Both postings currently meet PA's generic Expense-root filter.
+		# Settlement policy will choose ONE source; do not conceal this risk.
+		assert any(r.voucher_no == je and flt(r.source_amount) == 12000 for r in sources)
+	one_day_ok = True  # one-day completion checks above succeeded
 	disposal.scrap_asset(asset.name, scrap_date=nowdate(), scrapping_type="Damage")
 
 	legs = frappe.db.sql(
@@ -1306,11 +1340,11 @@ def e28():
 	except frappe.ValidationError:
 		locked = True
 
-	ok = refused and legs and not on_balance_sheet and vouchers >= 4 and locked
+	ok = refused and legs and not on_balance_sheet and vouchers >= 3 and locked and one_day_ok
 	return ok, (
 		f"balance-sheet account refused={refused} (want True); {vouchers} voucher(s) / "
 		f"{len(legs)} GL rows over the life cycle, {len(on_balance_sheet)} on an Asset-side "
-		f"account (want 0); flag locked after use={locked} (want True)"
+		f"account (want 0); flag locked={locked}; full one-day charge posted; PA depreciation eligibility checked={bool(pa_project)}"
 	)
 
 
@@ -1651,6 +1685,11 @@ def e32():
 	reversal = frappe.db.get_value("Asset Capitalization",
 		{"reversal_of_capitalization": cap.name, "docstatus": 1}, ["name", "posting_date"], as_dict=True)
 	ok = bool(reversal and getdate(reversal.posting_date) == getdate(chosen))
+	originals = frappe.get_all("Journal Entry",
+		filters={"user_remark": ("like", f"%{cap.name}%"), "docstatus": 1, "is_reversal": 0},
+		fields=["name", "reversed_by"])
+	ok = ok and bool(originals) and all(r.reversed_by and frappe.db.get_value(
+		"Journal Entry", r.reversed_by, "reversal_of") == r.name for r in originals)
 	ok = ok and frappe.flags.get("ae_capitalization_reversal_date") is None
 	return ok, f"date without role refused={refused}; chosen={chosen}, reversal={reversal}"
 
@@ -1673,6 +1712,219 @@ def e33():
 	ok = bool(row and row["flagged"] == "Yes" and row["gl_hav"] == 0
 		and row["derived_hav"] == before["historical_asset_value"] == 3_000)
 	return ok, f"unattributed GL leg: {row}"
+
+
+@case("E-34", "§5.1 / R053", "posted GL, not treatment metadata, controls operational values")
+def e34():
+	from asset_enterprise import tcc
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
+
+	company = _company()
+	asset = make_test_asset(company, gross=3_000, submit=True)
+	tcc.apply(("Asset", asset.name), "Addition", asset.name,
+		transaction_type="E34 metadata only", amount=700, hav_delta=700)
+	metadata_value = recalculate_asset_values(asset.name, save=False)["historical_asset_value"]
+	fa = frappe.db.get_value("Asset Category Account",
+		{"parent": asset.asset_category, "company_name": company}, "fixed_asset_account")
+	je = frappe.get_doc({"doctype": "Journal Entry", "voucher_type": "Journal Entry",
+		"company": company, "posting_date": nowdate(), "accounts": [
+			{"account": fa, "asset": asset.name, "debit_in_account_currency": 250},
+			{"account": pick_plain_account(company, "Liability"), "credit_in_account_currency": 250},
+		]})
+	je.flags.ignore_permissions = True
+	je.submit()
+	posted_value = recalculate_asset_values(asset.name, save=False)["historical_asset_value"]
+	return metadata_value == 3_000 and posted_value == 3_250, (
+		f"metadata-only value={metadata_value} (want 3000); dimension-only GL posting -> {posted_value} (want 3250)"
+	)
+
+
+@case("E-35", "R174 / D-026", "AVA mirror retains its original attribution and JE back-references")
+def e35():
+	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
+	company = _company()
+	asset = make_test_asset(company, gross=10_000, submit=True)
+	frappe.db.set_value("Company", company, "default_revaluation_surplus_oci_account",
+		pick_plain_account(company, "Liability"))
+	ava = frappe.get_doc({"doctype": "Asset Value Adjustment", "asset": asset.name, "company": company,
+		"date": nowdate(), "transaction_type": "Upward Revaluation",
+		"current_asset_value": 10_000, "new_asset_value": 12_000})
+	ava.flags.ignore_permissions = True
+	ava.insert()
+	ava.submit()
+	original = frappe.get_doc("Journal Entry", ava.journal_entry)
+	old_cc = next(r.cost_center for r in original.accounts if r.debit_in_account_currency)
+	new_cc = frappe.db.get_value("Cost Center", {"company": company, "is_group": 0, "name": ("!=", old_cc)}, "name")
+	frappe.db.set_value("Asset", asset.name, "acquisition_cost_center", new_cc)
+	ava.cancel()
+	reversal = frappe.db.get_value("Asset Value Adjustment",
+		{"reversal_of_ava": ava.name, "docstatus": 1}, "journal_entry")
+	mirror = frappe.get_doc("Journal Entry", reversal)
+	original.reload()
+	ok = mirror.is_reversal and mirror.reversal_of == original.name and original.reversed_by == mirror.name
+	ok = ok and all(a.cost_center == b.cost_center and a.debit_in_account_currency == b.credit_in_account_currency
+		and a.credit_in_account_currency == b.debit_in_account_currency for a, b in zip(original.accounts, mirror.accounts))
+	return bool(ok), f"{original.name} <-> {mirror.name}; attribution preserved after origin changed to {new_cc}"
+
+
+@case("E-36", "R174 / §3.7", "Repair reversal owns its GL voucher, date and two-way audit links")
+def e36():
+	from asset_enterprise.api import cancel_repair_with_reversal
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+	from asset_enterprise.setup.verify_tc import _stock_in, _stock_item, _warehouse
+	company = _company()
+	asset = make_test_asset(company, gross=3_000, submit=True)
+	item, warehouse = _stock_item("E36-REPAIR-STOCK"), _warehouse(company)
+	_stock_in(company, item, warehouse, 10, 100)
+	repair = frappe.get_doc({"doctype": "Asset Repair", "asset": asset.name, "company": company,
+		"failure_date": nowdate(), "completion_date": nowdate(), "repair_status": "Completed",
+		"capitalize_repair_cost": 1, "cost_center": frappe.db.get_value("Company", company, "cost_center"),
+		"stock_items": [{"item_code": item, "warehouse": warehouse, "consumed_quantity": 2,
+			"valuation_rate": 100, "total_value": 200}],
+	})
+	repair.flags.ignore_permissions = True
+	repair.insert()
+	repair.submit()
+	original = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": repair.name},
+		fields=["name", "account", "debit", "credit", "cost_center", "asset"], order_by="account")
+	settings = frappe.get_single("Asset Settings")
+	field = next(f.fieldname for f in settings.meta.fields if f.options == "Asset Settings Reversal Role")
+	settings.set(field, [r for r in settings.get(field) if r.company != company])
+	settings.append(field, {"company": company, "reversal_date_edit_role": "System Manager"})
+	settings.save(ignore_permissions=True)
+	chosen = add_days(getdate(nowdate()), 1)
+	cancel_repair_with_reversal(repair.name, chosen)
+	reversed_by = frappe.db.get_value("Asset Repair", repair.name, "reversed_by_repair")
+	mirrors = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": reversed_by},
+		fields=["account", "debit", "credit", "cost_center", "asset", "posting_date"], order_by="account")
+	ok = bool(original and len(original) == len(mirrors))
+	ok = ok and frappe.db.get_value("Asset Repair", reversed_by, "reversal_of_repair") == repair.name
+	ok = ok and all(getdate(m.posting_date) == getdate(chosen) and a.account == m.account
+		and flt(a.debit) == flt(m.credit) and flt(a.credit) == flt(m.debit)
+		and a.cost_center == m.cost_center and a.asset == m.asset for a, m in zip(original, mirrors))
+	ok = ok and frappe.db.count("GL Entry", {"voucher_type": "Asset Repair", "voucher_no": repair.name}) == len(original)
+	ok = ok and all(frappe.db.get_value("GL Entry", r.name, "is_cancelled") == 0 for r in original)
+	return bool(ok), f"repair={repair.name}, reversal={reversed_by}; {len(original)} original rows, {len(mirrors)} mirror rows dated {chosen}"
+
+
+@case("E-37", "D-031 / R126", "explicit project exit, blank retention, re-entry and cancellation preserve dated attribution")
+def e37():
+	from asset_enterprise.depreciation import attribution_on, project_dimension_fields, attribution_split
+	from asset_enterprise.setup.test_fixtures import make_test_asset, dimension_fixture
+	from asset_enterprise.gl_attribution import acquisition_dimensions
+
+	company = _company()
+	fields = project_dimension_fields()
+	if not fields:
+		return None, "no project dimension installed"
+	field = fields[0]
+	project = dimension_fixture(field, company)
+	asset = make_test_asset(company, gross=3000, submit=False, with_depreciation=True)
+	asset.set(field, project)
+	asset.save(ignore_permissions=True)
+	asset.submit()
+	origin = acquisition_dimensions(asset.name)
+	date = get_first_day(add_months(nowdate(), 1))
+	ccs = frappe.get_all("Cost Center", filters={"company": company, "is_group": 0}, pluck="name", limit=2)
+	old_cc = frappe.db.get_value("Asset", asset.name, "cost_center") or ccs[0]
+	new_cc = next(c for c in ccs if c != old_cc)
+
+	def move(day, **values):
+		doc = frappe.get_doc({"doctype": "Asset Movement", "company": company,
+			"purpose": "Transfer", "transaction_date": str(add_days(date, day - 1)),
+			"assets": [{"asset": asset.name, **values}]})
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+		return doc
+
+	employee = frappe.get_doc({"doctype": "Employee", "first_name": "D031 Custodian",
+		"company": company, "gender": "Male", "date_of_birth": "1990-01-01",
+		"date_of_joining": "2020-01-01", "status": "Active"}).insert(ignore_permissions=True)
+	move(2, to_employee=employee.name)
+	# Blank project plus a CC transfer does not mean exit.
+	move(5, target_cost_center=new_cc)
+	assert attribution_on(asset.name, add_days(date, 5))[1].get(field) == project
+	# Combined event has two distinct effective boundaries.
+	exit_doc = move(16, leave_project=1, target_cost_center=old_cc)
+	assert attribution_on(asset.name, add_days(date, 14))[1].get(field) == project
+	cc, dims = attribution_on(asset.name, add_days(date, 15))
+	assert cc == new_cc and not dims.get(field)
+	assert attribution_on(asset.name, add_days(date, 16))[0] == old_cc
+	move(20, **{field: project})
+	assert attribution_on(asset.name, add_days(date, 19))[1].get(field) == project
+	# Cancelling the exit replays surviving history, preserving the later project assignment.
+	exit_doc.cancel()
+	assert attribution_on(asset.name, add_days(date, 16))[1].get(field) == project
+	assert attribution_on(asset.name, add_days(date, 20))[1].get(field) == project
+	# A dimension-only exit is a valid movement.
+	move(22, leave_project=1)
+	assert not attribution_on(asset.name, add_days(date, 21))[1].get(field)
+	assert frappe.db.get_value("Asset", asset.name, "custodian") == employee.name, "project exit cleared custody"
+	assert acquisition_dimensions(asset.name) == origin
+	try:
+		move(23, leave_project=1, **{field: project})
+	except frappe.ValidationError as exc:
+		assert "D-031" in str(exc)
+	else:
+		return False, "contradictory exit/destination accepted"
+	segments = attribution_split(asset.name, date, get_last_day(date), 300, company)
+	assert abs(sum(segment[2] for segment in segments) - 300) < 0.01
+	# Prove an exit from the acquisition project reaches posted GL; the
+	# contra must retain the origin while expense includes unassigned days.
+	from asset_enterprise.depreciation import post_schedule_entries
+	schedule = frappe.db.get_value("Asset Depreciation Schedule",
+		{"asset": asset.name, "status": "Active", "docstatus": 1}, "name")
+	post_schedule_entries(schedule, date=str(get_last_day(date)))
+	je = frappe.db.get_value("Depreciation Schedule", {
+		"parent": schedule, "schedule_date": get_last_day(date)}, "journal_entry")
+	assert je, "no period JE posted"
+	gl = frappe.get_all("GL Entry", filters={"voucher_no": je, "is_cancelled": 0},
+		fields=["debit", "credit", field])
+	assert any(flt(row.debit) and not row.get(field) for row in gl), "exit lost in GL"
+	assert all(row.get(field) == project for row in gl if flt(row.credit)), "acquisition contra changed"
+	return True, "blank retains; exit clears on day 16; CC changes day 17; re-entry/cancel/standalone exit and unchanged acquisition dimensions verified"
+
+
+
+@case("E-38", "Client 22/09 / R135", "new control assets get a one-day schedule; gradual legacy rows are refused")
+def e38():
+	ok, detail = e28()
+	assert ok, detail
+	from asset_enterprise.setup.verify_tc import _location
+	from asset_enterprise.depreciation import post_schedule_entries
+	from asset_enterprise.asset_values import recalculate_asset_values
+	company = _company()
+	date = getdate(nowdate())
+	asset = frappe.get_doc({"doctype": "Asset", "company": company,
+		"asset_name": "E38 One Day", "asset_category": "E28 Control Tools",
+		"item_code": "E28-CTRL-ITEM", "location": _location(), "asset_type": "Existing Asset",
+		"purchase_amount": 6000, "net_purchase_amount": 6000,
+		"purchase_date": date, "available_for_use_date": date, "calculate_depreciation": 1,
+		"finance_books": [{"depreciation_method": "Straight Line",
+			"total_number_of_depreciations": 36, "frequency_of_depreciation": 1,
+			"expected_value_after_useful_life": 500, "depreciation_start_date": date}]})
+	asset.insert(ignore_permissions=True)
+	asset.submit()
+	schedule = frappe.get_doc("Asset Depreciation Schedule", {
+		"asset": asset.name, "status": "Active", "docstatus": 1})
+	assert len(schedule.depreciation_schedule) == 1, f"rows={len(schedule.depreciation_schedule)}"
+	row = schedule.depreciation_schedule[0]
+	assert row.days_in_period == 1 and flt(row.depreciation_amount) == 6000, f"days={row.days_in_period}, amount={row.depreciation_amount}"
+	assert getdate(row.schedule_date) == date, f"date={row.schedule_date}, want={date}"
+	assert schedule.basis_remaining_days == 1 and flt(schedule.basis_daily_rate) == 6000, f"basis days={schedule.basis_remaining_days} rate={schedule.basis_daily_rate}"
+	# Legacy/imported gradual rows cannot silently post under the new rule.
+	frappe.db.set_value("Depreciation Schedule", row.name, "days_in_period", 30)
+	try:
+		post_schedule_entries(schedule.name, date=str(date))
+	except frappe.ValidationError as exc:
+		assert "one day" in str(exc)
+	else:
+		return False, "gradual legacy row posted"
+	frappe.db.set_value("Depreciation Schedule", row.name, "days_in_period", 1)
+	post_schedule_entries(schedule.name, date=str(date))
+	assert abs(recalculate_asset_values(asset.name, save=False)["net_book_value"]) < 0.01
+	return True, "36-period/500-residual input becomes one 6000 charge, one day, zero NBV; legacy gradual posting refused"
 
 
 def run(only=None):

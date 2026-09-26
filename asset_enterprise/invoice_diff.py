@@ -49,6 +49,8 @@ def stamp_asset_dimension(doc, method=None):
 	if the dimension field is actually filled. Every asset journal entry
 	already names its asset in reference_type/reference_name, so copy it
 	across rather than touching each builder."""
+	if doc.get("is_reversal") or doc.get("reversal_of"):
+		return  # D-026: even a missing original dimension must remain unchanged.
 	if not frappe.get_meta("Journal Entry Account").has_field("asset"):
 		return
 	for row in doc.get("accounts") or []:
