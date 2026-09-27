@@ -25,7 +25,7 @@ import io
 import re
 import sys
 
-PHASES = tuple(range(1, 14))
+PHASES = tuple(range(1, 15))
 _FAIL = re.compile(r"\bFAIL\b")
 
 
@@ -62,7 +62,7 @@ def _verdict(crashed, output):
 
 
 def run(phases=None, raise_on_fail=True):
-	"""Run the phase suites (all thirteen by default) and summarise."""
+	"""Run the phase suites (every phase by default) and summarise."""
 	phases = [int(p) for p in (phases or PHASES)]
 	results = {}
 	for phase in phases:

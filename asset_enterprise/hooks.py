@@ -86,7 +86,10 @@ doctype_list_js = {
 
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
 doc_events = {
+	# one unit of a fixed-asset item is one asset (client, 27/09)
+	"Item": {"validate": "asset_enterprise.asset_items.validate_item"},
 	"Purchase Receipt": {
+		"validate": "asset_enterprise.asset_items.validate_purchase_rows",
 		"on_submit": "asset_enterprise.invoice_diff.pr_on_submit",
 		# an EFFECT hook (it cascades the receipt's assets), not a refusal:
 		# declared in platform.get_registration as a legacy hook
@@ -115,7 +118,10 @@ doc_events = {
 		"on_submit": "asset_enterprise.depreciation_reversal.on_submit",
 	},
 	"Purchase Invoice": {
-		"validate": "asset_enterprise.invoice_diff.pi_validate",
+		"validate": [
+			"asset_enterprise.invoice_diff.pi_validate",
+			"asset_enterprise.asset_items.validate_purchase_rows",
+		],
 		"on_submit": "asset_enterprise.invoice_diff.pi_on_submit",
 		"on_cancel": "asset_enterprise.invoice_diff.pi_on_cancel",
 	},
