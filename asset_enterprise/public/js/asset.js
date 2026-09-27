@@ -269,6 +269,19 @@ frappe.ui.form.on("Asset", {
 			);
 		}
 
+		// Edit the depreciation details until the first entry posts
+		// (client, 27/09). The server decides whether it is still open.
+		if (
+			frm.doc.calculate_depreciation &&
+			!["Scrapped", "Sold", "Capitalized", "Cancelled", "Disposed"].includes(frm.doc.status)
+		) {
+			frm.add_custom_button(
+				__("Edit Depreciation"),
+				() => edit_depreciation_dialog(frm),
+				__("Manage")
+			);
+		}
+
 		// Asset Tree report (GAP-009) — collapsible hierarchy with values.
 		frm.add_custom_button(
 			__("Asset Tree"),
@@ -339,9 +352,37 @@ function enable_depreciation_dialog(frm) {
 	});
 }
 
-function open_enable_depreciation_dialog(frm, defaults) {
+function edit_depreciation_dialog(frm) {
+	frappe.call({
+		method: "asset_enterprise.depreciation.edit_depreciation_defaults",
+		args: { asset_name: frm.doc.name },
+		callback: (r) => {
+			const current = r.message || {};
+			if (current.refusal) {
+				frappe.msgprint({
+					title: __("Depreciation Details Fixed"),
+					message: current.refusal,
+					indicator: "orange",
+				});
+				return;
+			}
+			open_enable_depreciation_dialog(frm, current, {
+				title: __("Edit Depreciation — {0}", [frm.doc.name]),
+				method: "asset_enterprise.depreciation.edit_depreciation",
+				label: __("Save"),
+				// an Existing Asset's in-service date dates its opening entry
+				lock_afu: !!current.existing_asset,
+				// the finance book stays the one the asset has
+				hide_finance_book: true,
+			});
+		},
+	});
+}
+
+function open_enable_depreciation_dialog(frm, defaults, opts) {
+	opts = opts || {};
 	const d = new frappe.ui.Dialog({
-		title: __("Enable Depreciation — {0}", [frm.doc.name]),
+		title: opts.title || __("Enable Depreciation — {0}", [frm.doc.name]),
 		fields: [
 			{fieldtype: "HTML", options: defaults.control_category_one_day ? __("Control Category: the full remaining value is depreciated in one day on the selected posting date, with zero residual value.") : ""},
 			{
@@ -367,12 +408,13 @@ function open_enable_depreciation_dialog(frm, defaults) {
 				fieldtype: "Date",
 				label: __("Available-for-Use Date"),
 				default: defaults.available_for_use_date,
+				read_only: !!opts.lock_afu,
 				reqd: 1,
 			},
 			{
 				// §4.5 — when the first entry posts; days between the two
-				// dates arrive as one catch-up entry. Default: category
-				// setting, else end of the in-service month (core's rule).
+				// dates arrive as one catch-up entry. Default: end of the
+				// in-service month (client, 27/09).
 				fieldname: "depreciation_start_date",
 				fieldtype: "Date",
 				label: __("Depreciation Posting Date"),
@@ -392,12 +434,14 @@ function open_enable_depreciation_dialog(frm, defaults) {
 				options: "Finance Book",
 				label: __("Finance Book"),
 				default: defaults.finance_book,
+				hidden: !!opts.hide_finance_book,
 			},
 		],
-		primary_action_label: __("Enable"),
+		primary_action_label: opts.label || __("Enable"),
 		primary_action(values) {
+			if (opts.hide_finance_book) delete values.finance_book;
 			frappe.call({
-				method: "asset_enterprise.depreciation.enable_depreciation",
+				method: opts.method || "asset_enterprise.depreciation.enable_depreciation",
 				args: { asset_name: frm.doc.name, ...values },
 				callback: () => {
 					d.hide();
@@ -518,3 +562,26 @@ function post_final_row_dialog(frm) {
 	});
 	d.show();
 }
+
+// The first depreciation posts at the end of the month the asset went
+// into service (client, 27/09). Core seeds the finance-book row from the
+// category's stored date or today; on a draft, a change of in-service
+// date or a freshly filled book moves it to that month end. The server
+// applies the same rule on save — this only shows it before saving.
+function ae_default_first_posting(frm) {
+	if (frm.doc.docstatus !== 0 || !frm.doc.available_for_use_date) return;
+	const afu = frappe.datetime.str_to_obj(frm.doc.available_for_use_date);
+	const month_end = frappe.datetime.obj_to_str(
+		new Date(afu.getFullYear(), afu.getMonth() + 1, 0)
+	);
+	(frm.doc.finance_books || []).forEach((row) => {
+		if (row.depreciation_start_date !== month_end) {
+			frappe.model.set_value(row.doctype, row.name, "depreciation_start_date", month_end);
+		}
+	});
+}
+
+frappe.ui.form.on("Asset", {
+	available_for_use_date: ae_default_first_posting,
+	finance_books: ae_default_first_posting,
+});

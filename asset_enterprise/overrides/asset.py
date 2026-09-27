@@ -87,6 +87,7 @@ class EnterpriseAsset(Asset):
 		self._validate_group_node()
 		if self._enterprise():
 			self._apply_receiving_date_basis()
+			self._default_first_posting_dates()
 			# Depreciation without a start basis: core's draft-schedule
 			# build crashes on an empty AFU, so the VR-002 error fires
 			# here. AFU stays optional in the two designed cases (no
@@ -266,6 +267,49 @@ class EnterpriseAsset(Asset):
 					).format(d.idx),
 					title=_("Incorrect Date"),
 				)
+
+	def _default_first_posting_dates(self):
+		"""The first depreciation posts at the end of the month the asset
+		went into service (client, 27/09, FA-007). Core seeds the row from
+		the Asset Category's stored date, or today when the category has
+		none, so an asset in service in February first posted in whatever
+		month it was keyed in. A date the user typed is kept; only the two
+		seeded values, or an empty date, are replaced."""
+		if self.docstatus != 0 or not self.calculate_depreciation or not self.available_for_use_date:
+			return
+		from frappe.utils import get_last_day, nowdate
+
+		seeded = {}
+		if self.asset_category:
+			for d in frappe.get_cached_doc("Asset Category", self.asset_category).finance_books:
+				seeded[d.finance_book or ""] = d.depreciation_start_date and getdate(d.depreciation_start_date)
+		month_end = get_last_day(self.available_for_use_date)
+		for row in self.finance_books:
+			current = row.depreciation_start_date and getdate(row.depreciation_start_date)
+			if (
+				not current
+				or current == seeded.get(row.finance_book or "")
+				or (self.is_new() and current == getdate(nowdate()))
+			):
+				row.depreciation_start_date = month_end
+
+	def validate_depreciation_start_date(self, row):
+		"""Core also refuses a first posting before the PURCHASE date. An
+		existing asset may be in service before the date its purchase was
+		recorded; its depreciation counts from the in-service date, so
+		core's floor pushed the first posting into the purchase month and
+		folded the earlier days into it (client, 27/09, ACC-ASS-2026-00040:
+		in service 15/02, purchase 31/03, first row 31/03). Here the floor
+		is the available-for-use date — for every other asset core already
+		keeps that on or after the purchase date."""
+		if not self._enterprise() or not self.available_for_use_date or not row.depreciation_start_date:
+			return super().validate_depreciation_start_date(row)
+		if getdate(row.depreciation_start_date) < getdate(self.available_for_use_date):
+			frappe.throw(
+				_("Row #{0}: Next Depreciation Date cannot be before Available-for-use Date").format(
+					row.idx
+				)
+			)
 
 	def _receiving_date_basis(self):
 		return self.get("asset_category") and frappe.db.get_value(

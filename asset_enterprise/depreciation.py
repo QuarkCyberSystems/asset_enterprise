@@ -1463,6 +1463,145 @@ def enable_depreciation(
 
 
 # --------------------------------------------------------------------------
+# Edit depreciation until the first posting (client, 27/09, FA-001)
+# --------------------------------------------------------------------------
+
+
+def edit_refusal(asset):
+	"""Why the depreciation details of `asset` (a doc) can no longer be
+	edited, or None. Editing is open until the first depreciation entry
+	books — reversed or not, a booked entry fixes the basis it was priced
+	from."""
+	from asset_enterprise.status import off_register
+
+	if not enterprise_enabled():
+		return _("Editing depreciation requires Enterprise Assets to be enabled.")
+	if asset.docstatus != 1 or not asset.calculate_depreciation:
+		return _("{0} has no depreciation to edit — use Enable Depreciation.").format(asset.name)
+	if off_register(asset.status):
+		return _("{0} is {1}.").format(asset.name, _(asset.status))
+	if len(asset.finance_books) > 1:
+		return _("{0} depreciates in more than one finance book; edit is available for one.").format(
+			asset.name
+		)
+	fb = asset.finance_books[0] if asset.finance_books else None
+	if fb and (
+		cint(fb.get("increase_in_asset_life")) or cint(fb.get("life_extension_days"))
+		or cint(fb.get("prior_life_days"))
+	):
+		return _(
+			"The useful life of {0} was already adjusted or carried from a predecessor; "
+			"its depreciation details are fixed."
+		).format(asset.name)
+	booked = frappe.db.sql(
+		"""select ds.journal_entry from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s and ads.docstatus = 1 and ifnull(ds.journal_entry, '') != ''
+		   limit 1""",
+		asset.name,
+	)
+	if booked or asset.get_manual_depreciation_entries():
+		return _(
+			"Depreciation has already posted on {0} ({1}); its depreciation details are fixed "
+			"from the first posting."
+		).format(asset.name, booked[0][0] if booked else _("manual entry"))
+	return None
+
+
+@frappe.whitelist()
+def edit_depreciation_defaults(asset_name):
+	"""The current depreciation details, for the Edit Depreciation dialog,
+	or the reason they can no longer be edited."""
+	frappe.has_permission("Asset", "read", asset_name, throw=True)
+	asset = frappe.get_doc("Asset", asset_name)
+	refusal = edit_refusal(asset)
+	if refusal:
+		return {"refusal": refusal}
+	fb = asset.finance_books[0]
+	from asset_enterprise.control_category import applies
+
+	return {
+		"control_category_one_day": bool(applies(asset)),
+		"existing_asset": asset.asset_type == "Existing Asset",
+		"total_number_of_depreciations": fb.total_number_of_depreciations,
+		"frequency_of_depreciation": fb.frequency_of_depreciation or 1,
+		"expected_value_after_useful_life": fb.expected_value_after_useful_life,
+		"finance_book": fb.finance_book,
+		"depreciation_method": fb.depreciation_method,
+		"available_for_use_date": asset.available_for_use_date,
+		"depreciation_start_date": fb.depreciation_start_date,
+	}
+
+
+@frappe.whitelist()
+def edit_depreciation(
+	asset_name,
+	total_number_of_depreciations,
+	frequency_of_depreciation=1,
+	depreciation_start_date=None,
+	expected_value_after_useful_life=0,
+	depreciation_method="Straight Line",
+	available_for_use_date=None,
+):
+	"""Change the depreciation details of a submitted asset while nothing
+	has posted (client, 27/09, FA-001).
+
+	Since receipt assets submit at PR submit (CH-30) there is no draft
+	left in which to correct them. With nothing booked there is nothing
+	to preserve, so the unposted schedule is dropped and the asset goes
+	through Enable Depreciation again with the new details — the same
+	daily-rate build, the same checks. The asset's finance book stays the
+	one it had; an Existing Asset keeps its in-service date, which dates
+	its opening entry.
+	"""
+	frappe.has_permission("Asset", "write", asset_name, throw=True)
+	asset = frappe.get_doc("Asset", asset_name)
+	refusal = edit_refusal(asset)
+	if refusal:
+		frappe.throw(refusal, title=_("Depreciation Details Fixed"))
+	if (
+		available_for_use_date
+		and asset.asset_type == "Existing Asset"
+		and getdate(available_for_use_date) != getdate(asset.available_for_use_date)
+	):
+		frappe.throw(
+			_(
+				"The available-for-use date of an Existing Asset dates its opening entry and "
+				"is not changed here."
+			)
+		)
+	before = asset.finance_books[0]
+	summary = _("{0} × {1} months, posting from {2}, salvage {3}").format(
+		before.total_number_of_depreciations, before.frequency_of_depreciation,
+		formatdate(before.depreciation_start_date), before.expected_value_after_useful_life,
+	)
+	for schedule in frappe.get_all(
+		"Asset Depreciation Schedule",
+		filters={"asset": asset_name, "status": "Active", "docstatus": 1},
+		pluck="name",
+	):
+		delete_unposted_schedule(schedule)
+	asset.db_set("calculate_depreciation", 0, update_modified=False)
+	ads = enable_depreciation(
+		asset_name,
+		total_number_of_depreciations,
+		frequency_of_depreciation=frequency_of_depreciation,
+		depreciation_start_date=depreciation_start_date,
+		expected_value_after_useful_life=expected_value_after_useful_life,
+		finance_book=before.finance_book,
+		depreciation_method=depreciation_method,
+		available_for_use_date=available_for_use_date or asset.available_for_use_date,
+	)
+	frappe.get_doc("Asset", asset_name).add_comment(
+		"Comment",
+		_("Depreciation details edited before the first posting (was: {0}); new schedule {1}.").format(
+			summary, ads
+		),
+	)
+	return ads
+
+
+# --------------------------------------------------------------------------
 # Posting (wrapper target for patches.py — Phase 3 wiring)
 # --------------------------------------------------------------------------
 
