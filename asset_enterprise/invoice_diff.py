@@ -753,14 +753,16 @@ def pi_on_cancel(doc, method=None):
 
 	# Phase 11c D1: mirror the delta-transfer JE (immutable — original
 	# stays posted) and pair any Case A.02 treatments.
-	transfer_je = frappe.db.get_value(
-		"Journal Entry",
-		{"user_remark": ("like", f"Invoice delta transfer for {doc.name}%"), "docstatus": 1},
-		"name",
-	)
-	if transfer_je:
-		from asset_enterprise.restore import _mirror_je
+	# every one of them: a re-booking made by the maintenance utilities
+	# (repair.repair_post_merge_invoice_adjustments) carries the same remark
+	from asset_enterprise.restore import _mirror_je
 
+	for transfer_je in frappe.get_all(
+		"Journal Entry",
+		filters={"user_remark": ("like", f"Invoice delta transfer for {doc.name}%"), "docstatus": 1},
+		pluck="name",
+		order_by="creation",
+	):
 		_mirror_je(
 			transfer_je, _("Reversal of invoice delta transfer for {0}").format(doc.name)
 		)

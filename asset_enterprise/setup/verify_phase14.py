@@ -13,6 +13,8 @@ bench --site <site> execute asset_enterprise.setup.verify_phase14.run
   FA-008  a merged source keeps "Disposed"; an invoice after the merge
           is expensed (Case A.02), no AVA on the source
   FA-002  one unit of a fixed-asset item is one asset (Item, receipt)
+  GAP-027 reverse every period latest first, then cancel the asset
+  repair  reversals and invoice adjustments written before the fixes
 
 Savepoint-rolled-back; run on the throwaway site.
 """
@@ -319,7 +321,14 @@ def _run():
 		print(f"fa008  a merged source keeps Disposed when core recomputes its status: {'OK' if c else 'FAIL'}")
 		ok = ok and c
 
-		expense = frappe.db.get_value("Company", company, "default_post_disposal_invoice_diff_account")
+		# an account of its own, so the legs cannot net against the clearing account
+		expense = frappe.db.get_value("Account", {"account_name": "AE14 Post-Disposal", "company": company}, "name")
+		if not expense:
+			parent = frappe.db.get_value("Account", {"company": company, "root_type": "Expense", "is_group": 1}, "name")
+			expense = frappe.get_doc({"doctype": "Account", "account_name": "AE14 Post-Disposal", "company": company,
+				"parent_account": parent, "root_type": "Expense", "is_group": 0}).insert(ignore_permissions=True).name
+		frappe.db.set_value("Company", company, "default_post_disposal_invoice_diff_account", expense,
+			update_modified=False)
 		before = flt(frappe.db.sql(
 			"select coalesce(sum(debit - credit), 0) from `tabGL Entry` where account = %s and is_cancelled = 0",
 			expense)[0][0])
@@ -364,6 +373,89 @@ def _run():
 		c = bool(refusal) and "Row 1" in refusal and _refused(validate_purchase_rows, receipt) is None
 		print(f"fa002  a receipt row for an asset item must be in Nos: {'OK' if c else 'FAIL'}")
 		ok = ok and c
+
+		# ============ GAP-027 sequence after CH-41/42 ======================
+		h = _depreciating_asset(company, 24_000, months_back=3)
+		for row in reversed([r for r in _rows(_active(h)) if r.journal_entry]):
+			_reverse(row.journal_entry)
+		doc = frappe.get_doc("Asset", h)
+		doc.flags.ignore_permissions = True
+		refusal = _refused(doc.cancel)
+		c = refusal is None and frappe.db.get_value("Asset", h, "docstatus") == 2
+		print(f"gap027 every period reversed latest first, then the asset cancels: {'OK' if c else 'FAIL'} ({refusal and refusal[:90]})")
+		ok = ok and c
+
+		# ============ legacy repair: reversals made before CH-41 ==========
+		from asset_enterprise import repair
+		from asset_enterprise.depreciation_reversal import SYSTEM_REVERSAL_FLAG
+		from qcs_platform.core.journal_entry import make_reverse_journal_entry
+
+		k = _depreciating_asset(company, 36_000)
+		booked = [r for r in _rows(_active(k)) if r.journal_entry]
+		# the old behaviour: a reversal the schedule never heard of, from the middle
+		legacy = make_reverse_journal_entry(booked[1].journal_entry)
+		legacy.posting_date = nowdate()
+		legacy.flags.ignore_permissions = True
+		legacy.flags[SYSTEM_REVERSAL_FLAG] = True
+		legacy.insert()
+		legacy.submit()
+		found = repair.find_unmarked_depreciation_reversals(asset=k)
+		repair.repair_unmarked_depreciation_reversals(asset=k, dry_run=0, commit=False)
+		rows = _rows(_active(k))
+		again = [r for r in rows if r.schedule_date == booked[1].schedule_date and not r.journal_entry]
+		later_intact = all(
+			any(r.journal_entry == b.journal_entry and not r.reversal_journal_entry for r in rows)
+			for b in booked[2:]
+		)
+		reposted = post_schedule_entries(_active(k), date=nowdate())
+		c = (
+			len(found) == 1 and len(again) == 1
+			and flt(again[0].depreciation_amount) == flt(booked[1].depreciation_amount)
+			and later_intact and len(reposted) == 1
+			and not repair.find_unmarked_depreciation_reversals(asset=k)
+		)
+		print(f"repair a middle period reversed before the fix is reinstated at its amount, later rows untouched, posts again: {'OK' if c else 'FAIL'}")
+		ok = ok and bool(c)
+
+		# ============ legacy repair: invoice adjustment on a merged source =
+		from asset_enterprise import invoice_diff
+
+		source2, pr2 = control_purchase(fixture, 40_000, None)
+		target2 = make_test_asset(company, gross=10_000, submit=True)
+		cap2 = frappe.get_doc(
+			{"doctype": "Asset Capitalization", "transaction_type": "Capitalized Maintenance",
+			 "transaction_sub_type": "Standard Maintenance", "target_asset": target2.name,
+			 "company": company, "posting_date": nowdate(), "posting_time": frappe.utils.nowtime(),
+			 "entry_type": "Capitalization", "asset_items": [{"asset": source2}]}
+		)
+		cap2.flags.ignore_permissions = True
+		cap2.flags.ignore_mandatory = True
+		cap2.insert()
+		cap2.submit()
+		fixed_list = invoice_diff.DISPOSED_STATUSES
+		invoice_diff.DISPOSED_STATUSES = ("Scrapped", "Sold", "Capitalized", "Cancelled")  # the old list
+		try:
+			control_invoice(pr2, 37_000)
+		finally:
+			invoice_diff.DISPOSED_STATUSES = fixed_list
+		found = repair.find_post_merge_invoice_adjustments(asset=source2)
+		before = flt(frappe.db.sql(
+			"select coalesce(sum(debit - credit), 0) from `tabGL Entry` where account = %s and is_cancelled = 0",
+			expense)[0][0])
+		repair.repair_post_merge_invoice_adjustments(asset=source2, dry_run=0, commit=False)
+		delta = flt(frappe.db.sql(
+			"select coalesce(sum(debit - credit), 0) from `tabGL Entry` where account = %s and is_cancelled = 0",
+			expense)[0][0]) - before
+		c = (
+			len(found) == 1 and found[0].price_delta == -3_000
+			and frappe.db.exists("Asset Value Adjustment", {"reversal_of_ava": found[0].name, "docstatus": 1})
+			and flt(delta) == -3_000
+			and flt(frappe.db.get_value("Asset", source2, "net_book_value")) == 0
+			and frappe.db.get_value("Asset", source2, "status") == "Disposed"
+			and not repair.find_post_merge_invoice_adjustments(asset=source2)
+		)
+		print(f"repair an invoice adjustment booked on a merged source is reversed and expensed ({delta}): {'OK' if c else 'FAIL'}")
+		ok = ok and bool(c)
 
 	finally:
 		frappe.db.rollback(save_point="phase14_verify")

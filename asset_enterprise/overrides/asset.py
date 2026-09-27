@@ -271,13 +271,16 @@ class EnterpriseAsset(Asset):
 	def _default_first_posting_dates(self):
 		"""The first depreciation posts at the end of the month the asset
 		went into service (client, 27/09, FA-007). Core seeds the row from
-		the Asset Category's stored date, or today when the category has
-		none, so an asset in service in February first posted in whatever
-		month it was keyed in. A date the user typed is kept; only the two
-		seeded values, or an empty date, are replaced."""
+		the Asset Category's stored date — one calendar date for every
+		asset of the category — so an asset in service in February first
+		posted in whatever month that date fell. That seed, or an empty
+		date, is replaced here. Core's other seed, today (a category with
+		no date), cannot be told apart from a date the caller chose on
+		purpose, so the server keeps it; the form replaces it when the
+		finance book is filled (public/js/asset.js)."""
 		if self.docstatus != 0 or not self.calculate_depreciation or not self.available_for_use_date:
 			return
-		from frappe.utils import get_last_day, nowdate
+		from frappe.utils import get_last_day
 
 		seeded = {}
 		if self.asset_category:
@@ -286,11 +289,7 @@ class EnterpriseAsset(Asset):
 		month_end = get_last_day(self.available_for_use_date)
 		for row in self.finance_books:
 			current = row.depreciation_start_date and getdate(row.depreciation_start_date)
-			if (
-				not current
-				or current == seeded.get(row.finance_book or "")
-				or (self.is_new() and current == getdate(nowdate()))
-			):
+			if not current or current == seeded.get(row.finance_book or ""):
 				row.depreciation_start_date = month_end
 
 	def validate_depreciation_start_date(self, row):
@@ -638,11 +637,14 @@ class EnterpriseAsset(Asset):
 		if self._enterprise():
 			# Core just overwrote ignore_linked_doctypes with its own
 			# tuple — re-extend it so the mirror JE / FT / Activity rows
-			# created above don't trip the post-cancel link check.
+			# created above don't trip the post-cancel link check. The
+			# superseded schedule generations stay submitted as the
+			# asset's history (GAP-031); a depreciation reversal leaves
+			# one behind (§4.9.1).
 			self.ignore_linked_doctypes = tuple(
 				set(tuple(self.get("ignore_linked_doctypes") or ()))
 				| {"GL Entry", "Journal Entry", "Financial Treatment", "Asset Activity",
-				   "Scrap Transaction"}
+				   "Scrap Transaction", "Asset Depreciation Schedule"}
 			)
 			# VR-005 (Phase 11b): clear the PR row flag once no live
 			# assets remain against it.

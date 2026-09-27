@@ -2076,3 +2076,221 @@ def audit_control_category_depreciation(company=None):
 	)
 	print(f"D-031 legacy review: {len({row.asset for row in rows})} Control Category assets; {len(rows)} asset/schedule records")
 	return rows
+
+
+# --------------------------------------------------------------------------
+# Client tickets of 27/09/2026: data written before the corrections
+# --------------------------------------------------------------------------
+
+
+def find_unmarked_depreciation_reversals(company=None, asset=None):
+	"""Active-schedule rows whose depreciation entry was reversed by a
+	Reversal Journal Entry before reversals were applied to the schedule
+	(§4.9.1, CH-41): the row still reads as booked, so no run posts the
+	period again (UAT ACC-ASS-2026-00040 March, ACC-ASS-2026-00034 March
+	and April)."""
+	filters = ""
+	values = {}
+	if company:
+		filters += " and a.company = %(company)s"
+		values["company"] = company
+	if asset:
+		filters += " and a.name = %(asset)s"
+		values["asset"] = asset
+	return frappe.db.sql(
+		f"""
+		select a.name as asset, ads.name as schedule, ads.finance_book, ds.name as row_name,
+		       ds.schedule_date, ds.depreciation_amount, ds.journal_entry,
+		       rev.name as reversal, rev.posting_date as reversal_date
+		from `tabDepreciation Schedule` ds
+		join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		join `tabAsset` a on a.name = ads.asset
+		join `tabJournal Entry` rev on rev.reversal_of = ds.journal_entry and rev.docstatus = 1
+		where ads.status = 'Active' and ads.docstatus = 1 and a.docstatus = 1
+		  and ifnull(ds.journal_entry, '') <> ''
+		  and ifnull(ds.reversal_journal_entry, '') = ''
+		  {filters}
+		order by a.name, ds.schedule_date
+		""",
+		values,
+		as_dict=True,
+	)
+
+
+def repair_unmarked_depreciation_reversals(company=None, asset=None, dry_run=1, commit=True):
+	"""Mark each row with its reversal, pair its Financial Treatment, and
+	put the reversed period back on the schedule as due, at its original
+	amount.
+
+	The user-reversal path re-prices the unposted rows from the restored
+	NBV (§4.9.1), which is right when the reversed period is the last one
+	booked — the rule going forward. These legacy reversals were made in
+	any order and later periods have since posted on the old plan, so
+	nothing after them may be re-priced: the reversed period is simply
+	re-instated as it was, and posting it restores the plan the later
+	rows were priced on.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.repair_unmarked_depreciation_reversals \\
+	        --kwargs "{'dry_run': 1}"
+	"""
+	from asset_enterprise import tcc
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation_reversal import reinstate_reversed_periods
+
+	rows = find_unmarked_depreciation_reversals(company=company, asset=asset)
+	by_schedule = {}
+	for row in rows:
+		by_schedule.setdefault((row.asset, row.schedule), []).append(row)
+	print(f"{len(rows)} reversed period(s) still read as booked, {len(by_schedule)} schedule(s):")
+	for (asset_name, schedule), marked in by_schedule.items():
+		print(f"  {asset_name}  {schedule}")
+		for row in marked:
+			print(
+				f"    {row.schedule_date}  {flt(row.depreciation_amount):,.2f}  {row.journal_entry} "
+				f"reversed by {row.reversal} on {row.reversal_date} -> due again"
+			)
+		if dry_run:
+			continue
+		for row in marked:
+			frappe.db.set_value(
+				"Depreciation Schedule", row.row_name, "reversal_journal_entry", row.reversal,
+				update_modified=False,
+			)
+			ft = frappe.db.get_value(
+				"Financial Treatment",
+				{"asset": asset_name, "journal_entry": row.journal_entry,
+				 "transaction_category": "Depreciation", "status": "Posted"},
+				"name",
+			)
+			if ft:
+				tcc.reverse(ft, ("Journal Entry", row.reversal), posting_date=row.reversal_date,
+					journal_entry=row.reversal)
+		reinstate_reversed_periods(asset_name, schedule, [r.row_name for r in marked])
+		recalculate_asset_values(asset_name, save=True)
+	if not dry_run and commit:
+		frappe.db.commit()
+	return rows
+
+
+def find_post_merge_invoice_adjustments(company=None, asset=None):
+	"""Invoice Adjustments capitalized onto a source asset after it was
+	merged into a composite. GAP-012 Case A.02 expenses an invoice
+	difference on an asset that has left the register; the status list it
+	read lacked "Disposed", so these were booked as value adjustments
+	instead (UAT ACC-ASS-2026-00043, ACC-AVA-2026-00014)."""
+	# a Reversal AVA is the undo, never a candidate
+	filters = {"transaction_type": "Invoice Adjustment", "docstatus": 1,
+		"reversal_of_ava": ("is", "not set")}
+	if company:
+		filters["company"] = company
+	if asset:
+		filters["asset"] = asset
+	found = []
+	for ava in frappe.get_all(
+		"Asset Value Adjustment", filters=filters,
+		fields=["name", "asset", "company", "date", "current_asset_value", "new_asset_value",
+			"difference_account"],
+	):
+		merged_into = frappe.db.get_value("Asset", ava.asset, "merged_into_asset")
+		if not merged_into:
+			continue
+		if frappe.db.exists("Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1}):
+			continue
+		merged_on = frappe.db.get_value(
+			"Composite Merge Log Entry",
+			{"parent": merged_into, "merged_source_asset": ava.asset},
+			"merged_date",
+		)
+		if merged_on and getdate(ava.date) < getdate(merged_on):
+			continue
+		invoice = frappe.db.sql(
+			"""select pi.name from `tabPI Asset Allocation` pa
+			   join `tabPurchase Invoice` pi on pi.name = pa.parent
+			   where pa.asset = %s and pi.docstatus = 1 and pi.posting_date = %s
+			   order by pi.creation desc limit 1""",
+			(ava.asset, ava.date),
+		)
+		ava.update(
+			merged_into=merged_into, merged_on=merged_on,
+			purchase_invoice=invoice[0][0] if invoice else None,
+			price_delta=fa_module_round(flt(ava.new_asset_value) - flt(ava.current_asset_value), ava.company),
+		)
+		found.append(ava)
+	return found
+
+
+def repair_post_merge_invoice_adjustments(company=None, asset=None, dry_run=1, commit=True):
+	"""Undo each adjustment through its Reversal AVA and book the
+	difference as Case A.02 does: from the invoice-difference clearing
+	account to the Post-Disposal Invoice Difference account, recorded
+	against the invoice so cancelling the invoice unwinds it with the
+	rest. Posted today; nothing already posted is changed.
+
+	    bench --site <site> execute \\
+	        asset_enterprise.repair.repair_post_merge_invoice_adjustments \\
+	        --kwargs "{'dry_run': 1}"
+	"""
+	from frappe.utils import nowdate
+
+	from asset_enterprise import tcc
+	from asset_enterprise.accounts import get_enterprise_account
+	from asset_enterprise.invoice_diff import POST_DISPOSAL_ADJUSTMENT
+
+	rows = find_post_merge_invoice_adjustments(company=company, asset=asset)
+	print(f"{len(rows)} invoice adjustment(s) capitalized onto a merged-away asset:")
+	for ava in rows:
+		category = frappe.db.get_value("Asset", ava.asset, "asset_category")
+		expense = get_enterprise_account("post_disposal_invoice_diff_account", ava.company, category)
+		print(
+			f"  {ava.asset} (merged into {ava.merged_into} on {ava.merged_on})  {ava.name} "
+			f"{ava.price_delta:,.2f} from {ava.purchase_invoice or 'no invoice found'} -> "
+			f"Reversal AVA, then {ava.difference_account} -> {expense}"
+		)
+		if dry_run or not ava.purchase_invoice:
+			continue
+		frappe.flags["ae_ava_reversal_date"] = getdate(nowdate())
+		try:
+			frappe.get_doc("Asset Value Adjustment", ava.name).cancel()
+		finally:
+			frappe.flags["ae_ava_reversal_date"] = None
+
+		def _side(amount):
+			return (
+				{"debit_in_account_currency": abs(amount)} if amount > 0
+				else {"credit_in_account_currency": abs(amount)}
+			)
+
+		je = frappe.get_doc(
+			{
+				"doctype": "Journal Entry",
+				"voucher_type": "Journal Entry",
+				"company": ava.company,
+				"posting_date": nowdate(),
+				"user_remark": _(
+					"Invoice delta transfer for {0} — re-booked to post-disposal (GAP-012 "
+					"Case A.02) after reversal of {1}"
+				).format(ava.purchase_invoice, ava.name),
+				"accounts": [
+					{"account": expense, "reference_type": "Asset", "reference_name": ava.asset,
+					 **_side(ava.price_delta)},
+					{"account": ava.difference_account, "reference_type": "Asset",
+					 "reference_name": ava.asset, **_side(-ava.price_delta)},
+				],
+			}
+		)
+		je.flags.ignore_permissions = True
+		je.submit()
+		tcc.apply(
+			source_doc=("Purchase Invoice", ava.purchase_invoice),
+			category="Addition",
+			transaction_type=POST_DISPOSAL_ADJUSTMENT,
+			asset=ava.asset,
+			posting_date=getdate(nowdate()),
+			amount=abs(ava.price_delta),
+			journal_entry=je.name,
+		)
+		frappe.get_doc("Asset", ava.asset).set_status()
+	if not dry_run and commit:
+		frappe.db.commit()
+	return rows

@@ -325,7 +325,9 @@ def _run():
 		)
 		ok = ok and d_ok
 
-		# A date set on the category row itself wins over the EOM rule.
+		# CH-44 (client, 27/09) amends the 18/08 rule: a date stored on the
+		# category row no longer wins — it is one calendar date for every
+		# asset of the category. The in-service month end stays the default.
 		cat_date = get_last_day(add_months(c2_afu, 2))
 		frappe.db.set_value(
 			"Asset Finance Book",
@@ -333,10 +335,10 @@ def _run():
 			"depreciation_start_date", cat_date, update_modified=False,
 		)
 		d2 = enable_depreciation_defaults(c2.name)
-		d2_ok = getdate(d2.get("depreciation_start_date")) == getdate(cat_date)
+		d2_ok = getdate(d2.get("depreciation_start_date")) == getdate(get_last_day(c2_afu))
 		print(
-			f"gap011b2 category posting date wins: {d2.get('depreciation_start_date')} "
-			f"(want {cat_date}) {'OK' if d2_ok else 'FAIL'}"
+			f"gap011b2 in-service month end wins over the category date (CH-44): "
+			f"{d2.get('depreciation_start_date')} (want {get_last_day(c2_afu)}) {'OK' if d2_ok else 'FAIL'}"
 		)
 		ok = ok and d2_ok
 

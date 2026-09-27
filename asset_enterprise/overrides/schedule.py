@@ -48,6 +48,16 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 		if not enterprise_enabled():
 			return
 		if frappe.flags.get("ae_asset_reversal") == self.asset:
+			# The superseded generations stay submitted and point at this
+			# one (`superseded_by`) and the reversal that caused it
+			# (`triggered_by`); they are the asset's history, not
+			# dependants. Since a depreciation reversal supersedes the
+			# schedule (§4.9.1), the GAP-027 sequence — reverse the
+			# depreciation, then cancel the asset — always meets them.
+			self.ignore_linked_doctypes = tuple(
+				set(tuple(self.get("ignore_linked_doctypes") or ()))
+				| {"Asset Depreciation Schedule", "Journal Entry"}
+			)
 			return
 		frappe.throw(
 			frappe._(

@@ -24,7 +24,7 @@ by `restore._mirror_je` and pass through untouched.
 
 import frappe
 from frappe import _
-from frappe.utils import formatdate, getdate
+from frappe.utils import flt, formatdate, getdate
 
 SYSTEM_REVERSAL_FLAG = "ae_system_reversal"
 
@@ -293,3 +293,64 @@ def _rows_in_scope(doc):
 		)
 		rows = [r for r in rows if r.journal_entry in posted]
 	return rows
+
+
+# --------------------------------------------------------------------------
+# Periods reversed before the schedule learned about reversals
+# --------------------------------------------------------------------------
+
+
+def reinstate_reversed_periods(asset_name, schedule_name, row_names):
+	"""Supersede `schedule_name` with a generation that keeps every row
+	verbatim and adds back, unposted and at its original amount, each
+	reversed row in `row_names` (already marked with its reversal).
+
+	Used for reversals made before §4.9.1 was built, in any order and with
+	later periods since posted on the original plan: re-pricing from NBV
+	would change rows that must not move, so the reversed period returns
+	exactly as it was (repair.repair_unmarked_depreciation_reversals).
+	"""
+	from asset_enterprise.rounding import fa_module_round
+
+	old = frappe.get_doc("Asset Depreciation Schedule", schedule_name)
+	company = frappe.db.get_value("Asset", asset_name, "company")
+	wanted = set(row_names)
+	keep = ("schedule_date", "depreciation_amount", "journal_entry", "reversal_journal_entry",
+		"cost_center", "rate_segments", "is_pya_entry", "days_in_period", "daily_rate",
+		"period_end_date")
+	rows = []
+	for r in old.get("depreciation_schedule"):
+		rows.append({f: r.get(f) for f in keep})
+		if r.name in wanted:
+			again = {f: r.get(f) for f in keep}
+			again.update(journal_entry=None, reversal_journal_entry=None, is_pya_entry=0)
+			rows.append(again)
+	# booked before unposted within a date, so the reversed row reads first
+	rows.sort(key=lambda r: (getdate(r["schedule_date"]), 0 if r["journal_entry"] else 1))
+
+	new = frappe.copy_doc(old)
+	new.set("depreciation_schedule", [])
+	new.supersedes = old.name
+	new.superseded_on = getdate()
+	accumulated = 0.0
+	for r in rows:
+		if not r["reversal_journal_entry"]:
+			accumulated = flt(accumulated + flt(r["depreciation_amount"]))
+		r["accumulated_depreciation_amount"] = fa_module_round(accumulated, company)
+		r["period_end_date"] = r["period_end_date"] or r["schedule_date"]
+		new.append("depreciation_schedule", r)
+	# same order as supersede_and_regenerate: the draft coexists with the
+	# schedule it replaces, which is superseded before the new one submits
+	new.status = "Draft"
+	new.flags.ignore_permissions = True
+	new.flags.superseding = old.name
+	new.insert()
+	old.db_set("status", "Superseded", update_modified=False)
+	old.db_set("superseded_by", new.name, update_modified=False)
+	new.status = "Active"
+	new.submit()
+	old.add_comment(
+		"Comment",
+		_("Superseded by {0}: {1} reversed period(s) reinstated as due.").format(new.name, len(wanted)),
+	)
+	return new.name
