@@ -744,6 +744,8 @@ def pi_on_cancel(doc, method=None):
 		filters={
 			"transaction_type": "Invoice Adjustment",
 			"docstatus": 1,
+			# a Reversal AVA is already the undo (a repair may have raised one)
+			"reversal_of_ava": ("is", "not set"),
 			"date": doc.posting_date,
 			"asset": ["in", [r.asset for r in doc.get("pi_asset_allocation") or []]],
 		},

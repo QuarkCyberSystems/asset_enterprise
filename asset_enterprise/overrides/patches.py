@@ -119,6 +119,11 @@ CLASS_OVERRIDE_TARGETS = [
 		"asset_enterprise.overrides.asset_capitalization.EnterpriseAssetCapitalization"),
 	("erpnext.assets.doctype.asset_capitalization.asset_capitalization", "AssetCapitalization", "before_submit", 1,
 		"asset_enterprise.overrides.asset_capitalization.EnterpriseAssetCapitalization"),
+	# CH-26 (merged source stays Disposed) and CH-44 (in-service-date floor)
+	("erpnext.assets.doctype.asset.asset", "Asset", "get_status", 1,
+		"asset_enterprise.overrides.asset.EnterpriseAsset"),
+	("erpnext.assets.doctype.asset.asset", "Asset", "validate_depreciation_start_date", 2,
+		"asset_enterprise.overrides.asset.EnterpriseAsset"),
 ]
 
 # (attr, original callable, wrapper callable) — filled by _rebind().

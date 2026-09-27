@@ -173,7 +173,9 @@ frappe.ui.form.on("Asset", {
 		if (frm.doc.docstatus !== 1) return;
 
 		// Partial Scrap (GAP-018)
-		if (!["Scrapped", "Sold", "Capitalized", "Cancelled"].includes(frm.doc.status)) {
+		// the off-register statuses (asset_enterprise/status.py OFF_REGISTER)
+		const off_register = ["Scrapped", "Sold", "Disposed", "Capitalized", "Cancelled"];
+		if (!off_register.includes(frm.doc.status)) {
 			frm.add_custom_button(
 				__("Partial Scrap"),
 				() => partial_scrap_dialog(frm),
@@ -258,10 +260,7 @@ frappe.ui.form.on("Asset", {
 		);
 
 		// Enable Depreciation after creation (GAP-011) — amendment-free.
-		if (
-			!frm.doc.calculate_depreciation &&
-			!["Scrapped", "Sold", "Capitalized", "Cancelled"].includes(frm.doc.status)
-		) {
+		if (!frm.doc.calculate_depreciation && !off_register.includes(frm.doc.status)) {
 			frm.add_custom_button(
 				__("Enable Depreciation"),
 				() => enable_depreciation_dialog(frm),
@@ -271,10 +270,7 @@ frappe.ui.form.on("Asset", {
 
 		// Edit the depreciation details until the first entry posts
 		// (client, 27/09). The server decides whether it is still open.
-		if (
-			frm.doc.calculate_depreciation &&
-			!["Scrapped", "Sold", "Capitalized", "Cancelled", "Disposed"].includes(frm.doc.status)
-		) {
+		if (frm.doc.calculate_depreciation && !off_register.includes(frm.doc.status)) {
 			frm.add_custom_button(
 				__("Edit Depreciation"),
 				() => edit_depreciation_dialog(frm),
@@ -582,20 +578,32 @@ function post_final_row_dialog(frm) {
 // category's stored date or today; on a draft, a change of in-service
 // date or a freshly filled book moves it to that month end. The server
 // applies the same rule on save — this only shows it before saving.
+function ae_month_end(date_str) {
+	const d = frappe.datetime.str_to_obj(date_str);
+	return frappe.datetime.obj_to_str(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+}
+
 function ae_default_first_posting(frm) {
 	if (frm.doc.docstatus !== 0 || !frm.doc.available_for_use_date) return;
-	const afu = frappe.datetime.str_to_obj(frm.doc.available_for_use_date);
-	const month_end = frappe.datetime.obj_to_str(
-		new Date(afu.getFullYear(), afu.getMonth() + 1, 0)
-	);
+	const month_end = ae_month_end(frm.doc.available_for_use_date);
+	// what this handler (or core's seed) put there — anything else was typed
+	const previous = frm.__ae_prev_afu ? ae_month_end(frm.__ae_prev_afu) : null;
+	frm.__ae_prev_afu = frm.doc.available_for_use_date;
+	const today = frappe.datetime.get_today();
 	(frm.doc.finance_books || []).forEach((row) => {
-		if (row.depreciation_start_date !== month_end) {
+		const current = row.depreciation_start_date;
+		const seeded = !current || current === previous || current === today
+			|| current < frm.doc.available_for_use_date;
+		if (seeded && current !== month_end) {
 			frappe.model.set_value(row.doctype, row.name, "depreciation_start_date", month_end);
 		}
 	});
 }
 
 frappe.ui.form.on("Asset", {
+	onload(frm) {
+		frm.__ae_prev_afu = frm.doc.available_for_use_date;
+	},
 	available_for_use_date: ae_default_first_posting,
 	finance_books: ae_default_first_posting,
 });

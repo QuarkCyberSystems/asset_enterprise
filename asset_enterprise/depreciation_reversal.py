@@ -223,7 +223,17 @@ def execute_mass_reversal(doc):
 		reversal.posting_date = posting_date
 		reversal.user_remark = _("Mass Depreciation Reversal {0}: {1}").format(doc.name, doc.reason)
 		reversal.flags.ignore_permissions = True
-		reversal.submit()
+		try:
+			reversal.submit()
+		except Exception as e:
+			frappe.clear_last_message()
+			frappe.throw(
+				_(
+					"{0}: the reversal of {1} ({2}) failed — {3}. Nothing in this run has been "
+					"posted; resolve it or leave the asset out of the scope, then submit again."
+				).format(row.asset, row.journal_entry, row.schedule_date, str(e) or type(e).__name__),
+				title=_("Mass Depreciation Reversal Stopped"),
+			)
 		reversed_any = True
 		doc.append(
 			"result_summary",
@@ -252,8 +262,7 @@ def execute_mass_reversal(doc):
 def _rows_in_scope(doc):
 	"""Booked, unreversed Active-schedule rows dated in the period, latest
 	first within each asset so a period holding two rows reverses cleanly."""
-	from asset_enterprise.status import OFF_REGISTER
-
+	# off-register assets are kept: reversal_refusal lists them as Skipped
 	rows = frappe.db.sql(
 		"""
 		select ds.name, ds.schedule_date, ds.journal_entry, ads.asset,
@@ -264,7 +273,6 @@ def _rows_in_scope(doc):
 		join `tabJournal Entry` je on je.name = ds.journal_entry
 		where ads.status = 'Active' and ads.docstatus = 1
 		  and a.docstatus = 1 and a.company = %(company)s
-		  and a.status not in %(off_register)s
 		  and je.docstatus = 1
 		  and ifnull(ds.reversal_journal_entry, '') = ''
 		  and ds.schedule_date between %(start)s and %(end)s
@@ -272,7 +280,6 @@ def _rows_in_scope(doc):
 		""",
 		{
 			"company": doc.company,
-			"off_register": OFF_REGISTER,
 			"start": doc.period_start,
 			"end": doc.period_end,
 		},
@@ -330,6 +337,10 @@ def reinstate_reversed_periods(asset_name, schedule_name, row_names):
 
 	new = frappe.copy_doc(old)
 	new.set("depreciation_schedule", [])
+	# this generation is caused by the repair, not by the old one's event
+	if new.meta.has_field("triggered_by"):
+		new.triggered_by_doctype = None
+		new.triggered_by = None
 	new.supersedes = old.name
 	new.superseded_on = getdate()
 	accumulated = 0.0

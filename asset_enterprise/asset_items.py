@@ -50,13 +50,19 @@ def validate_item(doc, method=None):
 
 
 def validate_purchase_rows(doc, method=None):
-	"""Purchase Receipt / Purchase Invoice validate."""
+	"""Purchase Receipt / Purchase Invoice validate — rows that RECEIVE an
+	asset item. A return or a Cancellation undoes a receipt as it was
+	made, and an invoice row billing a receipt row carries that row's
+	unit: refusing those would freeze a receipt accepted before the rule
+	with no way to bill, return or cancel it (chief review 27/09)."""
 	uom = asset_item_uom()
-	if not uom:
+	if not uom or doc.get("is_return") or doc.get("is_cancellation") or doc.get("cancellation_against"):
 		return
 	bad = [
 		row for row in doc.get("items") or []
-		if row.get("is_fixed_asset") and (row.uom != uom or (row.get("stock_uom") and row.stock_uom != uom))
+		if row.get("is_fixed_asset")
+		and not (row.get("pr_detail") or row.get("purchase_receipt"))
+		and (row.uom != uom or (row.get("stock_uom") and row.stock_uom != uom))
 	]
 	if not bad:
 		return

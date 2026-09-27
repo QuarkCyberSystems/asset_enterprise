@@ -1272,7 +1272,9 @@ def enable_depreciation(
 		frappe.throw(_("Asset {0} must be submitted.").format(asset_name))
 	if asset.calculate_depreciation:
 		frappe.throw(_("Depreciation is already enabled on {0}.").format(asset_name))
-	if asset.status in ("Sold", "Scrapped", "Capitalized"):
+	from asset_enterprise.status import off_register
+
+	if off_register(asset.status):
 		frappe.throw(_("Asset {0} is {1} — cannot enable depreciation.").format(asset_name, asset.status))
 	if frappe.db.exists(
 		"Asset Depreciation Schedule", {"asset": asset_name, "status": "Active", "docstatus": 1}

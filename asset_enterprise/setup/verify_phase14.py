@@ -374,6 +374,25 @@ def _run():
 		print(f"fa002  a receipt row for an asset item must be in Nos: {'OK' if c else 'FAIL'}")
 		ok = ok and c
 
+		# a receipt accepted in another unit before the rule can still be
+		# billed, returned and cancelled (chief review 27/09, MUST)
+		legacy_return = frappe.get_doc(
+			{"doctype": "Purchase Receipt", "company": company, "is_return": 1,
+			 "items": [{"idx": 1, "item_code": "AE-SMOKE-ITEM", "is_fixed_asset": 1, "uom": hour, "stock_uom": hour}]}
+		)
+		legacy_cancel = frappe.get_doc(
+			{"doctype": "Purchase Receipt", "company": company, "is_cancellation": 1,
+			 "items": [{"idx": 1, "item_code": "AE-SMOKE-ITEM", "is_fixed_asset": 1, "uom": hour, "stock_uom": hour}]}
+		)
+		legacy_bill = frappe.get_doc(
+			{"doctype": "Purchase Invoice", "company": company,
+			 "items": [{"idx": 1, "item_code": "AE-SMOKE-ITEM", "is_fixed_asset": 1, "uom": hour,
+				"stock_uom": hour, "purchase_receipt": "LEGACY-PR", "pr_detail": "legacy-row"}]}
+		)
+		c = all(_refused(validate_purchase_rows, d) is None for d in (legacy_return, legacy_cancel, legacy_bill))
+		print(f"fa002  a pre-rule receipt in another unit can still be returned, cancelled and billed: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
 		# ============ GAP-027 sequence after CH-41/42 ======================
 		h = _depreciating_asset(company, 24_000, months_back=3)
 		for row in reversed([r for r in _rows(_active(h)) if r.journal_entry]):

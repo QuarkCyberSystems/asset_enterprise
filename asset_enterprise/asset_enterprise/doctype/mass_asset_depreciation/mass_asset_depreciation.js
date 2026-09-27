@@ -28,3 +28,16 @@ frappe.ui.form.on("Mass Asset Depreciation", {
 	period_month: ae_set_period_end,
 	period_year: ae_set_period_end,
 });
+
+// A run that posted entries is undone through Mass Depreciation Reversal,
+// never by cancelling it (the server refuses; the button is not offered).
+frappe.ui.form.on("Mass Asset Depreciation", {
+	refresh(frm) {
+		if (
+			frm.doc.docstatus === 1 &&
+			(frm.doc.result_summary || []).some((r) => r.outcome === "Posted")
+		) {
+			frm.page.clear_secondary_action();
+		}
+	},
+});
