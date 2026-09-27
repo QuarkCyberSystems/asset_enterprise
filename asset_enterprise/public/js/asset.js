@@ -381,6 +381,7 @@ function edit_depreciation_dialog(frm) {
 
 function open_enable_depreciation_dialog(frm, defaults, opts) {
 	opts = opts || {};
+	let last_afu = defaults.available_for_use_date;
 	const d = new frappe.ui.Dialog({
 		title: opts.title || __("Enable Depreciation — {0}", [frm.doc.name]),
 		fields: [
@@ -410,6 +411,19 @@ function open_enable_depreciation_dialog(frm, defaults, opts) {
 				default: defaults.available_for_use_date,
 				read_only: !!opts.lock_afu,
 				reqd: 1,
+				// the proposed posting date follows the in-service date the
+				// user types, not only the one the dialog opened with
+				// (client, 27/09, ACC-ASS-2026-00050)
+				onchange() {
+					const afu = d.get_value("available_for_use_date");
+					if (!afu || afu === last_afu) return;
+					last_afu = afu;
+					const o = frappe.datetime.str_to_obj(afu);
+					d.set_value(
+						"depreciation_start_date",
+						frappe.datetime.obj_to_str(new Date(o.getFullYear(), o.getMonth() + 1, 0))
+					);
+				},
 			},
 			{
 				// §4.5 — when the first entry posts; days between the two
