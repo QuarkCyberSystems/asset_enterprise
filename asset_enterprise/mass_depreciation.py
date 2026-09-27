@@ -153,6 +153,12 @@ def _check_authority(doc):
 	multi-select table (per 2026-07-14 meeting)."""
 	if doc.mode == "All Eligible":
 		return
+	assert_authority(_("Mode '{0}'").format(doc.mode))
+
+
+def assert_authority(action):
+	"""`action` (translated, e.g. "Mode 'Selected Assets'") needs one of
+	the Mass Depreciation Authority Roles from Asset Settings."""
 	allowed_roles = frappe.get_all(
 		"Asset Settings Authority Role", filters={"parent": "Asset Settings"}, pluck="role"
 	)
@@ -166,7 +172,7 @@ def _check_authority(doc):
 	user_roles = set(frappe.get_roles())
 	if not user_roles.intersection(allowed_roles):
 		frappe.throw(
-			_(
-				"Mode '{0}' requires one of the Mass Depreciation Authority Roles: {1}."
-			).format(doc.mode, ", ".join(allowed_roles))
+			_("{0} requires one of the Mass Depreciation Authority Roles: {1}.").format(
+				action, ", ".join(allowed_roles)
+			)
 		)

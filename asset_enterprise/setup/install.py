@@ -106,6 +106,7 @@ ENTERPRISE_SIDEBAR_GROUP = "Enterprise Assets"
 ENTERPRISE_SIDEBAR_ITEMS = [
 	{"label": "Scrap Transaction", "link_type": "DocType", "link_to": "Scrap Transaction", "icon": "delete"},
 	{"label": "Mass Asset Depreciation", "link_type": "DocType", "link_to": "Mass Asset Depreciation", "icon": "stack"},
+	{"label": "Mass Depreciation Reversal", "link_type": "DocType", "link_to": "Mass Depreciation Reversal", "icon": "stack"},
 	{"label": "Financial Treatment", "link_type": "DocType", "link_to": "Financial Treatment", "icon": "file"},
 	{"label": "Asset Settings", "link_type": "DocType", "link_to": "Asset Settings", "icon": "setting-gear"},
 	{"label": "Scrapping Type", "link_type": "DocType", "link_to": "Scrapping Type", "icon": "tag"},

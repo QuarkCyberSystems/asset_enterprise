@@ -47,3 +47,20 @@ class MassAssetDepreciation(Document):
 		from asset_enterprise.mass_depreciation import execute_mass_depreciation
 
 		execute_mass_depreciation(self)
+
+	def before_cancel(self):
+		"""Cancelling a run used to be accepted and changed nothing: its
+		entries stayed posted and their schedule rows stayed booked
+		(client, 27/09). A posted run is undone by reversing what it
+		booked, never by cancelling the run."""
+		posted = [r.journal_entry for r in self.get("result_summary") if r.outcome == "Posted"]
+		if not posted:
+			return
+		frappe.throw(
+			_(
+				"{0} posted {1} depreciation entries and cannot be cancelled — they stay "
+				"on the ledger. To undo them, create a Mass Depreciation Reversal in mode "
+				"'Mass Depreciation Run' for this run."
+			).format(self.name, len(posted)),
+			title=_("Not Cancellable"),
+		)
