@@ -219,11 +219,11 @@ def execute_mass_reversal(doc):
 				},
 			)
 			continue
-		reversal = make_reverse_journal_entry(row.journal_entry)
-		reversal.posting_date = posting_date
-		reversal.user_remark = _("Mass Depreciation Reversal {0}: {1}").format(doc.name, doc.reason)
-		reversal.flags.ignore_permissions = True
 		try:
+			reversal = make_reverse_journal_entry(row.journal_entry)
+			reversal.posting_date = posting_date
+			reversal.user_remark = _("Mass Depreciation Reversal {0}: {1}").format(doc.name, doc.reason)
+			reversal.flags.ignore_permissions = True
 			reversal.submit()
 		except Exception as e:
 			frappe.clear_last_message()
