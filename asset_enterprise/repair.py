@@ -473,8 +473,9 @@ def find_collapsed_horizons(company=None, asset=None):
 	"""
 	from asset_enterprise.asset_values import recalculate_asset_values
 	from asset_enterprise.depreciation import schedule_horizon_from_life
+	from asset_enterprise.status import OFF_REGISTER
 
-	conditions, params = "", []
+	conditions, params = "", [OFF_REGISTER]
 	if company:
 		conditions += " and a.company = %s"
 		params.append(company)
@@ -493,7 +494,7 @@ def find_collapsed_horizons(company=None, asset=None):
 		join `tabDepreciation Schedule` ds on ds.parent = ads.name
 		where ads.status = 'Active' and ads.docstatus = 1 and a.docstatus = 1
 		  and a.calculate_depreciation = 1
-		  and a.status not in ('Scrapped', 'Sold', 'Disposed', 'Capitalized', 'Cancelled')
+		  and a.status not in %s
 		  {conditions}
 		group by ads.name
 		order by ads.asset
@@ -1978,7 +1979,7 @@ def align_terminal_rows_to_month_end(company=None, asset=None, dry_run=1):
 		values,
 		as_dict=True,
 	)
-	DISPOSED = ("Scrapped", "Sold", "Disposed", "Capitalized", "Cancelled")
+	from asset_enterprise.status import OFF_REGISTER as DISPOSED
 	moved = skipped = 0
 	print(f"{len(rows)} unposted row(s) not dated month-end:")
 	for row in rows:

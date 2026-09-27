@@ -107,7 +107,12 @@ doc_events = {
 			# chief r5 M-4: a journal posted for a standing capitalization is
 			# reversed only by that capitalization's own cancel
 			"asset_enterprise.merge.refuse_standalone_reversal",
+			# depreciation is reversed latest period first (client, 27/09)
+			"asset_enterprise.depreciation_reversal.validate",
 		],
+		# a reversed depreciation period is marked on its schedule row and
+		# becomes due again (§4.9; client, 27/09)
+		"on_submit": "asset_enterprise.depreciation_reversal.on_submit",
 	},
 	"Purchase Invoice": {
 		"validate": "asset_enterprise.invoice_diff.pi_validate",

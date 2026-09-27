@@ -11,6 +11,8 @@ import frappe
 from frappe import _
 from frappe.utils import getdate
 
+from asset_enterprise.status import OFF_REGISTER
+
 
 def execute_mass_depreciation(doc):
 	_check_authority(doc)
@@ -33,13 +35,17 @@ def execute_mass_depreciation(doc):
 		  -- a reversed or disposed asset keeps its schedule for audit;
 		  -- nothing may post against it
 		  and a.docstatus = 1
-		  and a.status not in ('Disposed', 'Sold', 'Scrapped', 'Capitalized')
+		  and a.status not in %(off_register)s
 		  and a.company = %(company)s
 		  and ifnull(ds.journal_entry, '') = ''
 		  and ds.schedule_date <= %(posting_date)s
 		order by ads.asset, ds.schedule_date
 		""",
-		{"company": doc.company, "posting_date": getdate(doc.posting_date)},
+		{
+			"company": doc.company,
+			"posting_date": getdate(doc.posting_date),
+			"off_register": OFF_REGISTER,
+		},
 		as_dict=True,
 	)
 

@@ -69,6 +69,18 @@ class EnterpriseAsset(Asset):
 			return
 		return super().validate_asset_values()
 
+	def get_status(self):
+		"""CH-26: a source merged into a composite stays submitted with
+		status "Disposed". Core re-derives the status from the depreciation
+		counters on every set_status() — an Asset Value Adjustment calls it
+		— and turned the source back into "Submitted", after which an
+		invoice difference was capitalized onto it instead of being
+		expensed (client, 27/09, ACC-ASS-2026-00043). The merge link is
+		the fact; the status follows it."""
+		if self.docstatus == 1 and self.get("merged_into_asset"):
+			return "Disposed"
+		return super().get_status()
+
 	def validate(self):
 		from asset_enterprise.control_category import configure_asset
 		configure_asset(self)

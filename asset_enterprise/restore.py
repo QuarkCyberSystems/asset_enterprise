@@ -449,5 +449,10 @@ def _mirror_je(source_je_name, remark, posting_date=None):
 	mirror.user_remark = remark
 	mirror.flags.ignore_permissions = True
 	mirror.flags.ignore_links = True
+	# the caller does its own schedule and treatment bookkeeping; the
+	# user-reversal hooks (depreciation_reversal) must leave this one alone
+	from asset_enterprise.depreciation_reversal import SYSTEM_REVERSAL_FLAG
+
+	mirror.flags[SYSTEM_REVERSAL_FLAG] = True
 	mirror.submit()
 	return mirror.name

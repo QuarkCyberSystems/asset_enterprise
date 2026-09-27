@@ -31,7 +31,7 @@ from frappe.utils import add_days, flt, getdate, today
 from asset_enterprise.accounts import get_disposal_account, get_disposal_cost_center
 from asset_enterprise.rounding import fa_module_round
 
-DISPOSED_STATUSES = ("Cancelled", "Sold", "Scrapped", "Capitalized")
+from asset_enterprise.status import OFF_REGISTER as DISPOSED_STATUSES
 
 
 def assert_fully_invoiced(asset):

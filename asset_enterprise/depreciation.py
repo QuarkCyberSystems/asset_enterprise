@@ -795,7 +795,10 @@ def supersede_and_regenerate(
 	)
 	accumulated = 0.0
 	for r in posted:
-		accumulated = flt(accumulated + flt(r.depreciation_amount))
+		# a reversed row keeps its entry for the record, but its charge is
+		# netted by the reversal and no longer part of the running total
+		if not r.get("reversal_journal_entry"):
+			accumulated = flt(accumulated + flt(r.depreciation_amount))
 		new.append(
 			"depreciation_schedule",
 			{
@@ -1187,7 +1190,7 @@ def depreciate_remaining_base_now(asset_name, posting_date, source_doc, transact
 
 # Statuses where value legitimately stops depreciating — the asset has
 # left the register and GAP-012 Case A.02 expenses anything that follows.
-_LIFE_OVER_STATUSES = ("Scrapped", "Sold", "Disposed", "Capitalized", "Cancelled")
+from asset_enterprise.status import OFF_REGISTER as _LIFE_OVER_STATUSES  # noqa: E402
 
 
 def charge_stranded_value(asset_name, posting_date, source_doc, transaction_type):
@@ -1560,12 +1563,12 @@ def post_depreciation_entries(date=None):
 		  -- a reversed or disposed asset keeps its schedule for audit,
 		  -- but nothing may post against it.
 		  and a.docstatus = 1
-		  and a.status not in ('Disposed', 'Sold', 'Scrapped', 'Capitalized')
+		  and a.status not in %s
 		  and ifnull(ds.journal_entry, '') = ''
 		  and ds.schedule_date <= %s
 		order by ads.asset, ds.schedule_date
 		""",
-		posting_date,
+		(_LIFE_OVER_STATUSES, posting_date),
 		as_dict=True,
 	)
 	for row in due:

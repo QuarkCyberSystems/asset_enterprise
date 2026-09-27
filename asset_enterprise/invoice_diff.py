@@ -541,11 +541,10 @@ def _maybe_warn_below_receipt(doc):
 
 
 # Case A.02 routing: an asset that has left the register cannot take a
-# value adjustment, so its invoice difference is EXPENSED. "Cancelled"
-# belongs here for the same reason the others do — a reclassification
-# source now carries it (client, 24/08) and disposal.py has always
-# listed it.
-DISPOSED_STATUSES = ("Scrapped", "Sold", "Capitalized", "Cancelled")
+# value adjustment, so its invoice difference is EXPENSED. The list is
+# status.OFF_REGISTER — a merged-away source ("Disposed") is off the
+# register too (client, 27/09).
+from asset_enterprise.status import OFF_REGISTER as DISPOSED_STATUSES  # noqa: E402
 
 
 def pi_on_submit(doc, method=None):
