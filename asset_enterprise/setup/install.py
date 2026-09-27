@@ -287,7 +287,31 @@ def seed_setting_defaults():
 	default until the form is saved). Option B (v2.16 CH-05) ships ON."""
 	if frappe.db.get_single_value("Asset Settings", "warn_invoice_below_receipt") is None:
 		frappe.db.set_single_value("Asset Settings", "warn_invoice_below_receipt", 1)
+	_seed_asset_item_uom()
 	_warn_if_immutable_ledger_off()
+
+
+def _seed_asset_item_uom():
+	"""Asset Item UOM starts at "Nos" (client, 27/09, CH-45) — once. A new
+	site has no UOMs until its setup wizard runs, so the seed waits for
+	the first migrate that finds "Nos" (a schema default would fail the
+	install: the Link has nothing to point at). The marker keeps a value
+	the user cleared on purpose cleared. Enabled asset items held in
+	another unit are listed when it seeds."""
+	if frappe.db.get_default("asset_item_uom_seeded"):
+		return
+	if not frappe.db.exists("UOM", "Nos"):
+		return
+	if not frappe.db.get_single_value("Asset Settings", "asset_item_uom"):
+		frappe.db.set_single_value("Asset Settings", "asset_item_uom", "Nos")
+	frappe.db.set_default("asset_item_uom_seeded", "1")
+	offending = frappe.get_all(
+		"Item", filters={"is_fixed_asset": 1, "stock_uom": ("!=", "Nos"), "disabled": 0},
+		fields=["name", "stock_uom"],
+	)
+	print(f"asset_item_uom: Nos; {len(offending)} enabled fixed-asset item(s) held in another UOM")
+	for item in offending:
+		print(f"  {item.name}: {item.stock_uom}")
 
 
 def _warn_if_immutable_ledger_off():

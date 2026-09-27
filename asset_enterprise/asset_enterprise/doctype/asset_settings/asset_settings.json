@@ -57,8 +57,7 @@
    "label": "Warn When Invoice Is Below Receipt Amount"
   },
   {
-   "default": "Nos",
-   "description": "Fixed-asset items must use this UOM as their stock unit, and receipts and invoices of them must be in it: one unit is one asset. Leave empty to lift the restriction.",
+   "description": "Fixed-asset items must use this UOM as their stock unit, and receipts and invoices of them must be in it: one unit is one asset. Seeded with Nos once that UOM exists; leave empty to lift the restriction.",
    "fieldname": "asset_item_uom",
    "fieldtype": "Link",
    "label": "Asset Item UOM",
