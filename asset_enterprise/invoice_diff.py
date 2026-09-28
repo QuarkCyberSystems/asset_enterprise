@@ -87,6 +87,7 @@ def pr_on_submit(doc, method=None):
 			frappe.db.set_value(
 				"Purchase Receipt Item", row.name, "asset_linked", 1, update_modified=False
 			)
+			_allocate_row_value(doc, row, linked)
 			_validate_pr_over_allocation(row, linked)
 			_stamp_receiving_date_basis(doc, linked)
 			_submit_receipt_assets(doc, linked)
@@ -176,6 +177,58 @@ def pr_row_capitalised_value(row):
 	return flt(row.base_net_amount) + flt(row.item_tax_amount) + flt(row.landed_cost_voucher_amount)
 
 
+def _allocate_row_value(pr_doc, row, asset_names):
+	"""Split the row's capitalised value across the assets the receipt
+	just created so they sum to it exactly.
+
+	Core writes each asset at the row's unrounded valuation rate, and the
+	asset rounds it on submit. When a charge does not divide evenly the
+	rounded assets drift from what the receipt debited: 3 x 100 with 100
+	of freight gives 133.33 x 3 = 399.99 against 400.00 booked, and 9 x
+	1,000 with 0.05 gives 1,000.01 x 9 = 9,000.09 against 9,000.05, which
+	the over-allocation check then refuses asset by asset (chief review
+	28/09, BLOCK). The value is split by quantity in the smallest currency
+	unit, the leftover units going one each to the first assets, so no
+	two shares of equal quantity differ by more than one unit. Only a row
+	whose assets are all still drafts is touched — a submitted asset's
+	value is booked and stays."""
+	from asset_enterprise.rounding import get_currency_precision
+
+	assets = frappe.get_all(
+		"Asset",
+		filters={"name": ("in", asset_names)},
+		fields=["name", "docstatus", "asset_quantity", "additional_asset_cost"],
+		order_by="creation asc, name asc",
+	)
+	if not assets or any(a.docstatus != 0 for a in assets):
+		return
+	scale = 10 ** get_currency_precision(pr_doc.company)
+	units = int(round(pr_row_capitalised_value(row) * scale))
+	weights = [int(flt(a.asset_quantity) or 1) for a in assets]
+	total_weight = sum(weights)
+	shares = [units * w // total_weight for w in weights]
+	for i in range(units - sum(shares)):
+		shares[i % len(shares)] += 1
+	for a, share in zip(assets, shares):
+		value = share / scale
+		frappe.db.set_value(
+			"Asset",
+			a.name,
+			{
+				"purchase_amount": value,
+				"net_purchase_amount": value,
+				"total_asset_cost": value + flt(a.additional_asset_cost),
+			},
+			update_modified=False,
+		)
+
+
+def value_tolerance(asset_count):
+	"""Half a cent per linked asset: each asset's value is rounded on its
+	own, so their sum may differ from the row by that much."""
+	return 0.005 * max(1, asset_count)
+
+
 def _validate_pr_over_allocation(row, linked_assets):
 	"""GAP-004 / N1: linked assets must not exceed the PR row (PR only).
 	The value side compares against what the row capitalised, charges
@@ -194,7 +247,7 @@ def _validate_pr_over_allocation(row, linked_assets):
 		)[0][0]
 	)
 	row_value = pr_row_capitalised_value(row)
-	if linked_value > row_value + 0.01:
+	if linked_value > row_value + value_tolerance(len(linked_assets)):
 		frappe.throw(
 			_(
 				"Purchase Receipt row {0}: linked asset value {1} exceeds the row's value {2} "
@@ -276,21 +329,38 @@ def pr_before_cancel(doc, method=None):
 
 def si_validate(doc, method=None):
 	"""GAP-010 / VR-011 (Phase 11 F7): the SALE disposal path honors
-	the prevent-disposal-before-full-invoicing control too."""
+	the prevent-disposal-before-full-invoicing control too.
+
+	Only a submitted asset on the register can be sold. Core refuses
+	Scrapped / Cancelled / Capitalized / Sold only and never looks at
+	docstatus, and on an enterprise site the invoice's asset picker is
+	the Asset accounting dimension, which offers every asset of the
+	company: a draft sold with no value ever booked, and a merged-away
+	("Disposed") source was derecognised a second time (chief review
+	28/09). A return undoes a sale, so it is not checked here."""
 	if not _enterprise():
 		return
 	from asset_enterprise.disposal import assert_fully_invoiced
+	from asset_enterprise.status import ON_REGISTER
 
 	for row in doc.items:
 		if row.get("asset"):
 			asset = frappe.db.get_value(
 				"Asset",
 				row.asset,
-				["name", "purchase_receipt", "purchase_invoice"],
+				["name", "purchase_receipt", "purchase_invoice", "docstatus", "status"],
 				as_dict=True,
 			)
-			if asset:
-				assert_fully_invoiced(asset)
+			if not asset:
+				continue
+			if not doc.get("is_return") and (asset.docstatus != 1 or asset.status not in ON_REGISTER):
+				frappe.throw(
+					_("Row {0}: Asset {1} is {2} and cannot be sold.").format(
+						row.idx, asset.name, _("Draft") if asset.docstatus == 0 else _(asset.status)
+					),
+					title=_("Asset Not on the Register"),
+				)
+			assert_fully_invoiced(asset)
 
 
 # ---------------------------------------------------------------- PI side

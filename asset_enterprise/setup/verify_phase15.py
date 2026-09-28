@@ -2,15 +2,18 @@
 bench --site <site> execute asset_enterprise.setup.verify_phase15.run
 
   FA-010  a receipt whose asset row carries Valuation charges submits;
-          its assets carry the charges; over-allocation is still refused
+          its assets carry the charges and sum to the row exactly when
+          the charge does not divide; over-allocation is still refused
           at the row's capitalised value, on the receipt and the asset
   FA-009  a submitted asset with depreciation off reads "Pending
           Depreciation Setup", or "Non-Depreciable" in a Non Depreciable
           Category; Enable Depreciation leaves the pending status and is
           refused on a non-depreciable category; the category flag
           restates its assets and is refused over depreciating ones; the
-          new statuses cancel, cascade from the receipt, sell, scrap and
-          restore like "Submitted"; the migrate patch restates old rows
+          new statuses cancel, cascade from the receipt, sell (and
+          return), transfer, take a value adjustment, scrap and restore
+          like "Submitted"; a draft or Disposed asset cannot be sold;
+          migrate and switching Enterprise Assets on restate old rows
 
 Savepoint-rolled-back; run on the throwaway site.
 """
@@ -23,6 +26,7 @@ from frappe.utils import add_months, flt, getdate, nowdate
 from asset_enterprise.setup.test_fixtures import (
 	_ensure_location,
 	_find_account,
+	_move,
 	_sell,
 	_supplier,
 	ensure_enterprise_test_defaults,
@@ -123,6 +127,7 @@ def _run():
 	ok = True
 	company = pick_company()
 	switch_before = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
+	smoke_before = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})
 	frappe.db.savepoint("phase15_verify")
 	try:
 		frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
@@ -154,6 +159,27 @@ def _run():
 		c = values == [6_500, 6_500]
 		print(f"fa010  two units, 3,000 freight shared: each asset 6,500: {'OK' if c else 'FAIL'} ({values})")
 		ok = ok and c
+
+		# a charge that does not divide: the assets still sum to the row
+		# and every one of them submits (chief review 28/09, BLOCK)
+		for qty, rate, freight, want in ((9, 1_000, 0.05, 9_000.05), (3, 100, 100, 400.00)):
+			uneven = _receipt(company, qty, rate, freight)
+			rows = frappe.get_all(
+				"Asset", filters={"purchase_receipt_item": uneven.items[0].name},
+				fields=["docstatus", "net_purchase_amount", "total_asset_cost"],
+			)
+			total = round(sum(flt(r.net_purchase_amount) for r in rows), 2)
+			spread = max(flt(r.net_purchase_amount) for r in rows) - min(flt(r.net_purchase_amount) for r in rows)
+			c = (
+				len(rows) == qty and all(r.docstatus == 1 for r in rows) and total == want
+				and round(spread, 2) <= 0.01
+				and all(flt(r.total_asset_cost) == flt(r.net_purchase_amount) for r in rows)
+			)
+			print(
+				f"fa010  {qty} x {rate} + {freight} freight: {qty} assets submitted, summing {total} "
+				f"(want {want}): {'OK' if c else 'FAIL'} ({sorted({flt(r.net_purchase_amount) for r in rows})})"
+			)
+			ok = ok and c
 
 		from asset_enterprise.invoice_diff import _validate_pr_over_allocation, pr_row_capitalised_value
 
@@ -253,6 +279,55 @@ def _run():
 		print(f"fa009  a Pending Depreciation Setup asset can be sold: {'OK' if c else 'FAIL'} ({_status(sold.name)})")
 		ok = ok and c
 
+		from erpnext.controllers.sales_and_purchase_return import make_return_doc
+
+		si = frappe.get_all("Sales Invoice Item", filters={"asset": sold.name}, pluck="parent")[0]
+		ret = make_return_doc("Sales Invoice", si)
+		ret.flags.ignore_permissions = True
+		ret.insert()
+		ret.submit()
+		c = _status(sold.name) == PENDING_DEPRECIATION_SETUP
+		print(f"fa009  a sales return brings it back as Pending Depreciation Setup: {'OK' if c else 'FAIL'} ({_status(sold.name)})")
+		ok = ok and c
+
+		draft = make_test_asset(company, gross=4_000)
+		c = "cannot be sold" in (_refused(_sell, draft.name, company, 4_000) or "")
+		merged = make_test_asset(company, gross=4_000, submit=True)
+		frappe.db.set_value("Asset", merged.name, "status", "Disposed", update_modified=False)
+		c = c and "cannot be sold" in (_refused(_sell, merged.name, company, 4_000) or "")
+		print(f"fa009  a draft or a Disposed asset cannot be sold: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		moved = make_test_asset(company, gross=6_000, submit=True)
+		target = frappe.get_doc({"doctype": "Location", "location_name": f"AE Smoke Loc {frappe.generate_hash(length=5)}"}).insert(
+			ignore_permissions=True).name
+		_move(moved.name, company, nowdate(), source_location=moved.location, target_location=target)
+		c = (
+			frappe.db.get_value("Asset", moved.name, "location") == target
+			and _status(moved.name) == PENDING_DEPRECIATION_SETUP
+		)
+		print(f"fa009  a Pending Depreciation Setup asset transfers: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		ava = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": moved.name, "company": company,
+			"date": nowdate(), "transaction_type": "Upward Revaluation",
+			"current_asset_value": 6_000, "new_asset_value": 7_000,
+			"difference_account": pick_plain_account(company, "Liability"),
+		})
+		ava.flags.ignore_permissions = True
+		ava.insert()
+		ava.submit()
+		c = _status(moved.name) == PENDING_DEPRECIATION_SETUP
+		print(f"fa009  a value adjustment on it keeps Pending Depreciation Setup: {'OK' if c else 'FAIL'} ({_status(moved.name)})")
+		ok = ok and c
+
+		gone = _land(company, category, item, gross=3_000)
+		frappe.get_doc("Asset", gone).cancel()
+		c = _status(gone) == "Cancelled"
+		print(f"fa009  a Non-Depreciable asset cancels: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
 		from asset_enterprise import disposal
 		from asset_enterprise.restore import restore_asset
 
@@ -263,25 +338,36 @@ def _run():
 		print(f"fa009  a scrapped Non-Depreciable asset restores to Non-Depreciable: {'OK' if c else 'FAIL'} ({_status(land)})")
 		ok = ok and c
 
-		from asset_enterprise.patches import restate_not_depreciating_asset_status
+		from asset_enterprise.overrides.asset_category import restate_all_not_depreciating
 
 		frappe.db.set_value("Asset", land, "status", "Submitted", update_modified=False)
 		keep = make_test_asset(company, gross=7_000, submit=True)
 		frappe.db.set_value("Asset", keep.name, "status", "Submitted", update_modified=False)
-		restate_not_depreciating_asset_status.execute()
-		restate_not_depreciating_asset_status.execute()  # idempotent
+		restate_all_not_depreciating()
+		restate_all_not_depreciating()  # idempotent
 		c = (
 			_status(land) == NON_DEPRECIABLE
 			and _status(keep.name) == PENDING_DEPRECIATION_SETUP
-			and _status(a) == "Submitted"  # depreciating: untouched
-			and _status(sold.name) == "Sold"
+			and _status(a) == "Submitted"  # depreciating: untouched, so core's posting query still sees it
+			and _status(merged.name) == "Disposed"
 		)
-		print(f"fa009  the migrate patch restates old rows, leaves the rest: {'OK' if c else 'FAIL'}")
+		print(f"fa009  the migrate restatement restates old rows, leaves the rest: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		# switching Enterprise Assets on restates at once
+		frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 0)
+		frappe.db.set_value("Asset", keep.name, "status", "Submitted", update_modified=False)
+		settings = frappe.get_doc("Asset Settings")
+		settings.enable_enterprise_assets = 1
+		settings.flags.ignore_permissions = True
+		settings.save()
+		c = _status(keep.name) == PENDING_DEPRECIATION_SETUP
+		print(f"fa009  switching Enterprise Assets on restates: {'OK' if c else 'FAIL'} ({_status(keep.name)})")
 		ok = ok and c
 
 	finally:
 		frappe.db.rollback(save_point="phase15_verify")
-		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")})
+		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")}) - smoke_before
 		switch = frappe.db.get_single_value("Asset Settings", "enable_enterprise_assets", cache=False)
 		print(f"clean  rollback: leftovers={left} switch={switch} {'OK' if left == 0 and switch == switch_before else 'FAIL'}")
 		ok = ok and left == 0 and switch == switch_before

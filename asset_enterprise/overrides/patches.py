@@ -122,6 +122,9 @@ CLASS_OVERRIDE_TARGETS = [
 	# CH-26 (merged source stays Disposed) and CH-44 (in-service-date floor)
 	("erpnext.assets.doctype.asset.asset", "Asset", "get_status", 1,
 		"asset_enterprise.overrides.asset.EnterpriseAsset"),
+	# FA-009: the two not-depreciating statuses cancel as "Submitted"
+	("erpnext.assets.doctype.asset.asset", "Asset", "validate_cancellation", 1,
+		"asset_enterprise.overrides.asset.EnterpriseAsset"),
 	("erpnext.assets.doctype.asset.asset", "Asset", "validate_depreciation_start_date", 2,
 		"asset_enterprise.overrides.asset.EnterpriseAsset"),
 ]

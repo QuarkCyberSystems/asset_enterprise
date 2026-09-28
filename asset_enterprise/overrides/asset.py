@@ -196,7 +196,13 @@ class EnterpriseAsset(Asset):
 				(row_name, self.name or ""),
 			)[0][0]
 		)
-		if others + flt(self.net_purchase_amount) > row_value + 0.01:
+		from asset_enterprise.invoice_diff import value_tolerance
+
+		count = 1 + frappe.db.count(
+			"Asset",
+			{"purchase_receipt_item": row_name, "docstatus": ("<", 2), "name": ("!=", self.name or "")},
+		)
+		if others + flt(self.net_purchase_amount) > row_value + value_tolerance(count):
 			frappe.throw(
 				_(
 					"Total value of assets linked to Purchase Receipt row {0} "

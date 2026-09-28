@@ -65,6 +65,9 @@ def sync_customizations():
 	apply_property_setters()
 	_ava_property_setters()
 	_asset_status_property_setter()
+	from asset_enterprise.overrides.asset_category import restate_all_not_depreciating
+
+	restate_all_not_depreciating()  # FA-009, idempotent
 	_group_node_property_setter()
 	seed_masters()
 	seed_setting_defaults()

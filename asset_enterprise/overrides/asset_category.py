@@ -19,6 +19,7 @@ for the opposite one.
 
 import frappe
 from frappe import _
+from frappe.query_builder.functions import Count
 from frappe.utils import cint
 
 from erpnext.assets.doctype.asset_category.asset_category import AssetCategory
@@ -52,6 +53,8 @@ class EnterpriseAssetCategory(AssetCategory):
 		super().validate()
 
 	def on_update(self):
+		if hasattr(super(), "on_update"):
+			super().on_update()
 		if self._enterprise() and self.has_value_changed("non_depreciable_category"):
 			restate_not_depreciating_assets(self.name, cint(self.non_depreciable_category))
 
@@ -72,8 +75,10 @@ class EnterpriseAssetCategory(AssetCategory):
 		if depreciating:
 			frappe.throw(
 				_(
-					"{0} cannot be marked Non Depreciable: submitted assets in it depreciate "
-					"(e.g. {1}). Use a separate category for the assets that never depreciate."
+					"{0} cannot be marked Non Depreciable: submitted assets in it have "
+					"depreciation set up (e.g. {1}), including any scrapped or sold, which "
+					"would depreciate again if restored. Use a separate category for the "
+					"assets that never depreciate."
 				).format(frappe.bold(self.name), depreciating),
 				title=_("Category Has Depreciating Assets"),
 			)
@@ -137,9 +142,11 @@ class EnterpriseAssetCategory(AssetCategory):
 def restate_not_depreciating_assets(category, non_depreciable):
 	"""Submitted assets of `category` with depreciation off carry "Non-
 	Depreciable" when the category is flagged, else "Pending Depreciation
-	Setup" (FA-009). Run when the flag changes and by the migrate patch;
+	Setup" (FA-009). Run when the flag changes, when Enterprise Assets is
+	switched on, and on every migrate (restate_all_not_depreciating);
 	only core's "Submitted" and the two not-depreciating statuses are
-	restated — Scrapped, Sold, Disposed and the rest stand."""
+	restated — Scrapped, Sold, Disposed and the rest stand. Returns the
+	number of assets restated."""
 	from asset_enterprise.status import (
 		NON_DEPRECIABLE,
 		NOT_DEPRECIATING,
@@ -148,12 +155,38 @@ def restate_not_depreciating_assets(category, non_depreciable):
 
 	target = NON_DEPRECIABLE if non_depreciable else PENDING_DEPRECIATION_SETUP
 	asset = frappe.qb.DocType("Asset")
-	(
-		frappe.qb.update(asset)
-		.set(asset.status, target)
-		.where(asset.asset_category == category)
-		.where(asset.docstatus == 1)
-		.where(asset.calculate_depreciation == 0)
-		.where(asset.status.isin(("Submitted",) + NOT_DEPRECIATING))
-		.where(asset.status != target)
-	).run()
+
+	def scoped(query):
+		return (
+			query.where(asset.asset_category == category)
+			.where(asset.docstatus == 1)
+			.where(asset.calculate_depreciation == 0)
+			.where(asset.status.isin(("Submitted",) + NOT_DEPRECIATING))
+			.where(asset.status != target)
+		)
+
+	count = scoped(frappe.qb.from_(asset).select(Count("*"))).run()[0][0]
+	if count:
+		scoped(frappe.qb.update(asset).set(asset.status, target)).run()
+		# nothing reads a cached Asset status today; keep it that way
+		frappe.clear_document_cache("Asset")
+	return count
+
+
+def restate_all_not_depreciating():
+	"""Every category, on migrate and when Enterprise Assets is switched
+	on. Idempotent; prints what it changed."""
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled():
+		return
+	for category in frappe.get_all("Asset Category", fields=["name", "non_depreciable_category"]):
+		count = restate_not_depreciating_assets(category.name, cint(category.non_depreciable_category))
+		if count:
+			print(
+				"asset_enterprise: {0} asset(s) of {1} restated to {2}".format(
+					count,
+					category.name,
+					"Non-Depreciable" if cint(category.non_depreciable_category) else "Pending Depreciation Setup",
+				)
+			)

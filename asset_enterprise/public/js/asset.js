@@ -315,7 +315,8 @@ function add_core_lifecycle_buttons(frm) {
 		__("Create")
 	);
 	frm.add_custom_button(__("Asset Repair"), () => frm.trigger("create_asset_repair"), __("Create"));
-	if (!frm.doc.calculate_depreciation) {
+	// A Non-Depreciable asset's category never depreciates (VR-047).
+	if (!frm.doc.calculate_depreciation && frm.doc.status !== "Non-Depreciable") {
 		frm.add_custom_button(
 			__("Depreciation Entry"),
 			() => frm.trigger("make_journal_entry"),
