@@ -16,3 +16,41 @@ OFF_REGISTER = ("Scrapped", "Sold", "Disposed", "Capitalized", "Cancelled")
 
 def off_register(status):
 	return status in OFF_REGISTER
+
+
+# A submitted asset on the register that is not depreciating (client,
+# 28/09, FA-009). Core calls it "Submitted" whether depreciation is still
+# to be set up or will never run; the register has to tell the two apart.
+# The category decides which: core's own Non Depreciable Category flag
+# marks the classes that never depreciate (land, for instance).
+PENDING_DEPRECIATION_SETUP = "Pending Depreciation Setup"
+NON_DEPRECIABLE = "Non-Depreciable"
+NOT_DEPRECIATING = (PENDING_DEPRECIATION_SETUP, NON_DEPRECIABLE)
+
+# Every status of a submitted asset that is still on the register and
+# not in maintenance: core's ("Submitted", "Partially Depreciated",
+# "Fully Depreciated") plus the two above. Core hard-codes its three in
+# the cancel check, the Asset form buttons and the Sales Invoice asset
+# picker; each of those reads this list instead.
+ON_REGISTER = ("Submitted", "Partially Depreciated", "Fully Depreciated") + NOT_DEPRECIATING
+
+
+def not_depreciating_status(asset_category):
+	"""The status of a submitted asset with depreciation off."""
+	import frappe
+	from frappe.utils import cint
+
+	if asset_category and cint(
+		frappe.get_cached_value("Asset Category", asset_category, "non_depreciable_category")
+	):
+		return NON_DEPRECIABLE
+	return PENDING_DEPRECIATION_SETUP
+
+
+def live_status(asset):
+	"""The status an asset returns to when it comes back onto the
+	register (scrap restore): depreciating or not, nothing about its
+	accumulated depreciation is known to the caller beyond that."""
+	if asset.calculate_depreciation:
+		return "Partially Depreciated"
+	return not_depreciating_status(asset.asset_category)

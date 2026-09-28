@@ -26,6 +26,7 @@ from frappe import _
 from frappe.utils import cint, flt, get_first_day, get_last_day, getdate, nowdate
 
 from asset_enterprise.api import assert_reversal_not_before_source
+from asset_enterprise.status import live_status
 
 
 
@@ -71,7 +72,7 @@ def restore_asset(asset_name):
 	)
 
 	asset.db_set("scrap_reversal_journal_entry", mirror)
-	asset.db_set("status", "Partially Depreciated" if asset.calculate_depreciation else "Submitted")
+	asset.db_set("status", live_status(asset))
 	asset.db_set("disposal_date", None)
 
 	# Pair the disposal FT; values re-derive to pre-disposal.
@@ -285,9 +286,7 @@ def cross_period_restore(asset_name, restore_date=None):
 	)
 
 	asset.db_set("scrap_reversal_journal_entry", mirror)
-	asset.db_set(
-		"status", "Partially Depreciated" if asset.calculate_depreciation else "Submitted"
-	)
+	asset.db_set("status", live_status(asset))
 	asset.db_set("disposal_date", None)
 
 	from asset_enterprise import tcc

@@ -161,8 +161,25 @@ def _submit_receipt_assets(pr_doc, asset_names):
 
 
 
+def pr_row_capitalised_value(row):
+	"""What the receipt capitalised for one asset row, company currency.
+
+	Core debits the asset account with the row's net amount PLUS the
+	charges it carries into valuation ("Valuation" / "Valuation and
+	Total" taxes, as item_tax_amount) PLUS any landed cost, and values
+	each asset it creates at that row's valuation rate — the same total.
+	The net amount alone leaves the charges out, so a receipt with
+	freight on it was refused because its assets were worth more than
+	the goods (client, 28/09, FA-010: 24,000 of asset against a 12,000
+	row carrying 12,000 of freight). `row` needs base_net_amount,
+	item_tax_amount and landed_cost_voucher_amount."""
+	return flt(row.base_net_amount) + flt(row.item_tax_amount) + flt(row.landed_cost_voucher_amount)
+
+
 def _validate_pr_over_allocation(row, linked_assets):
-	"""GAP-004 / N1: linked assets must not exceed the PR row (PR only)."""
+	"""GAP-004 / N1: linked assets must not exceed the PR row (PR only).
+	The value side compares against what the row capitalised, charges
+	and landed cost included (pr_row_capitalised_value)."""
 	if len(linked_assets) > (row.qty or 0):
 		frappe.throw(
 			_(
@@ -176,12 +193,13 @@ def _validate_pr_over_allocation(row, linked_assets):
 			row.name,
 		)[0][0]
 	)
-	if linked_value > flt(row.base_net_amount) + 0.01:
+	row_value = pr_row_capitalised_value(row)
+	if linked_value > row_value + 0.01:
 		frappe.throw(
 			_(
-				"Purchase Receipt row {0}: linked asset value {1} exceeds row amount {2} — "
-				"over-allocation on PR is blocked (GAP-004)."
-			).format(row.idx, linked_value, row.base_net_amount)
+				"Purchase Receipt row {0}: linked asset value {1} exceeds the row's value {2} "
+				"(amount plus charges and landed cost) — over-allocation on PR is blocked (GAP-004)."
+			).format(row.idx, linked_value, row_value)
 		)
 
 

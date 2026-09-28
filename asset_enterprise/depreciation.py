@@ -1276,6 +1276,15 @@ def enable_depreciation(
 
 	if off_register(asset.status):
 		frappe.throw(_("Asset {0} is {1} — cannot enable depreciation.").format(asset_name, asset.status))
+	# Core refuses depreciation on a Non Depreciable Category in validate,
+	# which this flow never passes through (FA-009).
+	if cint(frappe.get_cached_value("Asset Category", asset.asset_category, "non_depreciable_category")):
+		frappe.throw(
+			_(
+				"Asset Category {0} is marked Non Depreciable — its assets do not depreciate. "
+				"Move the asset to a depreciable category first."
+			).format(asset.asset_category)
+		)
 	if frappe.db.exists(
 		"Asset Depreciation Schedule", {"asset": asset_name, "status": "Active", "docstatus": 1}
 	):

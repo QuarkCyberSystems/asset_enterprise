@@ -48,7 +48,35 @@ class EnterpriseAssetCategory(AssetCategory):
 	def validate(self):
 		if self._enterprise():
 			self._lock_control_flag_once_used()
+			self._refuse_non_depreciable_with_depreciating_assets()
 		super().validate()
+
+	def on_update(self):
+		if self._enterprise() and self.has_value_changed("non_depreciable_category"):
+			restate_not_depreciating_assets(self.name, cint(self.non_depreciable_category))
+
+	def _refuse_non_depreciable_with_depreciating_assets(self):
+		"""Core refuses depreciation on a Non Depreciable Category only
+		when an asset is saved, so ticking the flag over depreciating
+		assets would leave them posting under a class that says it never
+		depreciates — and failing their next save (FA-009)."""
+		if self.is_new() or not cint(self.get("non_depreciable_category")):
+			return
+		if not self.has_value_changed("non_depreciable_category"):
+			return
+		depreciating = frappe.db.get_value(
+			"Asset",
+			{"asset_category": self.name, "docstatus": 1, "calculate_depreciation": 1},
+			"name",
+		)
+		if depreciating:
+			frappe.throw(
+				_(
+					"{0} cannot be marked Non Depreciable: submitted assets in it depreciate "
+					"(e.g. {1}). Use a separate category for the assets that never depreciate."
+				).format(frappe.bold(self.name), depreciating),
+				title=_("Category Has Depreciating Assets"),
+			)
 
 	def validate_account_types(self):
 		"""Core: fixed asset / accumulated depreciation / depreciation /
@@ -104,3 +132,28 @@ class EnterpriseAssetCategory(AssetCategory):
 				).format(frappe.bold(self.name), used),
 				title=_("Control Category Locked"),
 			)
+
+
+def restate_not_depreciating_assets(category, non_depreciable):
+	"""Submitted assets of `category` with depreciation off carry "Non-
+	Depreciable" when the category is flagged, else "Pending Depreciation
+	Setup" (FA-009). Run when the flag changes and by the migrate patch;
+	only core's "Submitted" and the two not-depreciating statuses are
+	restated — Scrapped, Sold, Disposed and the rest stand."""
+	from asset_enterprise.status import (
+		NON_DEPRECIABLE,
+		NOT_DEPRECIATING,
+		PENDING_DEPRECIATION_SETUP,
+	)
+
+	target = NON_DEPRECIABLE if non_depreciable else PENDING_DEPRECIATION_SETUP
+	asset = frappe.qb.DocType("Asset")
+	(
+		frappe.qb.update(asset)
+		.set(asset.status, target)
+		.where(asset.asset_category == category)
+		.where(asset.docstatus == 1)
+		.where(asset.calculate_depreciation == 0)
+		.where(asset.status.isin(("Submitted",) + NOT_DEPRECIATING))
+		.where(asset.status != target)
+	).run()

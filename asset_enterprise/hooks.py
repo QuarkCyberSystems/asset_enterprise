@@ -71,6 +71,9 @@ doctype_js = {
 	# GAP-031: a superseded generation must not offer the posting
 	# button — the server refuses it, and it used to double-post.
 	"Asset Depreciation Schedule": "public/js/asset_depreciation_schedule.js",
+	# FA-009: the asset picker must offer the not-depreciating statuses,
+	# which core's hard-coded list does not know.
+	"Sales Invoice": "public/js/sales_invoice.js",
 }
 
 # §4.8: an asset carries the live schedule plus one frozen copy per

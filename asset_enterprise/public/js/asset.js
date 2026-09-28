@@ -172,6 +172,8 @@ frappe.ui.form.on("Asset", {
 	refresh(frm) {
 		if (frm.doc.docstatus !== 1) return;
 
+		add_core_lifecycle_buttons(frm);
+
 		// Partial Scrap (GAP-018)
 		// the off-register statuses (asset_enterprise/status.py OFF_REGISTER)
 		const off_register = ["Scrapped", "Sold", "Disposed", "Capitalized", "Cancelled"];
@@ -288,6 +290,50 @@ frappe.ui.form.on("Asset", {
 		render_tree_panel(frm);
 	},
 });
+
+// asset_enterprise/status.py NOT_DEPRECIATING
+const NOT_DEPRECIATING = ["Pending Depreciation Setup", "Non-Depreciable"];
+
+function add_core_lifecycle_buttons(frm) {
+	// Core's form offers its Create / Actions buttons only while the
+	// status is Submitted, Partially or Fully Depreciated. A submitted
+	// asset with depreciation off now reads Pending Depreciation Setup or
+	// Non-Depreciable (client, 28/09, FA-009) — to core that is still
+	// "Submitted", so the same buttons are offered, each calling core's
+	// own handler. Core's order and grouping are kept.
+	if (!NOT_DEPRECIATING.includes(frm.doc.status)) return;
+
+	frm.add_custom_button(
+		__("Asset Value Adjustment"),
+		() => frm.trigger("create_asset_value_adjustment"),
+		__("Create")
+	);
+	frm.add_custom_button(__("Asset Repair"), () => frm.trigger("create_asset_repair"), __("Create"));
+	if (!frm.doc.calculate_depreciation) {
+		frm.add_custom_button(
+			__("Depreciation Entry"),
+			() => frm.trigger("make_journal_entry"),
+			__("Create")
+		);
+	}
+	frm.page.set_inner_btn_group_as_primary(__("Create"));
+
+	if (frm.doc.maintenance_required && !frm.doc.maintenance_schedule) {
+		frm.add_custom_button(
+			__("Maintain Asset"),
+			() => frm.trigger("create_asset_maintenance"),
+			__("Actions")
+		);
+	}
+	frm.add_custom_button(__("Split Asset"), () => frm.trigger("split_asset"), __("Actions"));
+	frm.add_custom_button(
+		__("Transfer Asset"),
+		() => erpnext.asset.transfer_asset(frm),
+		__("Actions")
+	);
+	frm.add_custom_button(__("Scrap Asset"), () => erpnext.asset.scrap_asset(frm), __("Actions"));
+	frm.add_custom_button(__("Sell Asset"), () => frm.trigger("sell_asset"), __("Actions"));
+}
 
 function render_tree_panel(frm) {
 	// GAP-009: parent link + children table directly on the form.

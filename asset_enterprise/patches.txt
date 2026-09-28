@@ -5,3 +5,4 @@
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
 asset_enterprise.patches.record_legacy_repair_consumption
+asset_enterprise.patches.restate_not_depreciating_asset_status

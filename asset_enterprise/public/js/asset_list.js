@@ -10,6 +10,9 @@ frappe.listview_settings["Asset"] = {
 		const map = {
 			Draft: "red",
 			Submitted: "blue",
+			// submitted, depreciation off (client, 28/09, FA-009)
+			"Pending Depreciation Setup": "orange",
+			"Non-Depreciable": "purple",
 			"Partially Depreciated": "blue",
 			"Fully Depreciated": "green",
 			"In Maintenance": "orange",

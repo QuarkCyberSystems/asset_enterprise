@@ -122,8 +122,13 @@ def _sync_core_bookkeeping(asset, nbv, accum):
 		update_modified=False,
 	)
 	# Only the depreciation-lifecycle statuses may be restated — never
-	# Disposed / Scrapped / Sold / Capitalized, which our flows own.
-	if asset.status not in ("Submitted", "Partially Depreciated", "Fully Depreciated"):
+	# Disposed / Scrapped / Sold / Capitalized, which our flows own. The
+	# not-depreciating statuses are included: Enable Depreciation lands
+	# here with depreciation now on, and the asset leaves "Pending
+	# Depreciation Setup" (FA-009).
+	from asset_enterprise.status import ON_REGISTER
+
+	if asset.status not in ON_REGISTER:
 		return
 	salvage = flt(
 		frappe.db.get_value(

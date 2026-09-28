@@ -79,7 +79,34 @@ class EnterpriseAsset(Asset):
 		the fact; the status follows it."""
 		if self.docstatus == 1 and self.get("merged_into_asset"):
 			return "Disposed"
-		return super().get_status()
+		status = super().get_status()
+		# Client, 28/09 (FA-009): core says "Submitted" for a submitted
+		# asset with depreciation off, whether it is waiting for its
+		# depreciation to be set up (a receipt asset, CH-30) or belongs to
+		# a class that never depreciates. Only core's plain "Submitted"
+		# is refined — Scrapped and the depreciated statuses stand.
+		if status == "Submitted" and not self.calculate_depreciation and self._enterprise():
+			from asset_enterprise.status import not_depreciating_status
+
+			return not_depreciating_status(self.asset_category)
+		return status
+
+	def validate_cancellation(self):
+		"""Core allows a cancel only from "Submitted", "Partially
+		Depreciated" or "Fully Depreciated". The two not-depreciating
+		statuses (FA-009) are "Submitted" in core's terms, so they are
+		checked as that — otherwise the receipt-cancel cascade (GAP-004.4)
+		and the cancel of an asset with nothing posted (GAP-027) would be
+		refused for a status, not a reason."""
+		from asset_enterprise.status import NOT_DEPRECIATING
+
+		if self.status not in NOT_DEPRECIATING:
+			return super().validate_cancellation()
+		status, self.status = self.status, "Submitted"
+		try:
+			super().validate_cancellation()
+		finally:
+			self.status = status
 
 	def validate(self):
 		from asset_enterprise.control_category import configure_asset
@@ -122,12 +149,17 @@ class EnterpriseAsset(Asset):
 		covers assets linked or revalued after PR submit. TC-006 states
 		the rule in UNITS ("total asset quantity (6) exceeds purchased
 		quantity (5)"); the amount side catches revaluation cases the
-		unit count cannot see. Both are enforced."""
+		unit count cannot see. Both are enforced. The value ceiling is what
+		the row capitalised — charges and landed cost included, as core
+		values the assets (client, 28/09, FA-010)."""
 		row_name = self.get("purchase_receipt_item")
 		if not row_name or self.docstatus == 2:
 			return
 		row = frappe.db.get_value(
-			"Purchase Receipt Item", row_name, ["base_net_amount", "idx", "qty"], as_dict=True
+			"Purchase Receipt Item",
+			row_name,
+			["base_net_amount", "item_tax_amount", "landed_cost_voucher_amount", "idx", "qty"],
+			as_dict=True,
 		)
 		if not row:
 			return
@@ -152,7 +184,10 @@ class EnterpriseAsset(Asset):
 					).format(flt(total_units), flt(row.qty))
 				)
 
-		if not flt(row.base_net_amount):
+		from asset_enterprise.invoice_diff import pr_row_capitalised_value
+
+		row_value = pr_row_capitalised_value(row)
+		if not row_value:
 			return
 		others = flt(
 			frappe.db.sql(
@@ -161,12 +196,13 @@ class EnterpriseAsset(Asset):
 				(row_name, self.name or ""),
 			)[0][0]
 		)
-		if others + flt(self.net_purchase_amount) > flt(row.base_net_amount) + 0.01:
+		if others + flt(self.net_purchase_amount) > row_value + 0.01:
 			frappe.throw(
 				_(
 					"Total value of assets linked to Purchase Receipt row {0} "
-					"({1}) exceeds the row amount {2} (VR-004)."
-				).format(row.idx, others + flt(self.net_purchase_amount), row.base_net_amount)
+					"({1}) exceeds the row's value {2}, amount plus charges and "
+					"landed cost (VR-004)."
+				).format(row.idx, others + flt(self.net_purchase_amount), row_value)
 			)
 
 	def validate_update_after_submit(self):

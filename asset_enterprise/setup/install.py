@@ -387,12 +387,18 @@ def apply_property_setters():
 
 
 def _asset_status_property_setter():
-	"""A merged-away asset is DISPOSED, not cancelled — core's status list
-	has no such value (client, sheet item 24)."""
+	"""Statuses core's list does not have: a merged-away asset is
+	DISPOSED, not cancelled (client, sheet item 24); a submitted asset
+	with depreciation off is Pending Depreciation Setup or Non-Depreciable
+	(client, 28/09, FA-009)."""
+	from asset_enterprise.status import NOT_DEPRECIATING
+
 	options = frappe.get_meta("Asset").get_field("status").options or ""
-	if "Disposed" not in options:
+	present = options.split("\n")
+	missing = [s for s in ("Disposed",) + NOT_DEPRECIATING if s not in present]
+	if missing:
 		make_property_setter(
-			"Asset", "status", "options", options.rstrip() + "\nDisposed", "Text",
+			"Asset", "status", "options", "\n".join([options.rstrip(), *missing]), "Text",
 			validate_fields_for_doctype=False,
 		)
 
