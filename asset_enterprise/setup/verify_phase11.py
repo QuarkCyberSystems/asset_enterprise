@@ -560,7 +560,10 @@ def _run():
 		frappe.db.set_value("Asset", fake_asset.name, "purchase_receipt", "PR-FAKE-001",
 			update_modified=False)
 		class _FakeSI:
-			items = [frappe._dict(asset=fake_asset.name)]
+			items = [frappe._dict(asset=fake_asset.name, idx=1)]
+
+			def get(self, key, default=None):  # si_validate reads is_return
+				return getattr(self, key, default)
 
 		fake_si = _FakeSI()
 		try:
