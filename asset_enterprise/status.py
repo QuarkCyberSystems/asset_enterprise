@@ -30,8 +30,10 @@ NOT_DEPRECIATING = (PENDING_DEPRECIATION_SETUP, NON_DEPRECIABLE)
 # Every status of a submitted asset that is still on the register and
 # not in maintenance: core's ("Submitted", "Partially Depreciated",
 # "Fully Depreciated") plus the two above. Core hard-codes its three in
-# the cancel check, the Asset form buttons and the Sales Invoice asset
-# picker; each of those reads this list instead.
+# the cancel check and the Asset form buttons, which are extended to the
+# two new ones. (Core's Sales Invoice asset picker has the same list,
+# but on an enterprise site the Asset accounting dimension, fieldname
+# `asset`, replaces that query and lists every asset of the company.)
 ON_REGISTER = ("Submitted", "Partially Depreciated", "Fully Depreciated") + NOT_DEPRECIATING
 
 

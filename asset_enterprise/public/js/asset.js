@@ -262,7 +262,13 @@ frappe.ui.form.on("Asset", {
 		);
 
 		// Enable Depreciation after creation (GAP-011) — amendment-free.
-		if (!frm.doc.calculate_depreciation && !off_register.includes(frm.doc.status)) {
+		// Not on a Non-Depreciable asset: its category never depreciates
+		// and the server refuses it (VR-047).
+		if (
+			!frm.doc.calculate_depreciation &&
+			!off_register.includes(frm.doc.status) &&
+			frm.doc.status !== "Non-Depreciable"
+		) {
 			frm.add_custom_button(
 				__("Enable Depreciation"),
 				() => enable_depreciation_dialog(frm),
