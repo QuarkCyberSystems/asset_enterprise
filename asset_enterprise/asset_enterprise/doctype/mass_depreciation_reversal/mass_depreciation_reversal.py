@@ -15,6 +15,12 @@ class MassDepreciationReversal(Document):
 	periods become due again and post on the next depreciation run."""
 
 	def validate(self):
+		# Reversals post today unless the user holds the company's Reversal
+		# Date Edit Role; refuse another date at save, not only at submit.
+		# The source-date rule (VR-022) needs the scope, so it runs there.
+		from asset_enterprise.api import _assert_reversal_date
+
+		_assert_reversal_date(self.company, None, self.posting_date, _("Depreciation"))
 		if self.period_month not in MONTHS:
 			frappe.throw(_("{0} is not a month.").format(self.period_month))
 		if not (1900 < int(self.period_year or 0) < 3000):

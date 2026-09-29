@@ -408,7 +408,11 @@ def _assert_reversal_date(company, source_posting_date, posting_date, label):
 	"""
 	from frappe.utils import getdate, nowdate
 
-	chosen = assert_reversal_not_before_source(source_posting_date, posting_date, label)
+	# The role gate first: a user who may not move the date is told the
+	# reversal posts today, not that a date they cannot use anyway falls
+	# before the entry (client ticket FA-003, 29/09 — a 31/03 date on a
+	# Mass Depreciation Reversal got the VR-022 message).
+	chosen = getdate(posting_date or nowdate())
 	if chosen != getdate(nowdate()):
 		role = _reversal_date_edit_role(company)
 		if not role:
@@ -426,7 +430,7 @@ def _assert_reversal_date(company, source_posting_date, posting_date, label):
 				).format(role),
 				title=_("Reversal Date Locked"),
 			)
-	return chosen
+	return assert_reversal_not_before_source(source_posting_date, chosen, label)
 
 
 @frappe.whitelist()

@@ -7,6 +7,9 @@ bench --site <site> execute asset_enterprise.setup.verify_phase16.run
           before the change keep their amounts
   FA-012  an asset with posted depreciation carries its cancel refusal
           to the form (onload); an asset with none carries nothing
+  FA-003  a Mass Depreciation Reversal dated other than today is refused
+          at save with "posts today" when the user may not move the date,
+          before the source-date rule (VR-022)
 
 Savepoint-rolled-back; run on the throwaway site.
 """
@@ -126,6 +129,29 @@ def _run():
 		free = make_test_asset(company, gross=5_000, submit=True).name
 		c = _onload_refusal(free) is None
 		print(f"fa012  an asset with nothing posted carries none: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		# ============ FA-003: reversals post today ========================
+		frappe.db.delete("Asset Settings Reversal Role", {"parent": "Asset Settings", "company": company})
+		march = frappe.get_doc({
+			"doctype": "Mass Depreciation Reversal", "company": company, "mode": "All Eligible",
+			"period_month": "March", "period_year": getdate(nowdate()).year,
+			"posting_date": f"{getdate(nowdate()).year}-03-31", "reason": "phase 16",
+		})
+		msg = ""
+		try:
+			march.insert(ignore_permissions=True)
+		except frappe.ValidationError as e:
+			frappe.clear_last_message()
+			msg = str(e)
+		c = "posts today" in msg and "VR-022" not in msg
+		print(f"fa003  a reversal dated 31/03 is refused at save: reversals post today: {'OK' if c else 'FAIL'} ({msg[:80]})")
+		ok = ok and c
+
+		march.posting_date = nowdate()
+		march.insert(ignore_permissions=True)
+		c = bool(march.name)
+		print(f"fa003  dated today it saves: {'OK' if c else 'FAIL'}")
 		ok = ok and c
 
 	finally:
