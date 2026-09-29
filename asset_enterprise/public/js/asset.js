@@ -170,6 +170,7 @@ frappe.ui.form.on("Asset", {
 	},
 
 	refresh(frm) {
+		guard_cancel(frm);
 		if (frm.doc.docstatus !== 1) return;
 
 		add_core_lifecycle_buttons(frm);
@@ -296,6 +297,22 @@ frappe.ui.form.on("Asset", {
 		render_tree_panel(frm);
 	},
 });
+
+function guard_cancel(frm) {
+	// FA-012 (client, 29/09): an asset with posted depreciation cannot be
+	// cancelled (GAP-027 / VR-031), but the desk's Cancel first offers
+	// "Cancel All" and cancels the linked invoice, movement and value
+	// adjustment in a request of its own before the asset is refused.
+	// Refuse at the button instead. The form object is reused across
+	// assets, so the override is removed again for one that may cancel.
+	const refusal = frm.doc.__onload && frm.doc.__onload.ae_cancel_refusal;
+	if (frm.doc.docstatus === 1 && refusal) {
+		frm.savecancel = () =>
+			frappe.msgprint({ title: __("Cannot Cancel"), message: refusal, indicator: "red" });
+	} else if (Object.prototype.hasOwnProperty.call(frm, "savecancel")) {
+		delete frm.savecancel;
+	}
+}
 
 // asset_enterprise/status.py NOT_DEPRECIATING
 const NOT_DEPRECIATING = ["Pending Depreciation Setup", "Non-Depreciable"];

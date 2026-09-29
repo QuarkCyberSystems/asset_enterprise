@@ -1010,7 +1010,6 @@ def regenerate_after_value_change(
 	`as_of` is never earlier than the last POSTED schedule date, so an
 	already-posted period is not regenerated (which would duplicate it).
 	"""
-	last_posted = last_posted_schedule_date(asset_name)
 	# Rows resume from where POSTING stopped, not from the adjustment
 	# date — regenerating from a mid-month adjustment left the days
 	# between the last posted period and that date carrying no charge at
@@ -1018,11 +1017,14 @@ def regenerate_after_value_change(
 	# passed as the RATE-CHANGE boundary: unposted periods before it are
 	# preserved verbatim and only rows after it re-price (Ruba, 18/08 —
 	# an August capitalization must not touch July's unposted row).
-	as_of = getdate(adjustment_date or nowdate())
-	rate_change = None
-	if last_posted:
-		as_of = getdate(last_posted)
-		rate_change = getdate(adjustment_date or nowdate())
+	# With nothing posted yet the resume point is the start of charging
+	# (resume_basis_date), not the adjustment date: resuming from the
+	# event dropped every day between the in-service date and the event
+	# (client ticket FA-011, 29/09: in service 15/02, capitalized
+	# maintenance 28/03, first row 31/03 for 3 days; the same through an
+	# invoice adjustment on ACC-ASS-2026-00064).
+	as_of = resume_basis_date(asset_name) or getdate(adjustment_date or nowdate())
+	rate_change = getdate(adjustment_date or nowdate())
 	try:
 		schedule = supersede_and_regenerate(
 			asset_name,

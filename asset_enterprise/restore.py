@@ -186,12 +186,15 @@ def restore_partial_scrap(asset_name, financial_treatment, cross_period=0):
 		supersede_and_regenerate,
 	)
 
+	# With nothing posted yet, resume from the start of charging, not
+	# today: resuming from today dropped every day before the restore
+	# (same defect as client ticket FA-011, 29/09).
 	last_posted = last_posted_schedule_date(asset_name)
 	try:
 		supersede_and_regenerate(
 			asset_name,
-			as_of_date=getdate(last_posted) if last_posted else nowdate(),
-			rate_change_date=getdate(nowdate()) if last_posted else None,
+			as_of_date=getdate(last_posted) if last_posted else None,
+			rate_change_date=getdate(nowdate()),
 			reason=_("Partial scrap restored via {0}").format(mirror),
 		)
 	except frappe.ValidationError:

@@ -734,6 +734,25 @@ class EnterpriseAsset(Asset):
 			),
 		)
 
+	def onload(self):
+		if hasattr(super(), "onload"):
+			super().onload()
+		# FA-012 (client, 29/09): the desk's Cancel first offers "Cancel
+		# All" for the linked invoice, movement and value adjustment and
+		# cancels those in a request of its own — only then is the asset
+		# refused. The form reads this and refuses Cancel up front.
+		if self.docstatus == 1 and self._enterprise():
+			self.set_onload("ae_cancel_refusal", self.cancel_refusal())
+
+	def cancel_refusal(self):
+		"""Why this asset may not be cancelled (GAP-027 / VR-031), or None."""
+		try:
+			self._block_when_depreciation_posted()
+		except frappe.ValidationError as e:
+			frappe.clear_last_message()
+			return str(e)
+		return None
+
 	def _block_when_depreciation_posted(self):
 		"""GAP-027 / VR-031: block reversal while LIVE depreciation
 		exists — schedule-linked JEs AND manual depreciation JEs
