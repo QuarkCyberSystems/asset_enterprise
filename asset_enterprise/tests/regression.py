@@ -25,7 +25,7 @@ import io
 import re
 import sys
 
-PHASES = tuple(range(1, 16))
+PHASES = tuple(range(1, 17))
 _FAIL = re.compile(r"\bFAIL\b")
 
 
