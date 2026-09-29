@@ -538,9 +538,11 @@ def _run():
 			and flt(prorated_b[0].depreciation_amount) == want_amount_b
 			and cint(prorated_b[0].days_in_period) == want_days_b
 			and mlog_b
-			and flt(mlog_b.accumulated_depreciation_at_merge) == want_amount_b
-			and flt(mlog_b.net_book_value_at_merge) == nbv_after_b
-			and tgt_hav_b == flt(60_000 + nbv_after_b)
+			and abs(flt(mlog_b.accumulated_depreciation_at_merge) - want_amount_b) < 0.005
+			# float noise, not money: 8,500,000 - 550,638.69 is
+			# 7,949,361.3100000005 in binary (29/09 fixture dates)
+			and abs(flt(mlog_b.net_book_value_at_merge) - nbv_after_b) < 0.005
+			and abs(tgt_hav_b - flt(60_000 + nbv_after_b)) < 0.005
 		)
 		print(
 			f"f6b    catch-up straddle coalesced: prorated-rows={len(prorated_b)} "
