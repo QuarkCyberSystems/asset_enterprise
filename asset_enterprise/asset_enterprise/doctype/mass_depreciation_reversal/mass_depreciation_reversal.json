@@ -33,7 +33,7 @@
    "fieldname": "period_month",
    "fieldtype": "Select",
    "label": "Period Month",
-   "options": "January\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember",
+   "options": "\nJanuary\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember",
    "reqd": 1,
    "description": "The depreciation period being reversed."
   },
@@ -122,7 +122,7 @@
  "issingle": 0,
  "istable": 0,
  "links": [],
- "modified": "2026-09-27 10:00:00.000000",
+ "modified": "2026-09-30 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Asset Enterprise",
  "name": "Mass Depreciation Reversal",

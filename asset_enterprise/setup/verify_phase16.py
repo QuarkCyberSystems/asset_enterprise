@@ -154,6 +154,15 @@ def _run():
 		print(f"fa003  dated today it saves: {'OK' if c else 'FAIL'}")
 		ok = ok and c
 
+		# the period is left for the form to set to the current month —
+		# the month list used to pre-fill January (client, 30/09)
+		c = all(
+			not frappe.new_doc(dt).period_month
+			for dt in ("Mass Depreciation Reversal", "Mass Asset Depreciation")
+		)
+		print(f"fa003  a new mass reversal / mass depreciation starts with no month pre-filled: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
 	finally:
 		frappe.db.rollback(save_point="phase16_verify")
 		left = frappe.db.count("Asset", {"asset_name": ("like", "AE Smoke%")}) - smoke_before

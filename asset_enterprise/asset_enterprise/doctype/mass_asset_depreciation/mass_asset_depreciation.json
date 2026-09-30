@@ -29,7 +29,7 @@
    "fieldname": "period_month",
    "fieldtype": "Select",
    "label": "Period Month",
-   "options": "January\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember",
+   "options": "\nJanuary\nFebruary\nMarch\nApril\nMay\nJune\nJuly\nAugust\nSeptember\nOctober\nNovember\nDecember",
    "reqd": 1,
    "description": "Depreciation posts on the last day of this period (§4.6)."
   },
@@ -93,7 +93,7 @@
  "issingle": 0,
  "istable": 0,
  "links": [],
- "modified": "2026-07-17 10:00:00.000000",
+ "modified": "2026-09-30 10:00:00.000000",
  "modified_by": "Administrator",
  "module": "Asset Enterprise",
  "name": "Mass Asset Depreciation",
