@@ -154,7 +154,11 @@ def _run():
 		# ============ FA-003: Mass Depreciation Reversal ==================
 		b = _depreciating_asset(company, 60_000)
 		c_asset = _depreciating_asset(company, 36_000)
-		period = getdate(get_last_day(add_months(nowdate(), -1)))
+		# the latest POSTED period — last month's end, except on a month-end
+		# day, when the current month has posted too (30/09 fixture dates)
+		from asset_enterprise.depreciation import last_posted_schedule_date
+
+		period = getdate(get_last_day(last_posted_schedule_date(b)))
 
 		def mdr(month_date, **fields):
 			doc = frappe.get_doc(
