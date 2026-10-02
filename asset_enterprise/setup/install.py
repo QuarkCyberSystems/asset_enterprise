@@ -295,24 +295,36 @@ def seed_setting_defaults():
 
 
 def _seed_asset_item_uom():
-	"""Asset Item UOM starts at "Nos" (client, 27/09, CH-45) — once. A new
-	site has no UOMs until its setup wizard runs, so the seed waits for
-	the first migrate that finds "Nos" (a schema default would fail the
-	install: the Link has nothing to point at). The marker keeps a value
-	the user cleared on purpose cleared. Enabled asset items held in
-	another unit are listed when it seeds."""
-	if frappe.db.get_default("asset_item_uom_seeded"):
+	"""Allowed For FA (client, 01/10/2026, FA-013) replaces Asset Settings >
+	Asset Item UOM. Once: the unit that setting held — "Nos" by default, as
+	seeded for CH-45 — is ticked Allowed For FA, so nothing changes on day
+	one. A new site ticks "Nos" once that UOM exists (its setup wizard
+	creates it). The setting's value is read from Singles: the field is
+	gone from the doctype."""
+	if frappe.db.get_default("allowed_for_fa_seeded"):
 		return
-	if not frappe.db.exists("UOM", "Nos"):
+	if not frappe.db.has_column("UOM", "allowed_for_fa"):
 		return
-	if not frappe.db.get_single_value("Asset Settings", "asset_item_uom"):
-		frappe.db.set_single_value("Asset Settings", "asset_item_uom", "Nos")
-	frappe.db.set_default("asset_item_uom_seeded", "1")
-	offending = frappe.get_all(
-		"Item", filters={"is_fixed_asset": 1, "stock_uom": ("!=", "Nos"), "disabled": 0},
-		fields=["name", "stock_uom"],
+	legacy = frappe.db.sql(
+		"""select value from `tabSingles` where doctype = 'Asset Settings' and field = 'asset_item_uom'"""
 	)
-	print(f"asset_item_uom: Nos; {len(offending)} enabled fixed-asset item(s) held in another UOM")
+	legacy = legacy[0][0] if legacy and legacy[0][0] else None
+	if legacy:
+		uom = legacy
+	elif frappe.db.get_default("asset_item_uom_seeded"):
+		uom = None  # the setting was cleared on purpose: the rule stays lifted
+	else:
+		uom = "Nos"
+	if uom and not frappe.db.exists("UOM", uom):
+		return  # wait for the setup wizard
+	if uom:
+		frappe.db.set_value("UOM", uom, "allowed_for_fa", 1, update_modified=False)
+	frappe.db.set_default("allowed_for_fa_seeded", "1")
+	offending = frappe.get_all(
+		"Item", filters={"is_fixed_asset": 1, "stock_uom": ("!=", uom or ""), "disabled": 0},
+		fields=["name", "stock_uom"],
+	) if uom else []
+	print(f"allowed_for_fa: {uom or 'none (rule lifted)'}; {len(offending)} enabled fixed-asset item(s) held in another UOM")
 	for item in offending:
 		print(f"  {item.name}: {item.stock_uom}")
 

@@ -7,6 +7,10 @@ bench --site <site> execute asset_enterprise.setup.verify_phase16.run
           before the change keep their amounts
   FA-012  an asset with posted depreciation carries its cancel refusal
           to the form (onload); an asset with none carries nothing
+  FA-013  units ticked Allowed For FA on the UOM master: an asset item is
+          held in one of them and lists no other; receipt rows must use
+          one; nothing ticked lifts the rule; upgrade ticks the former
+          Asset Item UOM
   FA-003  a Mass Depreciation Reversal dated other than today is refused
           at save with "posts today" when the user may not move the date,
           before the source-date rule (VR-022)
@@ -52,6 +56,26 @@ def _rows(schedule):
 
 def _start(rows):
 	return add_days(getdate(rows[0].schedule_date), -(int(rows[0].days_in_period or 1) - 1))
+
+
+def _refused(fn, *args, **kwargs):
+	try:
+		fn(*args, **kwargs)
+		return None
+	except frappe.ValidationError as e:
+		frappe.clear_last_message()
+		return str(e) or type(e).__name__
+
+
+def _item_refused(item):
+	from asset_enterprise.asset_items import validate_item
+
+	try:
+		validate_item(item)
+		return None
+	except frappe.ValidationError as e:
+		frappe.clear_last_message()
+		return str(e)
 
 
 def _onload_refusal(asset):
@@ -161,6 +185,53 @@ def _run():
 			for dt in ("Mass Depreciation Reversal", "Mass Asset Depreciation")
 		)
 		print(f"fa003  a new mass reversal / mass depreciation starts with no month pre-filled: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		# ============ FA-013: Allowed For FA on the UOM master ============
+		from asset_enterprise.asset_items import validate_purchase_rows
+
+		for u in ("Hour", "Unit"):
+			if not frappe.db.exists("UOM", u):
+				frappe.get_doc({"doctype": "UOM", "uom_name": u}).insert(ignore_permissions=True)
+		frappe.db.sql("update `tabUOM` set allowed_for_fa = 0")
+		frappe.db.set_value("UOM", "Nos", "allowed_for_fa", 1, update_modified=False)
+		frappe.db.set_value("UOM", "Unit", "allowed_for_fa", 1, update_modified=False)
+		item = frappe.get_doc("Item", "AE-SMOKE-ITEM")
+		item.stock_uom = "Hour"
+		hour_refused = _item_refused(item)
+		item.reload()
+		item.stock_uom = "Unit"
+		item.set("uoms", [{"uom": "Unit", "conversion_factor": 1}])
+		unit_ok = _item_refused(item) is None
+		item.reload()
+		item.append("uoms", {"uom": "Nos", "conversion_factor": 1})
+		alt_refused = _item_refused(item)
+		c = bool(hour_refused) and unit_ok and bool(alt_refused) and "Allowed For FA" in (hour_refused or "")
+		print(f"fa013  an asset item is held in an allowed unit (Unit accepted, Hour refused) and lists no alternate: {'OK' if c else 'FAIL'} ({(hour_refused or '')[:70]} / {(alt_refused or '')[:50]})")
+		ok = ok and c
+
+		row = lambda u: frappe.get_doc({"doctype": "Purchase Receipt", "company": company,
+			"items": [{"idx": 1, "item_code": "AE-SMOKE-ITEM", "is_fixed_asset": 1, "uom": u, "stock_uom": u}]})
+		c = bool(_refused(validate_purchase_rows, row("Hour"))) and _refused(validate_purchase_rows, row("Unit")) is None \
+			and _refused(validate_purchase_rows, row("Nos")) is None
+		print(f"fa013  a receipt row must be in an allowed unit (Hour refused; Unit, Nos accepted): {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		frappe.db.sql("update `tabUOM` set allowed_for_fa = 0")
+		item.reload()
+		item.stock_uom = "Hour"
+		c = _item_refused(item) is None and _refused(validate_purchase_rows, row("Hour")) is None
+		print(f"fa013  nothing ticked lifts the rule: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		from asset_enterprise.setup.install import _seed_asset_item_uom
+
+		frappe.db.sql("delete from `tabSingles` where doctype='Asset Settings' and field='asset_item_uom'")
+		frappe.db.sql("insert into `tabSingles` (doctype, field, value) values ('Asset Settings', 'asset_item_uom', 'Nos')")
+		frappe.db.set_default("allowed_for_fa_seeded", "")
+		_seed_asset_item_uom()
+		c = frappe.db.get_value("UOM", "Nos", "allowed_for_fa") == 1 and bool(frappe.db.get_default("allowed_for_fa_seeded"))
+		print(f"fa013  upgrade ticks the former Asset Item UOM (Nos) once: {'OK' if c else 'FAIL'}")
 		ok = ok and c
 
 	finally:

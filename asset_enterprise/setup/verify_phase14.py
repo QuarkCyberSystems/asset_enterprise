@@ -354,7 +354,7 @@ def _run():
 		ok = ok and c
 
 		# ============ FA-002: asset items counted in units ================
-		frappe.db.set_single_value("Asset Settings", "asset_item_uom", "Nos")
+		frappe.db.set_value("UOM", "Nos", "allowed_for_fa", 1, update_modified=False)  # FA-013
 		hour = "Hour" if frappe.db.exists("UOM", "Hour") else frappe.get_doc(
 			{"doctype": "UOM", "uom_name": "Hour"}).insert(ignore_permissions=True).name
 		item = frappe.get_doc("Item", "AE-SMOKE-ITEM")

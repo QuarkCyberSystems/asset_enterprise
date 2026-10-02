@@ -15,6 +15,18 @@ def _acc(fieldname, label, insert_after, description=None):
 
 
 CUSTOM_FIELDS = {
+	# -------------------------------------------------------------------- UOM
+	# FA-013 (client, 01/10/2026): which units a fixed-asset item may be held
+	# and received in — replaces the single Asset Settings > Asset Item UOM.
+	"UOM": [
+		{
+			"fieldname": "allowed_for_fa",
+			"fieldtype": "Check",
+			"label": "Allowed For FA",
+			"insert_after": "must_be_whole_number",
+			"description": "Fixed-asset items may use this unit: one unit is one asset.",
+		},
+	],
 	# ------------------------------------------------------------------ Asset
 	"Asset": [
 		# GAP-036 (client request 17/08/2026): a container that groups

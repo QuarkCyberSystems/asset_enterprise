@@ -56,6 +56,8 @@ doctype_js = {
 	# GAP-012: scope the Asset Allocation picker to assets this invoice
 	# can cover, and surface the section on fixed-asset invoices.
 	"Purchase Invoice": "public/js/purchase_invoice.js",
+	# FA-013: an asset item's UOM pickers offer the units Allowed For FA
+	"Item": "public/js/item.js",
 	# Reversal AVAs must announce themselves (client, 19/08): banner on
 	# the reversal and on the reversed original.
 	"Asset Value Adjustment": "public/js/asset_value_adjustment.js",
