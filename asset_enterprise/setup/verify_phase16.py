@@ -204,8 +204,9 @@ def _run():
 		item.set("uoms", [{"uom": "Unit", "conversion_factor": 1}])
 		unit_ok = _item_refused(item) is None
 		item.reload()
-		item.append("uoms", {"uom": "Nos", "conversion_factor": 1})
-		alt_refused = _item_refused(item)
+		item.stock_uom = "Unit"
+		item.set("uoms", [{"uom": "Unit", "conversion_factor": 1}, {"uom": "Nos", "conversion_factor": 1}])
+		alt_refused = _item_refused(item)  # Nos is allowed too, but as an alternate it is not
 		c = bool(hour_refused) and unit_ok and bool(alt_refused) and "Allowed For FA" in (hour_refused or "")
 		print(f"fa013  an asset item is held in an allowed unit (Unit accepted, Hour refused) and lists no alternate: {'OK' if c else 'FAIL'} ({(hour_refused or '')[:70]} / {(alt_refused or '')[:50]})")
 		ok = ok and c
