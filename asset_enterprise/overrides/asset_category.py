@@ -108,7 +108,9 @@ class EnterpriseAssetCategory(AssetCategory):
 						).format(
 							d.idx,
 							frappe.bold(self.name),
-							frappe.bold(_(self.meta.get_label(fieldname) or fieldname)),
+							# the accounts live on the child row: the category's
+							# own meta has no such field and answers "No Label"
+							frappe.bold(_(d.meta.get_label(fieldname))),
 							frappe.bold(account),
 							frappe.bold(root_type or _("untyped")),
 						),

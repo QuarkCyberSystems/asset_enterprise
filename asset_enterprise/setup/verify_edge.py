@@ -1273,13 +1273,17 @@ def e28():
 		"asset_suspense_account": pick_plain_account(company, "Liability"),
 	})
 	cat.flags.ignore_permissions = True
-	refused = False
+	refused, refusal = False, ""
 	try:
 		cat.insert()
-	except frappe.ValidationError:
-		refused = True
+	except frappe.ValidationError as e:
+		refused, refusal = True, str(e)
+		frappe.clear_last_message()
 	if not refused:
 		return False, "a Fixed Asset-type account was accepted on a control category"
+	# the refusal names the offending field by its label (it said "No Label":
+	# the label was looked up on the category, not on its account row)
+	labelled = "Fixed Asset Account" in refusal and "No Label" not in refusal
 
 	# Cost and accumulated balances need distinct GL accounts even though
 	# both are Expense-root accounts for a control category.
@@ -1357,9 +1361,10 @@ def e28():
 	except frappe.ValidationError:
 		locked = True
 
-	ok = refused and legs and not on_balance_sheet and vouchers >= 3 and locked and one_day_ok and shapes_ok
+	ok = refused and labelled and legs and not on_balance_sheet and vouchers >= 3 and locked and one_day_ok and shapes_ok
 	return ok, (
-		f"balance-sheet account refused={refused} (want True); {vouchers} voucher(s) / "
+		f"balance-sheet account refused={refused} (want True), message names the field={labelled}"
+		f"{'' if labelled else ' [' + refusal[:160] + ']'}; {vouchers} voucher(s) / "
 		f"{len(legs)} GL rows over the life cycle, {len(on_balance_sheet)} on an Asset-side "
 		f"account (want 0); flag locked={locked}; full one-day charge posted; {shapes_detail}"
 	)
