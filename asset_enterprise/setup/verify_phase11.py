@@ -1327,7 +1327,13 @@ def _run():
 		scrap_month = nowdate() if getdate(nowdate()).day >= 15 else add_months(nowdate(), -1)
 		mid_month = str(add_days(get_first_day(scrap_month), 14))
 
-		def _mk_posted(gross):
+		def _mk_posted(gross, through="today"):
+			"""Posted through today by default: most tests date their change
+			today, and VR-043 refuses a change while an earlier period is due
+			(D-069, 05/10 — before the 15th the scrap month is the previous
+			month, which stayed unposted). On or after the 15th this posts
+			nothing more than the scrap-month cut-off did. The mid-month
+			scrap tests pass through=None: they need the scrap month open."""
 			x = make_test_asset(company, gross=gross, submit=True)
 			start = get_first_day(add_months(scrap_month, -4))
 			enable_depreciation(
@@ -1337,6 +1343,8 @@ def _run():
 			sched = frappe.db.get_value("Asset Depreciation Schedule",
 				{"asset": x.name, "status": "Active", "docstatus": 1}, "name")
 			t_post(sched, str(add_days(get_first_day(scrap_month), -1)))
+			if through:
+				t_post(sched, str(nowdate() if through == "today" else through))
 			return x
 
 		def _future(asset_name):
@@ -1349,7 +1357,7 @@ def _run():
 				order by ds.schedule_date""", asset_name, as_dict=True)
 
 		# T12: mid-month partial scrap — the event month stays one full row.
-		p1 = _mk_posted(36_000)
+		p1 = _mk_posted(36_000, through=None)
 		t_disposal.partial_scrap_asset(
 			p1.name, scrap_value=6_000, scrap_date=mid_month, scrapping_type="Damage")
 		f1_rows = _future(p1.name)
@@ -1364,7 +1372,7 @@ def _run():
 		# posting a list instead of a name, the blanket except swallowed
 		# it, and the freeze dropped the unposted rows — usage days
 		# silently became disposal loss.
-		p2 = _mk_posted(24_000)
+		p2 = _mk_posted(24_000, through=None)
 		t_disposal.scrap_asset(p2.name, scrap_date=mid_month, scrapping_type="Damage")
 		p2_rows = frappe.db.sql("""
 			select ds.schedule_date, ds.days_in_period, ifnull(ds.journal_entry,'') je
