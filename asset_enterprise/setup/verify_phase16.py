@@ -5,6 +5,8 @@ bench --site <site> execute asset_enterprise.setup.verify_phase16.run
           with nothing posted yet, keeps the days before it: the
           schedule still starts at the in-service date and the periods
           before the change keep their amounts
+  FA-011  (reopened 30/09) value changes entered out of date order re-price
+          as if entered in date order (ACC-ASS-2026-00074's figures)
   FA-012  an asset with posted depreciation carries its cancel refusal
           to the form (onload); an asset with none carries nothing
   FA-013  units ticked Allowed For FA on the UOM master: an asset item is
@@ -136,6 +138,45 @@ def _run():
 		old_later = {getdate(r.schedule_date): flt(r.depreciation_amount) for r in before}
 		c = bool(later) and all(flt(r.depreciation_amount) > old_later.get(getdate(r.schedule_date), 0) for r in later[:3])
 		print(f"fa011  periods after the change are re-priced upward: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		# ============ FA-011 reopened: value changes out of date order =====
+		# ACC-ASS-2026-00074 (badiauat): 100,000 in service 01/02, 240 months;
+		# maintenance +60,000 dated 15/04 entered FIRST, then +10,000 dated
+		# 15/03, then +5,000 dated 01/06. Entered in date order the months
+		# are Feb 383.30, Mar 447.77, Apr 584.73, May 724.24 (UAT posted
+		# Mar 588.21 / Apr 699.81: 15/03-14/04 priced on 170,000).
+		year = getdate(nowdate()).year if getdate(nowdate()).month >= 8 else getdate(nowdate()).year - 1
+		d = lambda m, day: getdate(f"{year}-{m:02d}-{day:02d}")
+		if not frappe.db.get_value("Company", company, "default_capitalization_clearing_account"):
+			frappe.db.set_value("Company", company, "default_capitalization_clearing_account",
+				frappe.db.get_value("Account", {"company": company, "root_type": "Liability", "is_group": 0}, "name"),
+				update_modified=False)
+		bldg = make_test_asset(company, gross=100_000, submit=True).name
+		frappe.db.set_value("Asset", bldg, {"purchase_date": d(2, 1), "available_for_use_date": d(2, 1)},
+			update_modified=False)
+		enable_depreciation(bldg, 240, 1, depreciation_start_date=d(2, 28), available_for_use_date=d(2, 1))
+
+		def merge(value, when):
+			src = make_test_asset(company, gross=value, submit=True).name
+			frappe.db.set_value("Asset", src, {"purchase_date": d(1, 15), "available_for_use_date": d(1, 15)},
+				update_modified=False)
+			cap = frappe.get_doc({"doctype": "Asset Capitalization", "transaction_type": "Capitalized Maintenance",
+				"transaction_sub_type": "Standard Maintenance", "target_asset": bldg, "company": company,
+				"posting_date": when, "posting_time": "10:00:00", "set_posting_time": 1,
+				"entry_type": "Capitalization", "asset_items": [{"asset": src}]})
+			cap.flags.ignore_permissions = True
+			cap.flags.ignore_mandatory = True
+			cap.insert()
+			cap.submit()
+
+		merge(60_000, d(4, 15))
+		merge(10_000, d(3, 15))
+		merge(5_000, d(6, 1))
+		got = {getdate(r.schedule_date).month: flt(r.depreciation_amount) for r in _rows(_active(bldg))[:4]}
+		want = {2: 383.30, 3: 447.77, 4: 584.73, 5: 724.24}
+		c = all(abs(got.get(m, 0) - v) <= 0.05 for m, v in want.items())
+		print(f"fa011  value changes entered out of date order re-price as if in date order (00074): {'OK' if c else 'FAIL'} (got {got}, want {want})")
 		ok = ok and c
 
 		# ============ FA-012: cancel refused before Cancel All ============

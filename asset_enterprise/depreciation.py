@@ -262,6 +262,84 @@ def stamp_generation_basis(
 	doc.basis_end_of_life = end_of_life
 
 
+def later_value_changes(asset_name, after_date):
+	"""Each value change dated after `after_date`, as (date, effect on net
+	book value), oldest first — read from the Financial Treatments with
+	the treatment fold's own arithmetic (asset_values.AssetValueBatch:
+	value change less non-depreciation accumulated change, posted,
+	reversal pairs excluded)."""
+	return [
+		(getdate(d), flt(delta))
+		for d, delta in frappe.db.sql(
+			"""select posting_date,
+			          sum(coalesce(hav_delta, 0) - coalesce(accum_delta, 0))
+			   from `tabFinancial Treatment`
+			   where asset = %s and status = 'Posted' and ifnull(reversal_reference, '') = ''
+			     and source_doctype != 'Asset Depreciation Schedule'
+			     and transaction_category != 'Depreciation'
+			     and posting_date > %s
+			   group by posting_date
+			   order by posting_date""",
+			(asset_name, getdate(after_date)),
+		)
+		if flt(delta)
+	]
+
+
+def build_rows_replaying_value_changes(
+	asset_name, unposted_rows, nbv_base, as_of_date, rate_change_date, end_of_life, company,
+	basis_out=None,
+):
+	"""Re-price from `rate_change_date`, replaying every value change dated
+	after it in date order — the triggering one included.
+
+	The base is today's net book value, which already contains changes
+	dated LATER than the one being applied. Spreading it all from the
+	earlier date charged the later value for days before it existed:
+	client ticket FA-011 (reopened 30/09/2026), ACC-ASS-2026-00074 —
+	capitalized maintenance of 60,000 dated 15/04 entered first, a
+	10,000 service dated 15/03 entered after it; 15/03-14/04 was priced
+	on 170,000 instead of 110,000 (March 588.21 instead of 447.77).
+
+	So the rows are first priced without the later changes, then each
+	change re-prices from its own date (build_rows_after_rate_change),
+	exactly as it would have had they been entered in date order. With
+	one change and nothing later this is the single re-pricing as before.
+	"""
+	later = later_value_changes(asset_name, rate_change_date)
+	trigger = add_days(getdate(rate_change_date), 1)
+	base = fa_module_round(nbv_base - sum(delta for _, delta in later), company)
+	if base <= 0 or not later:
+		return build_rows_after_rate_change(
+			unposted_rows, nbv_base, as_of_date, rate_change_date, end_of_life, company,
+			basis_out=basis_out,
+		)
+	rows = build_rows_after_rate_change(
+		unposted_rows, base, as_of_date, rate_change_date, end_of_life, company,
+		basis_out=None if later[0][0] == trigger else basis_out,
+	)
+	for when, delta in later:
+		if rows is None:
+			return None
+		total = fa_module_round(sum(flt(r["amount"]) for r in rows) + delta, company)
+		as_rows = [
+			frappe._dict(
+				schedule_date=r["schedule_date"],
+				days_in_period=r["days_in_period"],
+				daily_rate=r["daily_rate"],
+				depreciation_amount=r["amount"],
+				rate_segments=r.get("rate_segments"),
+				cost_center=r.get("cost_center"),
+			)
+			for r in rows
+		]
+		rows = build_rows_after_rate_change(
+			as_rows, total, as_of_date, add_days(when, -1), end_of_life, company,
+			basis_out=basis_out if when == trigger else None,
+		)
+	return rows
+
+
 def build_rows_after_rate_change(
 	unposted_rows, nbv_base, as_of_date, rate_change_date, end_of_life, company, basis_out=None
 ):
@@ -749,8 +827,8 @@ def supersede_and_regenerate(
 		and unposted
 		and nbv_base > 0
 	):
-		future_rows = build_rows_after_rate_change(
-			unposted, nbv_base, as_of_date, rate_change_date, end_of_life, company,
+		future_rows = build_rows_replaying_value_changes(
+			asset_name, unposted, nbv_base, as_of_date, rate_change_date, end_of_life, company,
 			basis_out=basis,
 		)
 	if future_rows is None:
