@@ -33,10 +33,12 @@ frappe.ui.form.on("Asset", {
 				.filter((s) => s.reversal_journal_entry)
 				.map((s) => s.schedule_date)
 		);
+		// a plain string: frappe-datatable reads an object cell value as a
+		// cell definition of its own and renders it empty
 		const reversal_note = (sch) => {
-			if (sch.reversal_journal_entry) return { reversed_by: sch.reversal_journal_entry };
-			if (reversed_periods.has(sch.schedule_date)) return { repost: true };
-			return null;
+			if (sch.reversal_journal_entry) return "reversed:" + sch.reversal_journal_entry;
+			if (reversed_periods.has(sch.schedule_date)) return "repost";
+			return "";
 		};
 
 		const data = asset_depr_schedule_doc.depreciation_schedule.map((sch) => {
@@ -81,8 +83,8 @@ frappe.ui.form.on("Asset", {
 				resizable: false,
 				format: (v) => {
 					if (!v) return "";
-					if (v.reversed_by) {
-						const je = frappe.utils.escape_html(v.reversed_by);
+					if (v.startsWith("reversed:")) {
+						const je = frappe.utils.escape_html(v.slice("reversed:".length));
 						return `<span class="text-danger">${__("Reversed by")}</span> <a href="/app/journal-entry/${je}">${je}</a>`;
 					}
 					return `<span class="text-muted">${__("Re-post of reversed period")}</span>`;
