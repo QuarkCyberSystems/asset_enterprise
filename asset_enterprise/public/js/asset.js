@@ -25,6 +25,19 @@ frappe.ui.form.on("Asset", {
 		const money = (v) =>
 			frappe.format(v, { fieldtype: "Currency", options: "Company:company:default_currency" });
 		const split_rows = asset_depr_schedule_doc.depreciation_schedule.some((s) => s.rate_breakdown);
+		// Client follow-up on FA-005 (30/09): a reversed period stays on the
+		// schedule and is posted again, so the same month can appear more
+		// than once; say which row was reversed and which posts it again.
+		const reversed_periods = new Set(
+			asset_depr_schedule_doc.depreciation_schedule
+				.filter((s) => s.reversal_journal_entry)
+				.map((s) => s.schedule_date)
+		);
+		const reversal_note = (sch) => {
+			if (sch.reversal_journal_entry) return { reversed_by: sch.reversal_journal_entry };
+			if (reversed_periods.has(sch.schedule_date)) return { repost: true };
+			return null;
+		};
 
 		const data = asset_depr_schedule_doc.depreciation_schedule.map((sch) => {
 			const row = [
@@ -42,6 +55,7 @@ frappe.ui.form.on("Asset", {
 				money(sch.depreciation_amount),
 				money(sch.accumulated_depreciation_amount),
 				sch.journal_entry || "",
+				reversal_note(sch),
 			];
 			if (asset_depr_schedule_doc.shift_based) row.push(sch.shift);
 			return row;
@@ -60,6 +74,20 @@ frappe.ui.form.on("Asset", {
 				resizable: false,
 				format: (v) => (v ? `<a href="/app/journal-entry/${v}">${v}</a>` : ""),
 				width: 168,
+			},
+			{
+				name: __("Reversal"),
+				editable: false,
+				resizable: false,
+				format: (v) => {
+					if (!v) return "";
+					if (v.reversed_by) {
+						const je = frappe.utils.escape_html(v.reversed_by);
+						return `<span class="text-danger">${__("Reversed by")}</span> <a href="/app/journal-entry/${je}">${je}</a>`;
+					}
+					return `<span class="text-muted">${__("Re-post of reversed period")}</span>`;
+				},
+				width: 230,
 			},
 		];
 		if (asset_depr_schedule_doc.shift_based) {

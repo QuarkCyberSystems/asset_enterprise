@@ -811,6 +811,11 @@ CUSTOM_FIELDS = {
 			"label": "Reversal Journal Entry",
 			"options": "Journal Entry",
 			"read_only": 1,
+			# shown in the rows grid: a reversed period appears again below
+			# it, and the grid has to say which row was reversed (FA-005
+			# follow-up, client 30/09)
+			"in_list_view": 1,
+			"columns": 2,
 			"insert_after": "period_end_date",
 			"description": "Mirror journal entry that reversed this posted row "
 			"(e.g. straddling depreciation reversed at merge). Row drops out of "
