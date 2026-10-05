@@ -731,6 +731,7 @@ def supersede_and_regenerate(
 	disposal_date=None,
 	rate_change_date=None,
 	triggered_by=None,
+	missing_ok=False,
 ):
 	"""Replace reschedule-by-cancel with supersession.
 
@@ -747,6 +748,13 @@ def supersede_and_regenerate(
 	   by cancelling the schedule first, which GAP-031 forbids.
 
 	Returns the new Asset Depreciation Schedule doc.
+
+	`missing_ok`: an asset with no Active schedule (not depreciating yet,
+	e.g. a project shell in custody) has nothing to supersede. Callers
+	for which that is an expected state pass it and get None back. A
+	caught frappe.throw still leaves its message in the response, so
+	catching the error left a "nothing to supersede" pop-up beside the
+	document's own message (PA-008, AuC Finalization into a shell).
 	"""
 	# ANY regeneration resumes from the last posted period, never from
 	# the triggering event's own date — see resume_basis_date. This was
@@ -773,6 +781,8 @@ def supersede_and_regenerate(
 	if finance_book:
 		filters["finance_book"] = finance_book
 	old_name = frappe.db.get_value("Asset Depreciation Schedule", filters, "name")
+	if not old_name and missing_ok:
+		return None
 	if not old_name:
 		frappe.throw(
 			_("No Active depreciation schedule found for {0} — nothing to supersede.").format(
@@ -1075,6 +1085,7 @@ def apply_daycount_rule(asset_name, reason=None, finance_book=None):
 			end_of_life_override=end_of_life,
 			first_posting_date=first_posting,
 			reason=reason or _("§4.3 day-count rule applied"),
+			missing_ok=True,
 		)
 	except frappe.ValidationError:
 		return None
@@ -1111,9 +1122,10 @@ def regenerate_after_value_change(
 			end_of_life_override=end_of_life_override,
 			rate_change_date=rate_change,
 			triggered_by=triggered_by,
+			missing_ok=True,
 		)
 	except frappe.ValidationError:
-		return None  # no Active schedule (non-depreciating asset)
+		return None
 
 	# VR-018: if the value change landed on an asset with no life left,
 	# the regeneration just produced nothing to charge it through —

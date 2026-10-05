@@ -388,9 +388,10 @@ class EnterpriseAssetRepair(AssetRepair):
 				end_of_life_override=self._extended_horizon(source, sign=-1),
 				reason=_("Reversal Repair {0} of {1}").format(self.name, source.name),
 				triggered_by=self,
+				missing_ok=True,
 			)
 		except frappe.ValidationError:
-			pass  # asset without an Active schedule (no depreciation) — nothing to supersede
+			pass
 
 		source.db_set("reversed_by_repair", self.name, update_modified=False)
 

@@ -266,6 +266,7 @@ def partial_scrap_asset(
 			as_of_date=getdate(last_posted) if last_posted else None,
 			rate_change_date=getdate(scrap_date) if last_posted else None,
 			reason=_("Partial scrap via {0}").format(je),
+			missing_ok=True,
 		)
 	except frappe.ValidationError:
 		pass
@@ -419,7 +420,7 @@ def _freeze_schedule(asset_name, as_of_date, reason):
 	if last_row and getdate(last_row) <= getdate(as_of_date):
 		return  # already frozen by the disposal truncation
 	try:
-		supersede_and_regenerate(asset_name, as_of_date=as_of_date, reason=reason)
+		supersede_and_regenerate(asset_name, as_of_date=as_of_date, reason=reason, missing_ok=True)
 	except frappe.ValidationError:
 		pass
 
