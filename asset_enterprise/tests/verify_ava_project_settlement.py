@@ -175,8 +175,12 @@ def _run():
 		legs_ok = (len(dr) == 1 and len(cr) == 1 and dr[0].account == fixed_asset_account
 			and cr[0].account == account and flt(dr[0].debit) == 1_250 and flt(cr[0].credit) == 1_250)
 		check("p4     JE Dr Fixed Asset 1,250 / Cr supplied account 1,250", legs_ok, str(rows))
-		check(f"p4     settlement leg carries the AVA's dimensions ({len(dims)} of {len(DIMENSIONS)})",
-			dims and cr and all(cr[0].get(f) == v for f, v in dims.items()), str(cr))
+		# with no dimension record on the site there is nothing to carry —
+		# reported above as not exercised, not failed (a fresh site runs
+		# this before the project_accounting phases seed any record)
+		if dims:
+			check(f"p4     settlement leg carries the AVA's dimensions ({len(dims)} of {len(DIMENSIONS)})",
+				cr and all(cr[0].get(f) == v for f, v in dims.items()), str(cr))
 		check("p4     Fixed Asset leg carries the asset's acquisition dimensions",
 			dr and all(dr[0].get(f) == v for f, v in acquired.items()), f"{dr} want {acquired}")
 
