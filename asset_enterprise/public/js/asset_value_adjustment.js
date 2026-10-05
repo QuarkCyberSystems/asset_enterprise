@@ -14,8 +14,24 @@ const AE_SYSTEM_ACCOUNT_TYPES = [
 	"Invoice Adjustment",
 ];
 
+// PA-008: a Project Settlement is raised by the Project Settlement Run,
+// which sets the type and the account it settles from; neither is the
+// user's to change.
+const AE_PROJECT_SETTLEMENT = "Project Settlement";
+
 function ae_apply_difference_account(frm) {
 	const ttype = frm.doc.transaction_type;
+	// reset as well as set: the form object is reused across documents
+	frm.set_df_property("transaction_type", "read_only", ttype === AE_PROJECT_SETTLEMENT ? 1 : 0);
+	if (ttype === AE_PROJECT_SETTLEMENT) {
+		frm.set_df_property("difference_account", "read_only", 1);
+		frm.set_df_property(
+			"difference_account",
+			"description",
+			__("Set by the Project Settlement Run that capitalizes the cost.")
+		);
+		return;
+	}
 	if (!frm.doc.asset || !AE_SYSTEM_ACCOUNT_TYPES.includes(ttype)) {
 		frm.set_df_property("difference_account", "read_only", 0);
 		frm.set_df_property("difference_account", "description", "");
@@ -74,6 +90,7 @@ frappe.ui.form.on("Asset Value Adjustment", {
 
 	refresh(frm) {
 		window.ae_hide_system_only_option(frm, "transaction_type", "Invoice Adjustment");
+		window.ae_hide_system_only_option(frm, "transaction_type", AE_PROJECT_SETTLEMENT);
 		ae_apply_difference_account(frm);
 		if (frm.doc.reversal_of_ava) {
 			frm.set_intro(

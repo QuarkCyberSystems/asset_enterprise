@@ -70,6 +70,13 @@ def run(phases=None, raise_on_fail=True):
 		print(f"\n{'=' * 20} PHASE {phase} {'=' * 20}")
 		results[phase] = _verdict(*_capture(mod.run))
 
+	# the Project Settlement AVA type (PA-008) runs with every sweep; it
+	# rolls back like the phases
+	from asset_enterprise.tests import verify_ava_project_settlement
+
+	print(f"\n{'=' * 20} PROJECT SETTLEMENT AVA {'=' * 20}")
+	results["project_settlement_ava"] = _verdict(*_capture(verify_ava_project_settlement.run))
+
 	# the platform registration suite runs with every sweep (Build 0.1 §12)
 	from asset_enterprise.tests import smoke_platform_registration
 
