@@ -214,10 +214,16 @@ def dimension_fixture(fieldname, company, doctype="Asset Movement Item"):
 	if not link:
 		return None
 	if link.options == "Project Accounting":
-		return frappe.get_doc({
+		project = frappe.get_doc({
 			"doctype": "Project Accounting", "project_name": "AE Dimension " + frappe.generate_hash(length=8),
 			"company": company, "project_type": "Opex", "status": "Open",
-		}).insert(ignore_permissions=True).name
+		}).insert(ignore_permissions=True)
+		# PA-009 / VR-046: a Draft or Cancelled project cannot be used on a
+		# transaction row, so the fixture approves it (older PA builds where
+		# the doctype is not submittable keep the plain insert)
+		if frappe.get_meta("Project Accounting").is_submittable:
+			project.submit()
+		return project.name
 	if link.options == "Project":
 		return frappe.get_doc({
 			"doctype": "Project", "project_name": "AE Dimension " + frappe.generate_hash(length=8),
