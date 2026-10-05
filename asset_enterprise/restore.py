@@ -111,6 +111,7 @@ def restore_asset(asset_name):
 			as_of_date=getdate(last_posted) if last_posted else None,
 			end_of_life_override=schedule_horizon_from_life(asset.name),
 			reason=_("Restored via {0}").format(mirror),
+			missing_ok=True,
 		)
 	except frappe.ValidationError:
 		pass
@@ -196,6 +197,7 @@ def restore_partial_scrap(asset_name, financial_treatment, cross_period=0):
 			as_of_date=getdate(last_posted) if last_posted else None,
 			rate_change_date=getdate(nowdate()),
 			reason=_("Partial scrap restored via {0}").format(mirror),
+			missing_ok=True,
 		)
 	except frappe.ValidationError:
 		pass
@@ -336,6 +338,7 @@ def cross_period_restore(asset_name, restore_date=None):
 			first_posting_date=restore_date,
 			end_of_life_override=horizon,
 			reason=_("Cross-period restore (Path 3) via {0}").format(mirror),
+			missing_ok=True,
 		)
 	except frappe.ValidationError:
 		pass

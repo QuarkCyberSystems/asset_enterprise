@@ -17,6 +17,9 @@ Settlement Run posts as a real AVA. Run:
       settling project's
   p5  the Financial Treatment is an Addition of type Project Settlement
       raising the asset value
+  p7  on an asset with no Active depreciation schedule (a shell not
+      depreciating yet) the submit and the cancel leave no "nothing to
+      supersede" message in the response
   p6  cancel -> a Reversal AVA of the same type; the original JE stays
       posted and the mirror JE carries each leg's dimensions unchanged
 
@@ -50,12 +53,32 @@ def _dimension_values(company):
 		if not df:
 			missing.append(fieldname)
 			continue
-		filters = {"company": company} if frappe.get_meta(df.options).has_field("company") else {}
-		name = frappe.db.get_value(df.options, filters, "name") or frappe.db.get_value(df.options, {}, "name")
+		target = frappe.get_meta(df.options)
+		filters = {"company": company} if target.has_field("company") else {}
+		if target.is_submittable:
+			filters["docstatus"] = ("!=", 2)  # a cancelled record cannot carry a posting
+		order = "docstatus desc, creation desc" if target.is_submittable else "creation desc"
+		name = frappe.db.get_value(df.options, filters, "name", order_by=order)
+		if not name:
+			filters.pop("company", None)
+			name = frappe.db.get_value(df.options, filters, "name", order_by=order)
 		if name:
 			values[fieldname] = name
 		else:
 			missing.append(fieldname)
+	# the WBS Element must belong to the row's project (PA VR-040): take a
+	# WBS under a submitted project and that project with it
+	if "wbs_element" in values and "project_accounting" in values:
+		pair = frappe.db.sql(
+			"""select w.name, w.project_accounting from `tabWBS Element` w
+			   join `tabProject Accounting` p on p.name = w.project_accounting
+			   where p.docstatus = 1 and p.company = %s
+			     and w.status in ('Active', 'Technically Complete')
+			   order by w.creation desc limit 1""",
+			company,
+		)
+		if pair:
+			values["wbs_element"], values["project_accounting"] = pair[0]
 	return values, missing
 
 
@@ -100,7 +123,7 @@ def _run():
 		# the asset was acquired under a DIFFERENT project than the one
 		# settling into it, so the two attributions are distinguishable
 		other = frappe.db.get_value("Project Accounting",
-			{"name": ("!=", dims.get("project_accounting"))}, "name")
+			{"name": ("!=", dims.get("project_accounting")), "docstatus": 1}, "name")
 		acquired = {f: None for f in DIMENSIONS}
 		if other and frappe.get_meta("Asset").has_field("project_accounting"):
 			frappe.db.set_value("Asset", asset.name, "project_accounting", other, update_modified=False)
@@ -129,12 +152,21 @@ def _run():
 
 			# p2: raised by the run
 			ava = _ava(asset.name, company, account, **dims)
+			frappe.local.message_log = []
 			ava.insert()
 			check("p2     raised under the run's flag; the supplied account is kept",
 				ava.difference_account == account, f"{ava.difference_account} vs {account}")
 			ava.submit()
 		finally:
 			frappe.flags.ae_project_settlement = False
+
+		def _supersede_noise():
+			return [m for m in frappe.local.message_log if "nothing to supersede" in str(m)]
+
+		has_schedule = frappe.db.exists("Asset Depreciation Schedule",
+			{"asset": asset.name, "status": "Active", "docstatus": 1})
+		check("p7     submit on an asset with no schedule: no 'nothing to supersede' message",
+			not has_schedule and not _supersede_noise(), str(_supersede_noise()) or "asset has a schedule")
 
 		# p4: the JE
 		rows = _je_rows(ava.journal_entry)
@@ -159,7 +191,10 @@ def _run():
 		# p6: cancel -> Reversal AVA
 		from asset_enterprise.api import cancel_ava_with_reversal
 
+		frappe.local.message_log = []
 		cancel_ava_with_reversal(ava.name, nowdate())
+		check("p7     cancel on an asset with no schedule: no 'nothing to supersede' message",
+			not _supersede_noise(), str(_supersede_noise()))
 		rev = frappe.db.get_value("Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1},
 			["name", "transaction_type", "journal_entry"], as_dict=True)
 		check("p6     cancel raised a Reversal AVA of type Project Settlement",
