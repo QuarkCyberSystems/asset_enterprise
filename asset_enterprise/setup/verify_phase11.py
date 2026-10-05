@@ -1433,6 +1433,14 @@ def _run():
 				"company": company, "date": nowdate(), "transaction_type": ttype,
 			}
 			base.update(extra)
+			# An adjustment is measured from the carrying amount, so every
+			# period due by its date must be posted first (VR-043). Before
+			# the 15th, scrap_month is the previous month and _mk_posted
+			# stops a month short of today (D-069, 05/10).
+			sched = frappe.db.get_value("Asset Depreciation Schedule",
+				{"asset": asset_name, "status": "Active", "docstatus": 1}, "name")
+			if sched:
+				t_post(sched, str(base["date"]))
 			doc = frappe.get_doc(base)
 			doc.flags.ignore_permissions = True
 			return doc
@@ -1461,11 +1469,6 @@ def _run():
 			ok = ok and t15_ok
 
 		# T16: a UL adjustment posts exactly ZERO JEs of its own.
-		# The adjustment is dated today, so every period due by today must
-		# be posted first (VR-043): before the 15th scrap_month is the
-		# previous month and _mk_posted stops a month short.
-		t_post(frappe.db.get_value("Asset Depreciation Schedule",
-			{"asset": g1.name, "status": "Active", "docstatus": 1}, "name"), nowdate())
 		je_before = frappe.db.count("Journal Entry", {"docstatus": 1})
 		ul_ok_doc = _ava_doc(g1.name, "Useful Life Adjustment", adjusted_life_months=6)
 		ul_ok_doc.insert()
