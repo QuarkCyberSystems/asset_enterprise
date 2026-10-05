@@ -788,7 +788,7 @@ CUSTOM_FIELDS = {
 			"label": "Rate Breakdown",
 			"read_only": 1,
 			"in_list_view": 1,
-			"columns": 3,
+			"columns": 2,  # with the reversal column the grid fits its 12 units
 			"insert_after": "daily_rate",
 			"description": "The daily rate for each stretch of days in this period, when an event "
 			"changed the rate mid-period. Blank when the whole period was at one rate.",
@@ -815,7 +815,7 @@ CUSTOM_FIELDS = {
 			# it, and the grid has to say which row was reversed (FA-005
 			# follow-up, client 30/09)
 			"in_list_view": 1,
-			"columns": 2,
+			"columns": 1,
 			"insert_after": "period_end_date",
 			"description": "Mirror journal entry that reversed this posted row "
 			"(e.g. straddling depreciation reversed at merge). Row drops out of "
