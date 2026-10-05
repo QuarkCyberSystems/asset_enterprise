@@ -45,6 +45,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 		# the user can still override.
 		if self._enterprise():
 			self._refuse_manual_invoice_adjustment()
+			self._refuse_manual_project_settlement()
 			# Same rule as everywhere else: the entry belongs to the centre
 			# that held the asset on the adjustment date. Core otherwise
 			# falls back to the company's depreciation cost centre
@@ -63,7 +64,10 @@ class EnterpriseAVA(AssetValueAdjustment):
 			# (§3.5 chain) and the field is read-only. Resolved here even
 			# when something was typed in, so the form and the ledger can
 			# never disagree. Invoice Adjustment keeps fill-if-empty: the
-			# invoice flow supplies its own clearing account (D1).
+			# invoice flow supplies its own clearing account (D1). A
+			# Project Settlement is never filled here: the run always
+			# supplies the account it settles from (its offset account, or
+			# the source's own account in Original Account mode).
 			forced = {
 				"Initial Impairment": "impairment_loss_account",
 				"Upward Revaluation": "revaluation_surplus_oci_account",
@@ -118,6 +122,30 @@ class EnterpriseAVA(AssetValueAdjustment):
 			title=_("Not a Manual Transaction Type"),
 		)
 
+	def _refuse_manual_project_settlement(self):
+		"""PA-008 (client, 02/10, option A): an addition to an existing
+		asset capitalized by a Project Settlement Run posts as an AVA of
+		type Project Settlement, raised by the run with the amount, account
+		and project dimensions it settles. One typed by hand would
+		capitalize cost no settlement released. Its own reversal carries
+		the type across and is allowed."""
+		if (
+			self.get("transaction_type") != "Project Settlement"
+			or not self.is_new()
+			or self.get("reversal_of_ava")
+			or frappe.flags.get("ae_project_settlement")
+		):
+			return
+		frappe.throw(
+			_(
+				"Project Settlement is raised by the Project Settlement Run that "
+				"capitalizes the cost — it cannot be created by hand. To change an "
+				"asset's value directly, use Initial Impairment, Upward Revaluation "
+				"or Value + Life Adjustment."
+			),
+			title=_("Not a Manual Transaction Type"),
+		)
+
 	def _enforce_type_contract(self):
 		"""§3.2/§3.4: each transaction type has ONE meaning — the type
 		governs the fields, not the other way round (client, 19/08:
@@ -154,7 +182,8 @@ class EnterpriseAVA(AssetValueAdjustment):
 			self.new_asset_value = flt(self.current_asset_value)
 			self.current_asset_value = flt(self.current_asset_value)
 			self.difference_amount = 0
-		elif ttype in ("Initial Impairment", "Upward Revaluation", "Invoice Adjustment") and (
+		elif ttype in ("Initial Impairment", "Upward Revaluation", "Invoice Adjustment",
+				"Project Settlement") and (
 			months or days
 		):
 			frappe.throw(
@@ -163,6 +192,23 @@ class EnterpriseAVA(AssetValueAdjustment):
 					"To change value and life together, use 'Value + Life Adjustment'."
 				).format(_(ttype))
 			)
+
+	def update_accounting_dimensions(self, credit_entry, debit_entry):
+		"""Core copies a dimension onto the revaluation JE only when the
+		company marks it mandatory for P&L (debit leg) or balance sheet
+		(credit leg), so a dimension set on the AVA is otherwise dropped
+		(PA-008: a Project Settlement carries project / WBS / cost
+		component / tracking item). Every dimension the AVA carries goes
+		on both legs; core's own defaults still fill the rest."""
+		super().update_accounting_dimensions(credit_entry, debit_entry)
+		if not self._enterprise():
+			return
+		from asset_enterprise.gl_attribution import dimension_fields
+
+		for fieldname in dimension_fields(self.doctype):
+			value = self.get(fieldname)
+			if value:
+				credit_entry[fieldname] = debit_entry[fieldname] = value
 
 	def make_asset_revaluation_entry(self):
 		if not (self._enterprise() and self.get("reversal_of_ava")):
@@ -362,7 +408,7 @@ class EnterpriseAVA(AssetValueAdjustment):
 			return "Impairment", diff, 0
 		if ttype == "Upward Revaluation":
 			return "Revaluation", diff, 0
-		if ttype == "Invoice Adjustment":
+		if ttype in ("Invoice Adjustment", "Project Settlement"):
 			return "Addition", diff, 0
 		if ttype == "Value + Life Adjustment":
 			# §3.4 multi-treatment collapses into one FT carrying both deltas.

@@ -508,7 +508,7 @@ CUSTOM_FIELDS = {
 			"fieldname": "transaction_type",
 			"fieldtype": "Select",
 			"label": "Transaction Type",
-			"options": "\nInitial Impairment\nUpward Revaluation\nInvoice Adjustment\nUseful Life Adjustment\nValue + Life Adjustment",
+			"options": "\nInitial Impairment\nUpward Revaluation\nInvoice Adjustment\nUseful Life Adjustment\nValue + Life Adjustment\nProject Settlement",
 			"insert_after": "company",
 		},
 		{
