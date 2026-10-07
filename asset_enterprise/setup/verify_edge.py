@@ -1226,17 +1226,15 @@ def e28():
 	"""Control Category: tracked for control, expensed on purchase. Every
 	account on the category is an expense account — the fixed-asset and
 	accumulated-depreciation accounts included — so the opening booking,
-	the one-day depreciation entry and final scrap land
-	in P&L, and no GL row for the asset ever carries an Asset-side
+	and final scrap land in P&L (no depreciation: FA-735), and no GL row for the asset ever carries an Asset-side
 	account.
 
 	Four assertions, because the feature is four rules:
 	  1. the flag ENFORCES expense accounts — a Fixed Asset-type account
 	     on a control category is refused;
 	  2. the whole life cycle posts to P&L only;
-	  3. D-053: every leg of the five review shapes (plain charge,
-	     prior-fiscal-year charge with its PYA split, transfer then
-	     charge, Leave Project then charge, scrap before any charge) and
+	  3. D-053: every leg of the four review shapes (plain, transfer, Leave
+	     Project, scrap) and
 	     of the later shapes (scrap then restore, downward AVA then its
 	     reversal, sale with proceeds, sale then cancel under the
 	     Immutable Ledger, sale then credit note, a blank-acquisition sale
@@ -1369,8 +1367,7 @@ def e28():
 
 def _control_shapes_keep_acquisition(company):
 	"""D-053 through the real paths: every GL row carrying a Control
-	Category asset — booking, one-day charge, PYA, accumulated credit,
-	disposal, loss — carries the centre and dimensions it was acquired
+	Category asset — booking, disposal, loss — carries the centre and dimensions it was acquired
 	under, whatever a later movement said."""
 	from asset_enterprise.depreciation import movement_dimension_fields, project_dimension_fields
 	from asset_enterprise.setup.test_fixtures import (
@@ -1398,13 +1395,12 @@ def _control_shapes_keep_acquisition(company):
 		run = control_shape(fixture, shape, acquired, moved_to=moved)
 		legs = control_asset_legs(run.asset, fields)
 		accounts = {leg.account for leg in legs}
-		expect_leg = {
-			"prior_fiscal_year": fixture.pya_expense_account,
-			"scrap": None,  # the loss account comes from the Scrapping Type
-		}.get(shape, fixture.depreciation_expense_account if shape in CONTROL_SHAPES else None)
 		failures.extend(_later_shape_failures(run, legs, fixture, field, moved))
-		if expect_leg and expect_leg not in accounts:
-			failures.append(f"{shape}: no {expect_leg} leg")
+		if fixture.fixed_asset_account not in accounts:
+			failures.append(f"{shape}: no {fixture.fixed_asset_account} booking leg")
+		# FA-735 (client 06/10): a control asset is never depreciated, not even for one day
+		if fixture.depreciation_expense_account in accounts:
+			failures.append(f"{shape}: a {fixture.depreciation_expense_account} leg was posted")
 		if shape == "scrap" and not any(
 			leg.debit and leg.account not in (fixture.fixed_asset_account, fixture.accumulated_depreciation_account)
 			for leg in legs
@@ -2090,8 +2086,17 @@ def e39():
 		"finance_books": [{"depreciation_method": "Straight Line",
 			"total_number_of_depreciations": 12, "frequency_of_depreciation": 1,
 			"depreciation_start_date": date}]})
-	asset.insert(ignore_permissions=True)
-	asset.submit()
+	# A legacy control asset (D-033, depreciated before FA-735 and left alone
+	# by the migrate): rebuild that state by lifting the category's
+	# non-depreciable flag while the asset is created.
+	frappe.db.set_value("Asset Category", "E28 Control Tools", "non_depreciable_category", 0)
+	frappe.clear_document_cache("Asset Category", "E28 Control Tools")
+	try:
+		asset.insert(ignore_permissions=True)
+		asset.submit()
+	finally:
+		frappe.db.set_value("Asset Category", "E28 Control Tools", "non_depreciable_category", 1)
+		frappe.clear_document_cache("Asset Category", "E28 Control Tools")
 
 	def rows(schedule):
 		return frappe.db.sql(
