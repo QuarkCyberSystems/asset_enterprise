@@ -130,8 +130,19 @@ doc_events = {
 	# GAP-010 / VR-011 (Phase 11): sale disposals honor the
 	# prevent-disposal-before-full-invoicing control.
 	"Sales Invoice": {
-		"validate": "asset_enterprise.invoice_diff.si_validate",
+		"validate": [
+			"asset_enterprise.invoice_diff.si_validate",
+			"asset_enterprise.asset_items.validate_purchase_rows",
+		],
 	},
+	# FA-013 (client, 06/10): a fixed-asset item's unit on every buying and
+	# selling document, not only receipts and invoices
+	"Material Request": {"validate": "asset_enterprise.asset_items.validate_purchase_rows"},
+	"Supplier Quotation": {"validate": "asset_enterprise.asset_items.validate_purchase_rows"},
+	"Purchase Order": {"validate": "asset_enterprise.asset_items.validate_purchase_rows"},
+	"Quotation": {"validate": "asset_enterprise.asset_items.validate_purchase_rows"},
+	"Sales Order": {"validate": "asset_enterprise.asset_items.validate_purchase_rows"},
+	"Delivery Note": {"validate": "asset_enterprise.asset_items.validate_purchase_rows"},
 }
 
 # Upgrade guard (build plan §2.3 / §6): every bench migrate re-verifies
