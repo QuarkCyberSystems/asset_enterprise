@@ -243,9 +243,11 @@ def _run():
 		item.reload()
 		item.stock_uom = "Unit"
 		item.set("uoms", [{"uom": "Unit", "conversion_factor": 1}])
+		item.purchase_uom = item.sales_uom = None  # defaults follow the stock unit (CH-49)
 		unit_ok = _item_refused(item) is None
 		item.reload()
 		item.stock_uom = "Unit"
+		item.purchase_uom = item.sales_uom = None
 		item.set("uoms", [{"uom": "Unit", "conversion_factor": 1}, {"uom": "Nos", "conversion_factor": 1}])
 		alt_refused = _item_refused(item)  # Nos is allowed too, but as an alternate it is not
 		c = bool(hour_refused) and unit_ok and bool(alt_refused) and "Allowed For FA" in (hour_refused or "")
@@ -264,6 +266,36 @@ def _run():
 		item.stock_uom = "Hour"
 		c = _item_refused(item) is None and _refused(validate_purchase_rows, row("Hour")) is None
 		print(f"fa013  nothing ticked lifts the rule: {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		# FA-013 reopened (06/10): every document carrying the item's unit
+		frappe.db.set_value("UOM", "Nos", "allowed_for_fa", 1, update_modified=False)
+		item.reload()
+		item.stock_uom = "Nos"
+		item.set("uoms", [{"uom": "Nos", "conversion_factor": 1}])
+		item.purchase_uom = item.sales_uom = None
+		filled = _item_refused(item) is None and item.purchase_uom == "Nos" and item.sales_uom == "Nos"
+		item.purchase_uom = "Unit"
+		default_refused = _item_refused(item)
+		c = filled and bool(default_refused) and "Default Purchase Unit" in (default_refused or "")
+		print(f"fa013  default purchase / sales unit filled with the stock unit; another refused: {'OK' if c else 'FAIL'} ({(default_refused or '')[:70]})")
+		ok = ok and c
+
+		def doc_row(dt, u, **row_extra):
+			return frappe.get_doc({"doctype": dt, "company": company,
+				"items": [{"idx": 1, "item_code": "AE-SMOKE-ITEM", "uom": u, "stock_uom": "Nos", **row_extra}]})
+		docs = ("Material Request", "Supplier Quotation", "Purchase Order", "Quotation", "Sales Order",
+			"Delivery Note", "Sales Invoice")
+		refused_all = all(_refused(validate_purchase_rows, doc_row(dt, "Hour")) for dt in docs)
+		allowed_all = all(_refused(validate_purchase_rows, doc_row(dt, "Nos")) is None for dt in docs)
+		from_source = _refused(validate_purchase_rows, doc_row("Delivery Note", "Hour", so_detail="legacy-row")) is None
+		plain = frappe.get_doc({"doctype": "Sales Order", "company": company,
+			"items": [{"idx": 1, "item_code": frappe.db.get_value("Item", {"is_fixed_asset": 0}, "name"), "uom": "Hour"}]})
+		plain_ok = _refused(validate_purchase_rows, plain) is None
+		c = refused_all and allowed_all and from_source and plain_ok
+		print(f"fa013  MR / SQ / PO / Quotation / SO / DN / SI rows of an asset item: other units refused, allowed accepted, "
+			f"rows made from a source row and ordinary items untouched: {'OK' if c else 'FAIL'} "
+			f"({refused_all}, {allowed_all}, {from_source}, {plain_ok})")
 		ok = ok and c
 
 		from asset_enterprise.setup.install import _seed_asset_item_uom

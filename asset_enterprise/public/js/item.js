@@ -8,6 +8,8 @@ frappe.ui.form.on("Item", {
 				? { filters: { name: ["in", frm.__fa_uoms] } }
 				: {};
 		frm.set_query("stock_uom", fa_query);
+		frm.set_query("purchase_uom", fa_query);
+		frm.set_query("sales_uom", fa_query);
 		frm.set_query("uom", "uoms", fa_query);
 	},
 	onload(frm) {
