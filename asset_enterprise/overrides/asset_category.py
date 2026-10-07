@@ -49,8 +49,22 @@ class EnterpriseAssetCategory(AssetCategory):
 	def validate(self):
 		if self._enterprise():
 			self._lock_control_flag_once_used()
+			self._control_category_never_depreciates()
 			self._refuse_non_depreciable_with_depreciating_assets()
 		super().validate()
+
+	def _control_category_never_depreciates(self):
+		"""Client ticket FA-735, reopened 06/10/2026 (Vivek: "No depreciation"):
+		a Control Category's cost goes straight to expense at purchase and is
+		never depreciated — it has no finance books, and it is a Non
+		Depreciable Category, so its assets read "Non-Depreciable" and
+		depreciation cannot be enabled on them (VR-047). Supersedes D-033's
+		one-day charge, which only moved the cost between two expense
+		accounts."""
+		if not cint(self.get("is_control_category")):
+			return
+		self.non_depreciable_category = 1
+		self.set("finance_books", [])
 
 	def on_update(self):
 		if hasattr(super(), "on_update"):
@@ -192,3 +206,10 @@ def restate_all_not_depreciating():
 					"Non-Depreciable" if cint(category.non_depreciable_category) else "Pending Depreciation Setup",
 				)
 			)
+
+
+def is_expensed(asset_category):
+	"""A Control Category asset is expensed on purchase: carried at 0 on the
+	balance sheet whatever its tracked cost (FA-735)."""
+	return is_control_category(asset_category)
+

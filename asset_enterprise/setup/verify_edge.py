@@ -1226,17 +1226,15 @@ def e28():
 	"""Control Category: tracked for control, expensed on purchase. Every
 	account on the category is an expense account — the fixed-asset and
 	accumulated-depreciation accounts included — so the opening booking,
-	the one-day depreciation entry and final scrap land
-	in P&L, and no GL row for the asset ever carries an Asset-side
+	and final scrap land in P&L (no depreciation: FA-735), and no GL row for the asset ever carries an Asset-side
 	account.
 
 	Four assertions, because the feature is four rules:
 	  1. the flag ENFORCES expense accounts — a Fixed Asset-type account
 	     on a control category is refused;
 	  2. the whole life cycle posts to P&L only;
-	  3. D-053: every leg of the five review shapes (plain charge,
-	     prior-fiscal-year charge with its PYA split, transfer then
-	     charge, Leave Project then charge, scrap before any charge) and
+	  3. D-053: every leg of the four review shapes (plain, transfer, Leave
+	     Project, scrap) and
 	     of the later shapes (scrap then restore, downward AVA then its
 	     reversal, sale with proceeds, sale then cancel under the
 	     Immutable Ledger, sale then credit note, a blank-acquisition sale
@@ -1316,25 +1314,21 @@ def e28():
 	asset.flags.ignore_permissions = True
 	asset.insert()
 	asset.submit()
-	charge_date = getdate(asset.available_for_use_date)
-	enable_depreciation(asset.name, total_number_of_depreciations=48,
-		depreciation_start_date=charge_date, expected_value_after_useful_life=1000)
-	schedule = frappe.get_doc("Asset Depreciation Schedule", {
-		"asset": asset.name, "status": "Active", "docstatus": 1})
-	assert len(schedule.depreciation_schedule) == 1
-	row = schedule.depreciation_schedule[0]
-	assert row.days_in_period == 1 and flt(row.depreciation_amount) == 12000
-	assert getdate(row.schedule_date) == charge_date
-	assert schedule.expected_value_after_useful_life == 0
-	post_schedule_entries(schedule.name, date=str(charge_date))
-	from asset_enterprise.asset_values import recalculate_asset_values
-	assert abs(recalculate_asset_values(asset.name, save=False)["net_book_value"]) < 0.01
-	schedule.reload()
-	je = schedule.depreciation_schedule[0].journal_entry
-	assert je
-	post_schedule_entries(schedule.name, date=str(charge_date))
-	assert frappe.db.count("GL Entry", {"voucher_no": je, "is_cancelled": 0}) == 2
-	one_day_ok = True  # one-day completion checks above succeeded
+	# FA-735 (client, 06/10/2026): a Control Category never depreciates —
+	# it is Non Depreciable with no finance books, its asset reads
+	# Non-Depreciable, and Enable Depreciation is refused (VR-047)
+	cat.reload()
+	no_books = cint(cat.non_depreciable_category) == 1 and not cat.get("finance_books")
+	try:
+		enable_depreciation(asset.name, total_number_of_depreciations=48,
+			depreciation_start_date=getdate(asset.available_for_use_date))
+		refused_dep = False
+	except frappe.ValidationError:
+		frappe.clear_last_message()
+		refused_dep = True
+	one_day_ok = (no_books and refused_dep
+		and frappe.db.get_value("Asset", asset.name, "status") == "Non-Depreciable"
+		and not frappe.db.exists("Asset Depreciation Schedule", {"asset": asset.name, "docstatus": 1}))
 	disposal.scrap_asset(asset.name, scrap_date=nowdate(), scrapping_type="Damage")
 
 	legs = frappe.db.sql(
@@ -1361,19 +1355,19 @@ def e28():
 	except frappe.ValidationError:
 		locked = True
 
-	ok = refused and labelled and legs and not on_balance_sheet and vouchers >= 3 and locked and one_day_ok and shapes_ok
+	ok = refused and labelled and legs and not on_balance_sheet and vouchers >= 2 and locked and one_day_ok and shapes_ok
 	return ok, (
 		f"balance-sheet account refused={refused} (want True), message names the field={labelled}"
 		f"{'' if labelled else ' [' + refusal[:160] + ']'}; {vouchers} voucher(s) / "
 		f"{len(legs)} GL rows over the life cycle, {len(on_balance_sheet)} on an Asset-side "
-		f"account (want 0); flag locked={locked}; full one-day charge posted; {shapes_detail}"
+		f"account (want 0); flag locked={locked}; never depreciates (non-depreciable, no books, "
+		f"Enable Depreciation refused)={one_day_ok}; {shapes_detail}"
 	)
 
 
 def _control_shapes_keep_acquisition(company):
 	"""D-053 through the real paths: every GL row carrying a Control
-	Category asset — booking, one-day charge, PYA, accumulated credit,
-	disposal, loss — carries the centre and dimensions it was acquired
+	Category asset — booking, disposal, loss — carries the centre and dimensions it was acquired
 	under, whatever a later movement said."""
 	from asset_enterprise.depreciation import movement_dimension_fields, project_dimension_fields
 	from asset_enterprise.setup.test_fixtures import (
@@ -1401,13 +1395,15 @@ def _control_shapes_keep_acquisition(company):
 		run = control_shape(fixture, shape, acquired, moved_to=moved)
 		legs = control_asset_legs(run.asset, fields)
 		accounts = {leg.account for leg in legs}
-		expect_leg = {
-			"prior_fiscal_year": fixture.pya_expense_account,
-			"scrap": None,  # the loss account comes from the Scrapping Type
-		}.get(shape, fixture.depreciation_expense_account if shape in CONTROL_SHAPES else None)
 		failures.extend(_later_shape_failures(run, legs, fixture, field, moved))
-		if expect_leg and expect_leg not in accounts:
-			failures.append(f"{shape}: no {expect_leg} leg")
+		if fixture.fixed_asset_account not in accounts:
+			failures.append(f"{shape}: no {fixture.fixed_asset_account} booking leg")
+		# FA-735 (client 06/10): a control asset is never depreciated, not even for one day
+		# (a downward AVA books to the category's depreciation-expense account; that is not depreciation)
+		if frappe.db.sql("""select 1 from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ifnull(ds.journal_entry, '') != '' limit 1""", run.asset):
+			failures.append(f"{shape}: a depreciation row was posted")
 		if shape == "scrap" and not any(
 			leg.debit and leg.account not in (fixture.fixed_asset_account, fixture.accumulated_depreciation_account)
 			for leg in legs
@@ -2035,44 +2031,44 @@ def e37():
 
 
 
-@case("E-38", "Client 22/09 / R135", "new control assets get a one-day schedule; gradual legacy rows are refused")
+@case("E-38", "FA-735 (client 06/10)", "a control asset cannot depreciate; the register carries it at 0 as expensed")
 def e38():
 	ok, detail = e28()
 	assert ok, detail
 	from asset_enterprise.setup.verify_tc import _location
-	from asset_enterprise.depreciation import post_schedule_entries
-	from asset_enterprise.asset_values import recalculate_asset_values
 	company = _company()
 	date = getdate(nowdate())
 	asset = frappe.get_doc({"doctype": "Asset", "company": company,
-		"asset_name": "E38 One Day", "asset_category": "E28 Control Tools",
+		"asset_name": "E38 Expensed", "asset_category": "E28 Control Tools",
 		"item_code": "E28-CTRL-ITEM", "location": _location(), "asset_type": "Existing Asset",
 		"purchase_amount": 6000, "net_purchase_amount": 6000,
 		"purchase_date": date, "available_for_use_date": date, "calculate_depreciation": 1,
 		"finance_books": [{"depreciation_method": "Straight Line",
 			"total_number_of_depreciations": 36, "frequency_of_depreciation": 1,
-			"expected_value_after_useful_life": 500, "depreciation_start_date": date}]})
+			"depreciation_start_date": date}]})
+	try:
+		asset.insert(ignore_permissions=True)
+		return False, "a control asset with depreciation was accepted"
+	except frappe.ValidationError:
+		frappe.clear_last_message()
+	asset = frappe.get_doc({"doctype": "Asset", "company": company,
+		"asset_name": "E38 Expensed", "asset_category": "E28 Control Tools",
+		"item_code": "E28-CTRL-ITEM", "location": _location(), "asset_type": "Existing Asset",
+		"purchase_amount": 6000, "net_purchase_amount": 6000,
+		"purchase_date": date, "available_for_use_date": date, "calculate_depreciation": 0})
 	asset.insert(ignore_permissions=True)
 	asset.submit()
-	schedule = frappe.get_doc("Asset Depreciation Schedule", {
-		"asset": asset.name, "status": "Active", "docstatus": 1})
-	assert len(schedule.depreciation_schedule) == 1, f"rows={len(schedule.depreciation_schedule)}"
-	row = schedule.depreciation_schedule[0]
-	assert row.days_in_period == 1 and flt(row.depreciation_amount) == 6000, f"days={row.days_in_period}, amount={row.depreciation_amount}"
-	assert getdate(row.schedule_date) == date, f"date={row.schedule_date}, want={date}"
-	assert schedule.basis_remaining_days == 1 and flt(schedule.basis_daily_rate) == 6000, f"basis days={schedule.basis_remaining_days} rate={schedule.basis_daily_rate}"
-	# Legacy/imported gradual rows cannot silently post under the new rule.
-	frappe.db.set_value("Depreciation Schedule", row.name, "days_in_period", 30)
-	try:
-		post_schedule_entries(schedule.name, date=str(date))
-	except frappe.ValidationError as exc:
-		assert "one day" in str(exc)
-	else:
-		return False, "gradual legacy row posted"
-	frappe.db.set_value("Depreciation Schedule", row.name, "days_in_period", 1)
-	post_schedule_entries(schedule.name, date=str(date))
-	assert abs(recalculate_asset_values(asset.name, save=False)["net_book_value"]) < 0.01
-	return True, "36-period/500-residual input becomes one 6000 charge, one day, zero NBV; legacy gradual posting refused"
+	from erpnext.assets.report.fixed_asset_register import fixed_asset_register as far
+	result = far.execute(frappe._dict(company=company, status="In Location", filter_based_on="Purchase Date",
+		from_date=str(add_months(date, -1)), to_date=str(date), group_by="--Select a group--",
+		date_based_on="Purchase Date"))
+	row = next((r for r in result[1] if isinstance(r, dict) and r.get("asset_id") == asset.name), None)
+	far_ok = bool(row) and flt(row.get("asset_value")) == 0 and row.get("carried_as") == "Expensed on purchase"
+	from asset_enterprise.asset_enterprise.report.asset_tree.asset_tree import execute as tree
+	trow = next((r for r in tree(frappe._dict(company=company, include_standalone=1))[1] if r["asset"] == asset.name), None)
+	tree_ok = bool(trow) and flt(trow["net_book_value"]) == 0
+	return far_ok and tree_ok, (f"depreciating control asset refused; Fixed Asset Register "
+		f"{row and (row.get('asset_value'), row.get('carried_as'))}, Asset Tree NBV {trow and trow['net_book_value']}")
 
 
 
@@ -2093,8 +2089,17 @@ def e39():
 		"finance_books": [{"depreciation_method": "Straight Line",
 			"total_number_of_depreciations": 12, "frequency_of_depreciation": 1,
 			"depreciation_start_date": date}]})
-	asset.insert(ignore_permissions=True)
-	asset.submit()
+	# A legacy control asset (D-033, depreciated before FA-735 and left alone
+	# by the migrate): rebuild that state by lifting the category's
+	# non-depreciable flag while the asset is created.
+	frappe.db.set_value("Asset Category", "E28 Control Tools", "non_depreciable_category", 0)
+	frappe.clear_document_cache("Asset Category", "E28 Control Tools")
+	try:
+		asset.insert(ignore_permissions=True)
+		asset.submit()
+	finally:
+		frappe.db.set_value("Asset Category", "E28 Control Tools", "non_depreciable_category", 1)
+		frappe.clear_document_cache("Asset Category", "E28 Control Tools")
 
 	def rows(schedule):
 		return frappe.db.sql(

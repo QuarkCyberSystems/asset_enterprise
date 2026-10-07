@@ -66,12 +66,14 @@ def execute(filters=None):
 	if not filters.get("include_standalone"):
 		assets = [a for a in assets if a.name in in_tree]
 
+	expensed = set(frappe.get_all("Asset Category", {"is_control_category": 1}, pluck="name"))
+
 	def subtree(name):
 		"""(hav, accum, nbv) aggregated over the node and descendants."""
 		a = by_name[name]
 		hav = flt(a.historical_asset_value)
 		accum = flt(a.accumulated_depreciation_value)
-		nbv = flt(a.net_book_value)
+		nbv = 0.0 if a.asset_category in expensed else flt(a.net_book_value)
 		for kid in children.get(name, []):
 			kh, ka, kn = subtree(kid)
 			hav += kh
@@ -91,7 +93,8 @@ def execute(filters=None):
 				"asset_category": a.asset_category,
 				"historical_asset_value": flt(a.historical_asset_value),
 				"accumulated_depreciation_value": flt(a.accumulated_depreciation_value),
-				"net_book_value": flt(a.net_book_value),
+				# FA-735: a Control Category asset is expensed on purchase
+				"net_book_value": 0.0 if a.asset_category in expensed else flt(a.net_book_value),
 				"remaining_useful_life_months": flt(a.remaining_useful_life_months),
 				"subtree_hav": hav,
 				"subtree_nbv": nbv,

@@ -67,6 +67,7 @@ def sync_customizations():
 	_asset_status_property_setter()
 	from asset_enterprise.overrides.asset_category import restate_all_not_depreciating
 
+	_control_categories_never_depreciate()  # FA-735, before the restatement
 	restate_all_not_depreciating()  # FA-009, idempotent
 	_group_node_property_setter()
 	seed_masters()
@@ -329,6 +330,26 @@ def _seed_asset_item_uom():
 		print(f"  {item.name}: {item.stock_uom}")
 
 
+def _control_categories_never_depreciate():
+	"""FA-735 (client, 06/10/2026): every Control Category is a Non
+	Depreciable Category with no finance books. Idempotent. A category
+	whose submitted assets already depreciate (built under D-033) is
+	listed and left alone — its posted history stands."""
+	from asset_enterprise.depreciation import enterprise_enabled
+
+	if not enterprise_enabled() or not frappe.db.has_column("Asset Category", "is_control_category"):
+		return
+	for name in frappe.get_all("Asset Category", {"is_control_category": 1, "non_depreciable_category": 0}, pluck="name"):
+		depreciating = frappe.db.get_value(
+			"Asset", {"asset_category": name, "docstatus": 1, "calculate_depreciation": 1}, "name")
+		if depreciating:
+			print(f"asset_enterprise: Control Category {name} has depreciating assets (e.g. {depreciating}); left as is")
+			continue
+		frappe.db.set_value("Asset Category", name, "non_depreciable_category", 1, update_modified=False)
+		frappe.db.delete("Asset Finance Book", {"parenttype": "Asset Category", "parent": name})
+		print(f"asset_enterprise: Control Category {name} is now Non Depreciable, finance books cleared")
+
+
 def _warn_if_immutable_ledger_off():
 	"""Go-live prerequisite (audit D1): with Accounts Settings
 	`enable_immutable_ledger` OFF, core make_reverse_gl_entries flags
@@ -352,6 +373,14 @@ def _warn_if_immutable_ledger_off():
 
 
 def apply_property_setters():
+	# FA-735 (client, 06/10): a Control Category never depreciates — no
+	# finance books on its form, and its Non Depreciable tick is set for it
+	for field, prop, value, ptype in (
+		("finance_book_detail", "depends_on", "eval:!doc.is_control_category", "Data"),
+		("finance_books", "depends_on", "eval:!doc.is_control_category", "Data"),
+		("non_depreciable_category", "read_only_depends_on", "eval:doc.is_control_category", "Data"),
+	):
+		make_property_setter("Asset Category", field, prop, value, ptype, validate_fields_for_doctype=False)
 	# GAP-031: "Superseded" status — reschedule marks the old schedule
 	# Superseded instead of cancelling it (immutable ledger).
 	make_property_setter(
