@@ -170,6 +170,22 @@ def stale_bindings():
 	return [ref for ref in platform_stale_bindings() if ref.rsplit(".", 1)[-1] in mine]
 
 
+def _carry_control_assets_at_zero(columns, data):
+	"""FA-735 (client, 06/10): a Control Category asset is expensed on
+	purchase. The register lists it for control at its cost but carries it
+	at 0, saying so, so the register agrees with the balance sheet."""
+	control_categories = set(frappe.get_all("Asset Category", {"is_control_category": 1}, pluck="name"))
+	if not control_categories:
+		return columns, data
+	columns = list(columns) + [{"label": frappe._("Carried As"), "fieldname": "carried_as",
+		"fieldtype": "Data", "width": 160}]
+	for row in data:
+		if isinstance(row, dict) and row.get("asset_category") in control_categories:
+			row["asset_value"] = 0
+			row["carried_as"] = frappe._("Expensed on purchase")
+	return columns, data
+
+
 def verify_patch_targets():
 	"""Assert every override target still exists post bench-update, AND
 	that nothing anywhere still reaches the unwrapped original.
@@ -548,6 +564,7 @@ def apply_patches():
 		from asset_enterprise.asset_enterprise.report.replacement_chain.replacement_chain import add_register_chain
 
 		columns, data = add_register_chain(columns, data)
+		columns, data = _carry_control_assets_at_zero(columns, data)
 		return (columns, data, *result[2:])
 
 	fixed_asset_register._asset_enterprise_wrapper = True

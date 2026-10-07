@@ -240,7 +240,10 @@ def dimension_fixture(fieldname, company, doctype="Asset Movement Item"):
 # project_accounting's phase35 asserts the settlement source on the same
 # scenarios (PA -> AE is the permitted edge). Writes: the caller owns the
 # savepoint or the throwaway site.
-CONTROL_SHAPES = ("plain", "prior_fiscal_year", "transfer", "leave_project", "scrap")
+# FA-735 (client, 06/10/2026): a Control Category never depreciates, so the
+# one-day charge D-033 posted — and the prior-fiscal-year shape that split
+# it — no longer exist. Every shape is acquisition plus custody / disposal.
+CONTROL_SHAPES = ("plain", "transfer", "leave_project", "scrap")
 # D-053 "Gross" / "the invoiced price" and review r2 B-1 / M-1 / S-A: the
 # reversal, sale, return and invoice-difference shapes. Each run returns
 # the settleable source the ruling prescribes (`settleable`) and the
@@ -254,7 +257,7 @@ CONTROL_LATER_SHAPES = (
 	# charge and after the charge is reversed - nets the acquisition to 0;
 	# an invoice difference that arrives after the asset was scrapped
 	# (Case A.02) amends the acquisition to the invoiced price.
-	"purchase_return", "purchase_return_after_charge", "invoice_after_scrap",
+	"purchase_return", "invoice_after_scrap",
 	# the same Case A.02 with the invoice ABOVE the receipt (13,000 on
 	# 12,000: design-conformance R128 upward)
 	"invoice_up_after_scrap",
@@ -314,18 +317,6 @@ def control_asset(fixture, amount, available_for_use_date, dimensions=None, cost
 	asset.insert()
 	asset.submit()
 	return asset.name
-
-
-def _control_charge(asset_name, charge_date, posting_date):
-	from asset_enterprise.depreciation import enable_depreciation, post_schedule_entries
-
-	enable_depreciation(asset_name, total_number_of_depreciations=1, depreciation_start_date=charge_date)
-	schedule = frappe.db.get_value(
-		"Asset Depreciation Schedule", {"asset": asset_name, "status": "Active", "docstatus": 1}, "name")
-	posted = post_schedule_entries(schedule, date=str(posting_date))
-	if len(posted) != 1:
-		frappe.throw(f"control charge on {asset_name}: {len(posted)} row(s) posted, want 1")
-	return frappe.db.get_value("Depreciation Schedule", posted[0], "journal_entry")
 
 
 def _move(asset_name, company, on_date, **row):
@@ -444,20 +435,11 @@ def _later_shape(fixture, shape, acquired_under, moved_to, amount):
 		return frappe._dict(asset=asset, acquisition=pr.name, vouchers=[pr.name, pi.name, ava],
 			shape=shape, amount=amount, settleable=price, actual=price, acquired_under=acquired_under)
 
-	if shape in ("purchase_return", "purchase_return_after_charge"):
+	if shape == "purchase_return":
 		from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_return
 
 		asset, pr = control_purchase(fixture, amount, acquired_under)
 		vouchers = [pr.name]
-		if shape == "purchase_return_after_charge":
-			from qcs_platform.core.journal_entry import make_reverse_journal_entry
-
-			charge = _control_charge(asset, nowdate(), nowdate())
-			reversal = make_reverse_journal_entry(charge)
-			reversal.posting_date = nowdate()
-			reversal.flags.ignore_permissions = True
-			reversal.submit()
-			vouchers += [charge, reversal.name]
 		doc = frappe.get_doc("Asset", asset)
 		doc.flags.ignore_permissions = True
 		doc.cancel()
@@ -561,8 +543,6 @@ def control_shape(fixture, shape, acquired_under, moved_to=None, amount=12_000):
 		vouchers.append(_move(asset, company, add_days(day0, 2), leave_project=1))
 	if shape == "scrap":
 		vouchers.append(disposal.scrap_asset(asset, scrap_date=str(add_days(day0, 3)), scrapping_type="Damage"))
-	else:
-		vouchers.append(_control_charge(asset, charge_on, post_on))
 	return frappe._dict(asset=asset, acquisition=acquisition, vouchers=vouchers, shape=shape, amount=amount,
 		settleable=amount, actual=amount, acquired_under=acquired_under)
 

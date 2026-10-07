@@ -743,6 +743,10 @@ class EnterpriseAsset(Asset):
 		# refused. The form reads this and refuses Cancel up front.
 		if self.docstatus == 1 and self._enterprise():
 			self.set_onload("ae_cancel_refusal", self.cancel_refusal())
+		# FA-735 (client, 06/10): a Control Category asset is expensed on
+		# purchase and never depreciates; the form says so
+		if self._enterprise() and is_control_category(self.asset_category):
+			self.set_onload("ae_expensed", 1)
 
 	def cancel_refusal(self):
 		"""Why this asset may not be cancelled (GAP-027 / VR-031), or None."""

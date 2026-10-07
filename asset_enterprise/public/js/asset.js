@@ -201,6 +201,12 @@ frappe.ui.form.on("Asset", {
 
 	refresh(frm) {
 		guard_cancel(frm);
+		if (frm.doc.__onload && frm.doc.__onload.ae_expensed) {
+			frm.dashboard.set_headline(
+				__("Control Category: expensed on purchase and never depreciated — carried at 0 on the balance sheet; tracked here for control."),
+				"blue"
+			);
+		}
 		if (frm.doc.docstatus !== 1) return;
 
 		add_core_lifecycle_buttons(frm);
