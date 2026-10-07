@@ -243,9 +243,11 @@ def _run():
 		item.reload()
 		item.stock_uom = "Unit"
 		item.set("uoms", [{"uom": "Unit", "conversion_factor": 1}])
+		item.purchase_uom = item.sales_uom = None  # defaults follow the stock unit (CH-49)
 		unit_ok = _item_refused(item) is None
 		item.reload()
 		item.stock_uom = "Unit"
+		item.purchase_uom = item.sales_uom = None
 		item.set("uoms", [{"uom": "Unit", "conversion_factor": 1}, {"uom": "Nos", "conversion_factor": 1}])
 		alt_refused = _item_refused(item)  # Nos is allowed too, but as an alternate it is not
 		c = bool(hour_refused) and unit_ok and bool(alt_refused) and "Allowed For FA" in (hour_refused or "")
