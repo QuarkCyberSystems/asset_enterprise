@@ -1399,8 +1399,11 @@ def _control_shapes_keep_acquisition(company):
 		if fixture.fixed_asset_account not in accounts:
 			failures.append(f"{shape}: no {fixture.fixed_asset_account} booking leg")
 		# FA-735 (client 06/10): a control asset is never depreciated, not even for one day
-		if fixture.depreciation_expense_account in accounts:
-			failures.append(f"{shape}: a {fixture.depreciation_expense_account} leg was posted")
+		# (a downward AVA books to the category's depreciation-expense account; that is not depreciation)
+		if frappe.db.sql("""select 1 from `tabDepreciation Schedule` ds
+			join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			where ads.asset = %s and ifnull(ds.journal_entry, '') != '' limit 1""", run.asset):
+			failures.append(f"{shape}: a depreciation row was posted")
 		if shape == "scrap" and not any(
 			leg.debit and leg.account not in (fixture.fixed_asset_account, fixture.accumulated_depreciation_account)
 			for leg in legs
