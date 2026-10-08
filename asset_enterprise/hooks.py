@@ -58,6 +58,8 @@ doctype_js = {
 	"Purchase Invoice": "public/js/purchase_invoice.js",
 	# FA-013: an asset item's UOM pickers offer the units Allowed For FA
 	"Item": "public/js/item.js",
+	# TSK-2026-00735: a Control Category's account pickers offer Expense accounts
+	"Asset Category": "public/js/asset_category.js",
 	# Reversal AVAs must announce themselves (client, 19/08): banner on
 	# the reversal and on the reversed original.
 	"Asset Value Adjustment": "public/js/asset_value_adjustment.js",
