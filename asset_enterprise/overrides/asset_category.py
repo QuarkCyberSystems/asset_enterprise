@@ -65,6 +65,8 @@ class EnterpriseAssetCategory(AssetCategory):
 			return
 		self.non_depreciable_category = 1
 		self.set("finance_books", [])
+		# expensed on purchase: there is no construction phase to capitalise
+		self.enable_cwip_accounting = 0
 
 	def on_update(self):
 		if hasattr(super(), "on_update"):
