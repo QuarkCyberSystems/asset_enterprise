@@ -355,6 +355,13 @@ class AssetValueBatch:
 		accounts = self.category_accounts(asset)
 		fa = accounts.get("fixed_asset_account")
 		accum = accounts.get("accumulated_depreciation_account")
+		from asset_enterprise.overrides.asset_category import is_control_category
+
+		if fa and fa == accum and is_control_category(asset.asset_category):
+			# TSK-2026-00735 (08/10): a Control Category never depreciates
+			# and may carry one expense account in every column; there is no
+			# accumulated depreciation to keep apart from the cost
+			accum = None
 		if fa and fa == accum:
 			frappe.throw("Fixed Asset and Accumulated Depreciation accounts must be distinct "
 				"to derive asset balances from GL. Review the asset category accounts.")

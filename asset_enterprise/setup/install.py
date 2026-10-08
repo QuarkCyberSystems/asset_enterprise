@@ -379,6 +379,8 @@ def apply_property_setters():
 		("finance_book_detail", "depends_on", "eval:!doc.is_control_category", "Data"),
 		("finance_books", "depends_on", "eval:!doc.is_control_category", "Data"),
 		("non_depreciable_category", "read_only_depends_on", "eval:doc.is_control_category", "Data"),
+		# expensed on purchase: no CWIP (TSK-2026-00735, 08/10)
+		("enable_cwip_accounting", "depends_on", "eval:!doc.is_control_category", "Data"),
 	):
 		make_property_setter("Asset Category", field, prop, value, ptype, validate_fields_for_doctype=False)
 	# GAP-031: "Superseded" status — reschedule marks the old schedule

@@ -396,6 +396,19 @@ class EnterpriseAsset(Asset):
 			seen.add(parent)
 			parent = frappe.db.get_value("Asset", parent, "parent_asset")
 
+	def validate_make_gl_entry(self):
+		"""Client ticket TSK-2026-00735, reopened 08/10: a Control Category
+		asset is expensed by its receipt, so there is nothing to move at
+		submit. Core still moves cost from the CWIP account to the Fixed
+		Asset account whenever the receipt posted to the category's CWIP
+		account, CWIP accounting on or off; on a control category whose
+		columns all hold the same expense account that is Dr X / Cr X, which
+		nets to nothing and fails with "Incorrect number of General Ledger
+		Entries" (ACC-ASS-2026-00327)."""
+		if is_control_category(self.asset_category):
+			return False
+		return super().validate_make_gl_entry()
+
 	def on_submit(self):
 		super().on_submit()
 		# §3.2: core's booking GL is absorbed by the TCC like every other

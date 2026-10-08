@@ -2401,6 +2401,69 @@ def e41():
 	return not problems, "; ".join(problems or notes)
 
 
+@case("E-42", "FA-735 (client 08/10, ACC-ASS-2026-00327)", "a control asset received with one expense account in every category column submits, scraps and sells")
+def e42():
+	"""Ruba's category: the same expense account in all four columns, the
+	CWIP column included, and that account is also the company's disposal
+	account. Core moved cost from CWIP to Fixed Asset at asset submit
+	whenever the receipt had posted to the CWIP account, CWIP accounting on
+	or off: Dr X / Cr X, which nets to nothing and fails with "Incorrect
+	number of General Ledger Entries". A control asset is expensed by its
+	receipt, so the submit posts nothing."""
+	from asset_enterprise import disposal
+	from asset_enterprise.setup.test_fixtures import _customer, _ensure_location, _expense_account, _supplier
+
+	company = _company()
+	cc = frappe.get_cached_value("Company", company, "cost_center")
+	account = _expense_account(company, "E42 One Account")
+	frappe.db.set_value("Company", company, "disposal_account", account)
+	category = frappe.get_doc({"doctype": "Asset Category",
+		"asset_category_name": f"E42 One Account {frappe.generate_hash(length=4)}",
+		"is_control_category": 1, "enable_cwip_accounting": 1,
+		"accounts": [{"company_name": company, "fixed_asset_account": account,
+			"accumulated_depreciation_account": account, "depreciation_expense_account": account,
+			"capital_work_in_progress_account": account}]}).insert(ignore_permissions=True)
+	item = frappe.get_doc({"doctype": "Item", "item_code": f"{category.name} Item",
+		"item_group": frappe.db.get_value("Item Group", {"is_group": 0}, "name"), "stock_uom": "Nos",
+		"is_stock_item": 0, "is_fixed_asset": 1, "asset_category": category.name, "auto_create_assets": 1,
+		"asset_naming_series": "ACC-ASS-.YYYY.-"}).insert(ignore_permissions=True)
+	day0 = add_days(getdate(nowdate()), -20)
+
+	def received(rate):
+		pr = frappe.get_doc({"doctype": "Purchase Receipt", "company": company, "supplier": _supplier(),
+			"posting_date": day0, "set_posting_time": 1,
+			"items": [{"item_code": item.name, "qty": 1, "rate": rate, "uom": "Nos",
+				"asset_location": _ensure_location(), "cost_center": cc}]})
+		pr.insert(ignore_permissions=True)
+		pr.submit()
+		asset = frappe.get_doc("Asset", frappe.db.get_value("Asset", {"purchase_receipt": pr.name}, "name"))
+		if asset.docstatus == 0:
+			asset.available_for_use_date = day0
+			asset.save()
+			asset.submit()
+		return asset.name
+
+	def posted(voucher):
+		return frappe.db.count("GL Entry", {"voucher_no": voucher, "is_cancelled": 0})
+
+	scrapped = received(2000)
+	asset_rows = posted(scrapped)
+	scrap = disposal.scrap_asset(scrapped, scrap_date=str(add_days(getdate(nowdate()), -2)), scrapping_type="Damage")
+	sold = received(3000)
+	invoice = frappe.get_doc({"doctype": "Sales Invoice", "company": company, "customer": _customer(),
+		"posting_date": nowdate(),
+		"items": [{"item_code": item.name, "qty": 1, "rate": 500, "uom": "Nos", "is_fixed_asset": 1,
+			"asset": sold, "cost_center": cc,
+			"income_account": frappe.get_cached_value("Company", company, "default_income_account")}]})
+	invoice.insert(ignore_permissions=True)
+	invoice.submit()
+	ok = (not cint(category.enable_cwip_accounting) and asset_rows == 0 and posted(scrap) > 0
+		and posted(invoice.name) > 0 and frappe.db.get_value("Asset", sold, "status") == "Sold")
+	return ok, (f"CWIP cleared on save={not cint(category.enable_cwip_accounting)}; {scrapped} submitted, "
+		f"{asset_rows} GL row(s) at submit (want 0); scrap {scrap} {posted(scrap)} row(s); "
+		f"sale {invoice.name} {posted(invoice.name)} row(s), asset {frappe.db.get_value('Asset', sold, 'status')}")
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(
