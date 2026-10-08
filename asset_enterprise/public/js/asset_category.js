@@ -5,7 +5,8 @@
 // account could be chosen. Wrap core's query rather than copy it: an
 // ordinary category keeps core's filters, a control category is offered the
 // company's Expense accounts. The server rule is validate_account_types in
-// overrides/asset_category.py.
+// overrides/asset_category.py. Core sets its queries in onload, so this
+// runs in onload too, after core's (app scripts load after the doctype's).
 const AE_CONTROL_ACCOUNTS = [
 	"fixed_asset_account",
 	"accumulated_depreciation_account",
@@ -14,7 +15,7 @@ const AE_CONTROL_ACCOUNTS = [
 ];
 
 frappe.ui.form.on("Asset Category", {
-	setup(frm) {
+	onload(frm) {
 		const grid = frm.fields_dict.accounts.grid;
 		AE_CONTROL_ACCOUNTS.forEach((fieldname) => {
 			const core_query = grid.get_field(fieldname).get_query;
