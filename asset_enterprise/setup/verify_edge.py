@@ -2464,6 +2464,46 @@ def e42():
 		f"sale {invoice.name} {posted(invoice.name)} row(s), asset {frappe.db.get_value('Asset', sold, 'status')}")
 
 
+@case("E-43", "FA-017 (client 12/10, ACC-ASS-2026-00335)", "the asset form says where depreciation goes now, next to the project it was acquired under")
+def e43():
+	"""The asset's own project field is its ACQUISITION project and is never
+	rewritten; after a handover that leaves the project the form said only
+	"Project: PA-PRJ-...", and the client took the asset to be on it.
+	current_attribution reads the movement trail: nothing before a move;
+	after Leave Project + a target cost centre the project reads none
+	(acquired under the original) from the movement date and the centre
+	from the next day, and the acquisition fields are unchanged."""
+	from asset_enterprise.depreciation import current_attribution, project_dimension_fields
+	from asset_enterprise.setup.test_fixtures import _move, dimension_fixture
+
+	company = _company()
+	projects = project_dimension_fields()
+	if not projects:
+		return True, "no project dimension registered on this site (not exercised)"
+	field = projects[0]
+	project = dimension_fixture(field, company)
+	asset = _asset(company, gross=36_000, months=36)
+	frappe.db.set_value("Asset", asset, field, project, update_modified=False)
+	before = current_attribution(asset)
+	centres = frappe.get_all("Cost Center", filters={"company": company, "is_group": 0}, pluck="name")
+	if len(centres) < 2:
+		return True, "one cost centre on this site (not exercised)"
+	acquired_cc, target = centres[0], centres[1]
+	frappe.db.set_value("Asset", asset, "cost_center", acquired_cc, update_modified=False)
+	day = getdate(nowdate())
+	move = _move(asset, company, day, leave_project=1, target_cost_center=target)
+	on_day = current_attribution(asset, day)
+	next_day = current_attribution(asset, add_days(day, 1))
+	row = next((d for d in (next_day or {}).get("dimensions", []) if d["acquired"] == project), None)
+	kept = frappe.db.get_value("Asset", asset, field) == project
+	ok = (before is None and bool(row) and row["current"] is None and kept
+		and (on_day or {}).get("cost_center") != target and (next_day or {}).get("cost_center") == target)
+	return ok, (f"before any move: {before}; after {move} (Leave Project, cost centre -> {target}): "
+		f"project {row and (row['current'], row['acquired'])} (want (None, {project})), "
+		f"centre on the day {(on_day or {}).get('cost_center')} / next day {(next_day or {}).get('cost_center')}; "
+		f"asset's own project field unchanged={kept}")
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(

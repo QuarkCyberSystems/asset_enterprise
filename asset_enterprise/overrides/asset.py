@@ -760,6 +760,12 @@ class EnterpriseAsset(Asset):
 		# purchase and never depreciates; the form says so
 		if self._enterprise() and is_control_category(self.asset_category):
 			self.set_onload("ae_expensed", 1)
+		# FA-017 (client, 12/10): the asset's Project field is the project it
+		# was ACQUIRED under; the form also says where it sits now
+		elif self.docstatus == 1 and self._enterprise():
+			from asset_enterprise.depreciation import current_attribution
+
+			self.set_onload("ae_attribution", current_attribution(self.name))
 
 	def cancel_refusal(self):
 		"""Why this asset may not be cancelled (GAP-027 / VR-031), or None."""

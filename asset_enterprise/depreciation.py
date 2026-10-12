@@ -2113,6 +2113,45 @@ def attribution_timeline(asset_name, fallback=None, pending=None):
 	return timeline
 
 
+def current_attribution(asset_name, on_date=None):
+	"""Where the asset's depreciation expense is attributed on `on_date`
+	(default today), next to what it was acquired under — for the asset
+	form (client ticket FA-017, TSK-2026-00907, 12/10/2026).
+
+	The asset's own dimension fields are its ACQUISITION dimensions and are
+	never rewritten (`gl_attribution.acquisition_dimensions`); after a
+	handover the form still read "Project: PA-PRJ-..." and the client took
+	the asset to be on the project. The movement trail says where it is
+	now. None while nothing has moved."""
+	from asset_enterprise.gl_attribution import acquisition_cost_center, acquisition_dimensions
+
+	timeline = attribution_timeline(asset_name)
+	if len(timeline) < 2:
+		return None
+	day = getdate(on_date or nowdate())
+	since, cost_center, dims = timeline[0]
+	for start, cc, values in timeline[1:]:
+		if start and getdate(start) > day:
+			break
+		since, cost_center, dims = start, cc, values
+	meta = frappe.get_meta("Asset")
+	acquired = acquisition_dimensions(asset_name)
+	fields = [f for f in movement_dimension_fields() if dims.get(f) or acquired.get(f)]
+
+	def label(field):
+		return _(meta.get_label(field)) if meta.has_field(field) else frappe.unscrub(field)
+
+	return {
+		"since": str(since) if since else None,
+		"cost_center": cost_center,
+		"acquired_cost_center": acquisition_cost_center(frappe.get_doc("Asset", asset_name)),
+		"dimensions": [
+			{"label": label(f), "current": dims.get(f), "acquired": acquired.get(f)}
+			for f in fields
+		],
+	}
+
+
 def _asset_dimensions(asset_name, fields):
 	"""The asset's own dimension values — the timeline's opening state.
 
