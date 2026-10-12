@@ -198,6 +198,9 @@ def ensure_enterprise_test_defaults():
 		("pya_expense_account", "Expense"),
 		("asset_invoice_difference_account", "Expense"),
 		("post_disposal_invoice_diff_account", "Expense"),
+		# capitalized materials pass through it (TSK-2026-00902); a site
+		# without one refuses the capitalization
+		("capitalization_clearing_account", "Liability"),
 	):
 		field = "default_" + field
 		if not frappe.db.get_value("Company", company, field):

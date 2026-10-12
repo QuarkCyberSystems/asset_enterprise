@@ -491,12 +491,15 @@ def consume_stock_items(cap_doc):
 
 	So this follows Asset Repair (GAP-033), whose stock IS routed:
 
-	    1. Material Issue Stock Entry  -> DR expense / CR stock
-	    2. Capitalization              -> DR Fixed Asset / CR that same
-	                                      expense account
+	    1. Material Issue Stock Entry  -> DR Capitalization Clearing / CR stock
+	    2. Capitalization              -> DR Fixed Asset / CR Capitalization Clearing
 
-	The expense account nets to zero, exactly as the service path does
-	under §12.3. Returns (stock_entry, journal_entry).
+	The clearing account (Asset Category, else Company default) is set on
+	every issue row and credited by the journal, so it nets to zero per
+	capitalization (TSK-2026-00902, 12/10: the issue used to take the
+	row's default expense account and the journal read it back, but a
+	Standard Cost issue posts to COGS whatever the row says, so the two
+	legs never met). Returns (stock_entry, journal_entry).
 	"""
 	from asset_enterprise import tcc
 
@@ -511,6 +514,8 @@ def consume_stock_items(cap_doc):
 	target = frappe.get_doc("Asset", cap_doc.target_asset)
 	company = target.company
 	posting_date = getdate(cap_doc.posting_date or nowdate())
+	# resolved before anything posts: a missing account refuses the submit
+	clearing = get_enterprise_account("capitalization_clearing_account", company, target.asset_category)
 
 	se = frappe.get_doc(
 		{
@@ -527,6 +532,7 @@ def consume_stock_items(cap_doc):
 					"s_warehouse": r.warehouse,
 					"basic_rate": flt(r.get("valuation_rate")) or None,
 					"cost_center": r.get("cost_center") or target.get("cost_center"),
+					"expense_account": clearing,
 				}
 				for r in rows
 			],
@@ -536,35 +542,18 @@ def consume_stock_items(cap_doc):
 	se.insert()
 	se.submit()
 
-	# Read the accounts back off the issue, the way Asset Repair does —
-	# the Stock Entry decides them, and crediting anything else would
-	# leave the expense stranded.
-	default_expense = frappe.get_cached_value("Company", company, "default_expense_account")
-	legs, total = [], 0.0
-	for row in frappe.get_all(
-		"Stock Entry Detail",
-		filters={"parent": se.name},
-		fields=["expense_account", "amount"],
-	):
-		amount = fa_module_round(flt(row.amount), company)
-		if not amount:
-			continue
-		account = row.expense_account or default_expense
-		if not account:
-			frappe.throw(
-				_(
-					"Material Issue {0} has no expense account and the company has no "
-					"default — set one before capitalizing materials."
-				).format(se.name)
-			)
-		legs.append(
-			{
-				"account": account,
-				"credit_in_account_currency": amount,
-				"cost_center": target.get("cost_center"),
-			}
-		)
-		total = flt(total + amount)
+	# The amounts come off the issue (its valuation); the account is the
+	# clearing account set on every row above, whatever the issue posted.
+	total = 0.0
+	for row in frappe.get_all("Stock Entry Detail", filters={"parent": se.name}, fields=["amount"]):
+		total = flt(total + fa_module_round(flt(row.amount), company))
+	legs = [
+		{
+			"account": clearing,
+			"credit_in_account_currency": total,
+			"cost_center": target.get("cost_center"),
+		}
+	]
 
 	if not total:
 		return se.name, None
@@ -1044,7 +1033,7 @@ def _return_consumed_materials(source_cap, reversal_doc, posting_date):
 	rows = frappe.get_all(
 		"Stock Entry Detail",
 		filters={"parent": issue},
-		fields=["item_code", "qty", "s_warehouse", "basic_rate", "cost_center"],
+		fields=["item_code", "qty", "s_warehouse", "basic_rate", "cost_center", "expense_account"],
 	)
 	rows = [r for r in rows if flt(r.qty)]
 	if not rows:
@@ -1064,6 +1053,9 @@ def _return_consumed_materials(source_cap, reversal_doc, posting_date):
 					"t_warehouse": r.s_warehouse,
 					"basic_rate": flt(r.basic_rate) or None,
 					"cost_center": r.cost_center,
+					# the mirrored journal debits the account the issue
+					# credited the asset from; the receipt credits it back
+					"expense_account": r.expense_account,
 				}
 				for r in rows
 			],

@@ -2200,6 +2200,30 @@ def _run():
 		)
 		ok = ok and t30_ok
 
+		# TSK-2026-00902 (client, 12/10): the issue debits the Capitalization
+		# Clearing account and the journal credits the same one. The issue
+		# used to take the row's default expense account and the journal
+		# read it back; a Standard Cost issue posts COGS whatever the row
+		# says, so the two legs never met.
+		from asset_enterprise.accounts import get_enterprise_account
+
+		clearing = get_enterprise_account("capitalization_clearing_account", company, t30_target.asset_category)
+		cap_je = frappe.db.get_value("Journal Entry",
+			{"user_remark": ("like", f"%{cap30.name}%"), "docstatus": 1}, "name")
+
+		def on_clearing(vouchers):
+			return flt(frappe.db.sql("""select sum(debit - credit) from `tabGL Entry`
+				where is_cancelled = 0 and account = %s and voucher_no in %s""",
+				(clearing, tuple(vouchers)))[0][0])
+
+		issue_dr = flt(frappe.db.sql("""select sum(debit) from `tabGL Entry` where is_cancelled = 0
+			and account = %s and voucher_no = %s""", (clearing, issue))[0][0])
+		t30f_ok = bool(cap_je) and abs(issue_dr - 2_500) < 0.01 and abs(on_clearing([issue, cap_je])) < 0.01
+		print(f"t30f   issue {issue} debits clearing {clearing} {issue_dr:,.2f} (want 2,500.00); "
+		      f"journal {cap_je} credits it; clearing nets {on_clearing([issue, cap_je]):,.2f} (want 0) "
+		      f"{'OK' if t30f_ok else 'FAIL'}")
+		ok = ok and t30f_ok
+
 		# reversing must put the materials BACK, not just the money
 		cap30.reload()
 		cap30.cancel()
@@ -2220,6 +2244,50 @@ def _run():
 			f"{'OK' if t30b_ok else 'FAIL'}"
 		)
 		ok = ok and t30b_ok
+		mirror = frappe.db.get_value("Journal Entry",
+			{"user_remark": ("like", f"%Reversal of Capitalized Maintenance {cap30.name}%"), "docstatus": 1}, "name")
+		t30g_ok = bool(back and mirror) and abs(on_clearing([issue, cap_je, back, mirror])) < 0.01
+		print(f"t30g   after the reversal (receipt {back}, mirror {mirror}) clearing nets "
+		      f"{on_clearing([issue, cap_je, back or '-', mirror or '-']):,.2f} (want 0) {'OK' if t30g_ok else 'FAIL'}")
+		ok = ok and t30g_ok
+
+		# no clearing account on the category or the company: refused before
+		# anything posts (no issue, no journal)
+		saved_default = frappe.db.get_value("Company", company, "default_capitalization_clearing_account")
+		saved_rows = frappe.db.sql("""select name, capitalization_clearing_account from `tabAsset Category Account`
+			where parent = %s and company_name = %s""", (t30_target.asset_category, company), as_dict=True)
+		frappe.db.set_value("Company", company, "default_capitalization_clearing_account", None)
+		for r in saved_rows:
+			frappe.db.set_value("Asset Category Account", r.name, "capitalization_clearing_account", None)
+		try:
+			bare = frappe.get_doc({
+				"doctype": "Asset Capitalization", "company": company,
+				"transaction_type": "Capitalized Maintenance", "transaction_sub_type": "Standard Maintenance",
+				"target_asset": t30_target.name, "posting_date": nowdate(), "set_posting_time": 1,
+				"entry_type": "Capitalization",
+				"stock_items": [{"item_code": stock_item, "stock_qty": 1, "warehouse": wh,
+				                 "valuation_rate": 100, "amount": 100}]})
+			bare.flags.ignore_permissions = True
+			bare.flags.ignore_mandatory = True
+			bare.insert()
+			frappe.db.savepoint("t30h")
+			refused = ""
+			try:
+				bare.submit()
+			except frappe.ValidationError as e:
+				frappe.db.rollback(save_point="t30h")
+				frappe.clear_last_message()
+				refused = frappe.utils.strip_html(str(e))
+			posted = frappe.db.exists("Stock Entry", {"asset_capitalization": bare.name, "docstatus": 1})
+			t30h_ok = "Capitalization Clearing" in refused and not posted
+			print(f"t30h   no clearing account anywhere: submit refused ({refused[:80]}), nothing issued "
+			      f"{'OK' if t30h_ok else 'FAIL'}")
+			ok = ok and t30h_ok
+		finally:
+			frappe.db.set_value("Company", company, "default_capitalization_clearing_account", saved_default)
+			for r in saved_rows:
+				frappe.db.set_value("Asset Category Account", r.name, "capitalization_clearing_account",
+					r.capitalization_clearing_account)
 
 		# T30c (client, 25/08: "we are not supposed to even have that pop
 		# up"). The Material Issue a capitalization raises is an artefact
