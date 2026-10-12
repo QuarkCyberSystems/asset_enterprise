@@ -207,6 +207,7 @@ frappe.ui.form.on("Asset", {
 				"blue"
 			);
 		}
+		show_current_attribution(frm);
 		if (frm.doc.docstatus !== 1) return;
 
 		add_core_lifecycle_buttons(frm);
@@ -713,3 +714,27 @@ frappe.ui.form.on("Asset", {
 	available_for_use_date: ae_default_first_posting,
 	finance_books: ae_default_first_posting,
 });
+
+// FA-017 (client, 12/10): the asset's Project field is the project it was
+// acquired under and never changes; after a handover the form also says
+// where the asset's depreciation goes now, read from its movements.
+function show_current_attribution(frm) {
+	const a = frm.doc.__onload && frm.doc.__onload.ae_attribution;
+	if (!a) return;
+	const parts = [];
+	(a.dimensions || []).forEach((d) => {
+		if ((d.current || null) !== (d.acquired || null)) {
+			parts.push(__("{0}: {1} (acquired under {2})", [
+				d.label, d.current || __("none"), d.acquired || __("none")]));
+		}
+	});
+	if (a.cost_center && a.cost_center !== a.acquired_cost_center) {
+		parts.push(__("Cost Center: {0}", [a.cost_center]));
+	}
+	if (!parts.length) return;
+	const since = a.since ? __(" since {0}", [frappe.datetime.str_to_user(a.since)]) : "";
+	frm.dashboard.add_comment(
+		__("Currently{0}: {1}. Depreciation posts here; the cost stays where it was acquired.",
+			[since, parts.map((p) => frappe.utils.escape_html(p)).join(" · ")]),
+		"blue", true);
+}
