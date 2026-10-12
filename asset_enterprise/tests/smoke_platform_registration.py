@@ -15,7 +15,7 @@ import frappe
 from frappe.utils import add_months, flt, get_last_day, nowdate
 
 from asset_enterprise.platform import OWN, AssetLedgerAdapter, get_registration
-from asset_enterprise.setup.test_fixtures import service_expense_account
+from asset_enterprise.setup.test_fixtures import ensure_enterprise_test_defaults, service_expense_account
 from asset_enterprise.setup import verify_tc as tc
 
 
@@ -27,6 +27,7 @@ class Fixtures:
 	def __init__(self):
 		tc._ensure_fiscal_years(2025, 2032)
 		self.company = tc._company()
+		ensure_enterprise_test_defaults()
 		self.cat = tc._category(self.company, "TC IT Equipment", suspense=tc._plain(self.company, "Liability"))
 		self.item = tc._stock_item()
 		self.warehouse = tc._warehouse(self.company)
