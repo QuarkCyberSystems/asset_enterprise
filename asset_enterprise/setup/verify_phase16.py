@@ -179,6 +179,92 @@ def _run():
 		print(f"fa011  value changes entered out of date order re-price as if in date order (00074): {'OK' if c else 'FAIL'} (got {got}, want {want})")
 		ok = ok and c
 
+		# ============ FA-014: an event inside a posted period catches up ====
+		# ACC-ASS-2026-00333 (badiav16): 2,000, 36 months from 01/01, January-
+		# March posted; capitalized maintenance 2,500 dated 15/03. §4.11: the
+		# 2,500 counts from 15/03, so April carries April at the new rate plus
+		# the 15-31 March difference (client: 128.06 + 41.54 = 169.60).
+		def capitalize(target, value, when):
+			src = make_test_asset(company, gross=value, submit=True).name
+			frappe.db.set_value("Asset", src, {"purchase_date": add_days(when, -30),
+				"available_for_use_date": add_days(when, -30)}, update_modified=False)
+			cap = frappe.get_doc({"doctype": "Asset Capitalization", "transaction_type": "Capitalized Maintenance",
+				"transaction_sub_type": "Standard Maintenance", "target_asset": target, "company": company,
+				"posting_date": when, "posting_time": "10:00:00", "set_posting_time": 1,
+				"entry_type": "Capitalization", "asset_items": [{"asset": src}]})
+			cap.flags.ignore_permissions = True
+			cap.flags.ignore_mandatory = True
+			cap.insert()
+			cap.submit()
+
+		def full_rows(asset):
+			return frappe.db.sql(
+				"""select schedule_date, days_in_period, daily_rate, depreciation_amount, journal_entry,
+				          catch_up_amount, catch_up_from, catch_up_to, rate_breakdown
+				   from `tabDepreciation Schedule` where parent = %s order by idx""",
+				_active(asset), as_dict=True)
+
+		tool = make_test_asset(company, gross=2_000, submit=True).name
+		frappe.db.set_value("Asset", tool, {"purchase_date": d(1, 1), "available_for_use_date": d(1, 1)},
+			update_modified=False)
+		sched = enable_depreciation(tool, 36, 1, depreciation_start_date=d(1, 31), available_for_use_date=d(1, 1))
+		post_schedule_entries(sched, date=d(3, 31))
+		before = full_rows(tool)
+		old_daily = flt(before[0].daily_rate)
+		posted_jan_feb = flt(before[0].depreciation_amount) + flt(before[1].depreciation_amount)
+		horizon = getdate(before[-1].schedule_date)
+		capitalize(tool, 2_500, d(3, 15))
+		after = full_rows(tool)
+		april = next(r for r in after if getdate(r.schedule_date) == get_last_day(d(4, 1)))
+		new_daily = (4_500 - posted_jan_feb - 14 * old_daily) / ((horizon - d(3, 15)).days + 1)
+		want_catch = round(17 * new_daily - 17 * old_daily, 2)
+		want_april = round(30 * new_daily + want_catch, 2)
+		posted_kept = [flt(r.depreciation_amount) for r in after if r.journal_entry] == [
+			flt(r.depreciation_amount) for r in before if r.journal_entry]
+		total = round(sum(flt(r.depreciation_amount) for r in after), 2)
+		c = (abs(flt(april.catch_up_amount) - want_catch) <= 0.05 and abs(flt(april.depreciation_amount) - want_april) <= 0.05
+			and getdate(april.catch_up_from) == d(3, 15) and getdate(april.catch_up_to) == d(3, 31)
+			and posted_kept and abs(total - 4_500) <= 0.05 and "catch-up" in (april.rate_breakdown or ""))
+		print(f"fa014  a capitalization dated inside a posted month catches up on the next row (00333): "
+		      f"{'OK' if c else 'FAIL'} (April {flt(april.depreciation_amount):,.2f} = catch-up "
+		      f"{flt(april.catch_up_amount):,.2f} {april.catch_up_from}..{april.catch_up_to}; want {want_april:,.2f} / "
+		      f"{want_catch:,.2f}; posted rows kept={posted_kept}; life total {total:,.2f} (want 4,500.00); "
+		      f"breakdown {april.rate_breakdown!r})")
+		ok = ok and c
+
+		post_schedule_entries(_active(tool), date=d(4, 30))
+		je = frappe.db.get_value("Depreciation Schedule", {"parent": _active(tool), "schedule_date": get_last_day(d(4, 1))},
+			"journal_entry")
+		debits = frappe.db.sql("""select sum(debit) from `tabGL Entry` where voucher_no = %s and is_cancelled = 0
+			and debit > 0""", je)[0][0] if je else 0
+		c = bool(je) and abs(flt(debits) - flt(april.depreciation_amount)) <= 0.01
+		print(f"fa014  April posts its catch-up with it, one entry {je}: debits {flt(debits):,.2f} "
+		      f"(want {flt(april.depreciation_amount):,.2f}) {'OK' if c else 'FAIL'}")
+		ok = ok and c
+
+		# the catch-up's days sit in the PRIOR fiscal year: they go to PYA
+		from asset_enterprise.accounts import get_enterprise_account
+
+		py = d(1, 1).year - 1
+		pd = lambda m, day: getdate(f"{py}-{m:02d}-{day:02d}")
+		prior = make_test_asset(company, gross=12_000, submit=True).name
+		frappe.db.set_value("Asset", prior, {"purchase_date": pd(10, 1), "available_for_use_date": pd(10, 1)},
+			update_modified=False)
+		psched = enable_depreciation(prior, 12, 1, depreciation_start_date=pd(10, 31), available_for_use_date=pd(10, 1))
+		post_schedule_entries(psched, date=pd(12, 31))
+		capitalize(prior, 6_000, pd(12, 15))
+		jan = next(r for r in full_rows(prior) if getdate(r.schedule_date) == d(1, 31))
+		post_schedule_entries(_active(prior), date=d(1, 31))
+		jan_je = frappe.db.get_value("Depreciation Schedule", {"parent": _active(prior), "schedule_date": d(1, 31)},
+			"journal_entry")
+		pya_acc = get_enterprise_account("pya_expense_account", company, frappe.db.get_value("Asset", prior, "asset_category"))
+		pya_debit = flt(frappe.db.sql("""select sum(debit) from `tabGL Entry` where voucher_no = %s and is_cancelled = 0
+			and account = %s""", (jan_je, pya_acc))[0][0]) if jan_je else 0
+		c = flt(jan.catch_up_amount) > 0 and abs(pya_debit - flt(jan.catch_up_amount)) <= 0.01
+		print(f"fa014  a catch-up for prior-fiscal-year days posts to Prior Year Adjustment: "
+		      f"{'OK' if c else 'FAIL'} (catch-up {flt(jan.catch_up_amount):,.2f}, PYA debit {pya_debit:,.2f} on {jan_je})")
+		ok = ok and c
+
 		# ============ FA-012: cancel refused before Cancel All ============
 		posted = make_test_asset(company, gross=24_000, submit=True).name
 		schedule = enable_depreciation(

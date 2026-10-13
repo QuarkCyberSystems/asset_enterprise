@@ -34,7 +34,10 @@ class EnterpriseSchedule(AssetDepreciationSchedule):
 
 		for row in self.get("depreciation_schedule") or []:
 			if row.meta.has_field("rate_breakdown"):
-				row.rate_breakdown = rate_breakdown_text(row.get("rate_segments"))
+				row.rate_breakdown = rate_breakdown_text(
+					row.get("rate_segments"),
+					catch_up=(row.get("catch_up_amount"), row.get("catch_up_from"), row.get("catch_up_to")),
+				)
 
 	def before_cancel(self):
 		# GAP-031: a schedule is never cancelled — it is superseded. The
