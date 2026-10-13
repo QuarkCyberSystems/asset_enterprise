@@ -793,6 +793,32 @@ CUSTOM_FIELDS = {
 			"description": "The daily rate for each stretch of days in this period, when an event "
 			"changed the rate mid-period. Blank when the whole period was at one rate.",
 		},
+		# FA-014 (client, 12/10): a value event dated inside a posted period
+		# re-prices from its own date; what the posted days were under-charged
+		# rides on the next row as a dated catch-up (§4.11)
+		{
+			"fieldname": "catch_up_amount",
+			"fieldtype": "Currency",
+			"label": "Catch-up Amount",
+			"read_only": 1,
+			"insert_after": "rate_breakdown",
+			"description": "Included in this row's depreciation: the difference owed for days in "
+			"already-posted periods, from a value change dated inside them.",
+		},
+		{
+			"fieldname": "catch_up_from",
+			"fieldtype": "Date",
+			"label": "Catch-up From",
+			"read_only": 1,
+			"insert_after": "catch_up_amount",
+		},
+		{
+			"fieldname": "catch_up_to",
+			"fieldtype": "Date",
+			"label": "Catch-up To",
+			"read_only": 1,
+			"insert_after": "catch_up_from",
+		},
 		{
 			"fieldname": "period_end_date",
 			"fieldtype": "Date",

@@ -372,6 +372,9 @@ def build_rows_after_rate_change(
 					"amount": flt(r.depreciation_amount),
 					"cost_center": r.get("cost_center"),
 					"rate_segments": r.get("rate_segments"),
+					"catch_up_amount": flt(r.get("catch_up_amount")),
+					"catch_up_from": r.get("catch_up_from"),
+					"catch_up_to": r.get("catch_up_to"),
 				}
 			)
 		else:
@@ -488,7 +491,7 @@ def _segments_amount(segments):
 	return sum((date_diff(s["to"], s["from"]) + 1) * flt(s["rate"]) for s in segments)
 
 
-def rate_breakdown_text(segments_json):
+def rate_breakdown_text(segments_json, catch_up=None):
 	"""The stored composition of a split row, written for a person:
 
 	    01–19 Mar @ 339,519.626052 · 20–24 Mar @ 335,127.619433 · 25–31 Mar @ 324,092.685030
@@ -498,24 +501,33 @@ def rate_breakdown_text(segments_json):
 	the row was priced at a single rate, so the column stays blank on
 	ordinary rows and a filled cell always means "an event landed here".
 	"""
-	if not segments_json:
-		return None
+	amount, start, end = catch_up or (None, None, None)
+	# FA-014: a row carrying a catch-up says so, with the days it is for
+	tail = (
+		_("+ catch-up {0}: {1}").format(_span_text(getdate(start), getdate(end)), f"{flt(amount):,.2f}")
+		if flt(amount) and start and end
+		else None
+	)
 	try:
-		segments = json.loads(segments_json) if isinstance(segments_json, str) else list(segments_json)
+		segments = (json.loads(segments_json) if isinstance(segments_json, str) else list(segments_json)) if segments_json else []
 	except (ValueError, TypeError):
-		return None
+		segments = []
 	if len(segments) < 2:
-		return None
+		return tail
 	parts = []
 	for s in segments:
-		start, end = getdate(s["from"]), getdate(s["to"])
-		span = (
-			f"{start.day:02d}–{end.day:02d} {end.strftime('%b')}"
-			if start.month == end.month
-			else f"{start.day:02d} {start.strftime('%b')}–{end.day:02d} {end.strftime('%b')}"
-		)
-		parts.append(f"{span} @ {flt(s['rate']):,.6f}")
+		parts.append(f"{_span_text(getdate(s['from']), getdate(s['to']))} @ {flt(s['rate']):,.6f}")
+	if tail:
+		parts.append(tail)
 	return " · ".join(parts)
+
+
+def _span_text(start, end):
+	return (
+		f"{start.day:02d}–{end.day:02d} {end.strftime('%b')}"
+		if start.month == end.month
+		else f"{start.day:02d} {start.strftime('%b')}–{end.day:02d} {end.strftime('%b')}"
+	)
 
 
 def _dump_segments(segments):
@@ -774,6 +786,7 @@ def supersede_and_regenerate(
 	# row is immutable and re-pricing from inside it would charge its
 	# final day twice. One place decides this for scrap, adjustment,
 	# addition, life change, repair reversal and restore alike.
+	event_date = getdate(rate_change_date) if rate_change_date else None
 	if rate_change_date:
 		rate_change_date = max(add_days(getdate(rate_change_date), -1), as_of_date)
 
@@ -829,10 +842,27 @@ def supersede_and_regenerate(
 	future_rows = None
 	# the numbers this generation is priced from (stamped below)
 	basis = {"repriced_from": add_days(as_of_date, 1), "pre_accrual": 0.0, "depreciable_base": nbv_base}
+	# FA-014 (client, 12/10): an event dated inside a POSTED period, or a
+	# catch-up still owed from an earlier one, re-prices from that date and
+	# carries what the posted days were short on the next row.
+	pending_from = min(
+		(getdate(r.catch_up_from) for r in unposted if flt(r.get("catch_up_amount")) and r.get("catch_up_from")),
+		default=None,
+	)
+	catch_from = min(
+		[d for d in (event_date if event_date and event_date <= as_of_date else None, pending_from) if d],
+		default=None,
+	)
+	if catch_from and posted and nbv_base > 0 and not disposal_date and not first_posting_date:
+		future_rows = rows_with_catch_up(
+			asset_name, posted, unposted, catch_from, as_of_date, nbv_base, end_of_life, company,
+			basis_out=basis,
+		)
 	# rate_change_date (Ruba, 18/08): a value change re-prices rows only
 	# AFTER its date — pre-event unposted periods are preserved verbatim.
 	if (
-		rate_change_date
+		future_rows is None
+		and rate_change_date
 		and getdate(rate_change_date) > as_of_date
 		and unposted
 		and nbv_base > 0
@@ -901,6 +931,9 @@ def supersede_and_regenerate(
 				"days_in_period": r.get("days_in_period"),
 				"daily_rate": r.get("daily_rate"),
 				"period_end_date": r.get("period_end_date") or r.schedule_date,
+				"catch_up_amount": r.get("catch_up_amount"),
+				"catch_up_from": r.get("catch_up_from"),
+				"catch_up_to": r.get("catch_up_to"),
 			},
 		)
 	for row in future_rows:
@@ -917,6 +950,9 @@ def supersede_and_regenerate(
 				# verbatim pre-event copies keep their GAP-021 cost centre
 				"cost_center": row.get("cost_center"),
 				"rate_segments": row.get("rate_segments"),
+				"catch_up_amount": row.get("catch_up_amount"),
+				"catch_up_from": row.get("catch_up_from"),
+				"catch_up_to": row.get("catch_up_to"),
 			},
 		)
 
@@ -962,6 +998,66 @@ def supersede_and_regenerate(
 			_("{0} unposted rows regenerated prospectively in {1}.").format(len(unposted), new.name),
 		)
 	return new
+
+
+def rows_with_catch_up(asset_name, posted, unposted, catch_from, as_of_date, nbv_base, end_of_life,
+		company, basis_out=None):
+	"""§4.11 for an event dated inside periods already posted (client ticket
+	FA-014, TSK-2026-00904, ruled 13/10/2026): the event takes effect from
+	its own date, and posted rows are immutable.
+
+	The posted periods from the event on are re-priced as if unposted —
+	the same pricing every other event uses, replaying later changes —
+	and the difference to what they actually booked is carried, as a dated
+	catch-up, on the first unposted row; the rows after it run at the rate
+	the event date implies. ACC-ASS-2026-00333: 2,500 dated 15/03 with
+	March posted — April carries April plus the 15–31 March difference.
+
+	Returns None when there is nothing to re-price, no unposted row to
+	carry the catch-up, or the posted days were OVER-charged (a downward
+	change): those keep the prospective spread from the next period."""
+	live = [r for r in posted if not r.get("reversal_journal_entry")]
+	overlap = [r for r in live if getdate(r.schedule_date) >= getdate(catch_from)]
+	if not overlap:
+		return None
+	first = overlap[0]
+	prev = add_days(getdate(first.schedule_date), -max(cint(first.days_in_period), 1))
+	booked = fa_module_round(sum(flt(r.depreciation_amount) for r in overlap), company)
+	synthetic = [
+		frappe._dict(
+			schedule_date=r.schedule_date, days_in_period=r.days_in_period, daily_rate=r.daily_rate,
+			depreciation_amount=r.depreciation_amount, rate_segments=r.get("rate_segments"),
+			cost_center=r.get("cost_center"),
+		)
+		for r in overlap
+	] + [
+		frappe._dict(
+			schedule_date=r.schedule_date, days_in_period=r.days_in_period, daily_rate=r.daily_rate,
+			depreciation_amount=flt(r.depreciation_amount) - flt(r.get("catch_up_amount")),
+			rate_segments=r.get("rate_segments"), cost_center=r.get("cost_center"),
+		)
+		for r in unposted
+	]
+	rows = build_rows_replaying_value_changes(
+		asset_name, synthetic, fa_module_round(nbv_base + booked, company), prev,
+		add_days(getdate(catch_from), -1), end_of_life, company, basis_out=basis_out,
+	)
+	if not rows:
+		return None
+	repriced = [r for r in rows if getdate(r["schedule_date"]) <= getdate(as_of_date)]
+	future = [r for r in rows if getdate(r["schedule_date"]) > getdate(as_of_date)]
+	catch_up = fa_module_round(sum(flt(r["amount"]) for r in repriced) - booked, company)
+	if not future or catch_up < 0:
+		return None
+	for r in future:
+		r["catch_up_amount"], r["catch_up_from"], r["catch_up_to"] = 0.0, None, None
+	if catch_up:
+		head = future[0]
+		head["amount"] = fa_module_round(flt(head["amount"]) + catch_up, company)
+		head["catch_up_amount"] = catch_up
+		head["catch_up_from"] = getdate(catch_from)
+		head["catch_up_to"] = getdate(as_of_date)
+	return future
 
 
 def delete_unposted_schedule(schedule_name):
@@ -2285,6 +2381,29 @@ def cost_center_segments(asset, row):
 	)
 
 
+def _posting_parts(row):
+	"""A schedule row as the stretches it charges: the period itself and,
+	when it carries a catch-up (FA-014), the earlier days that catch-up is
+	for — each with its own dates, so attribution and the prior-year split
+	read the right days."""
+	cu = (
+		frappe.db.get_value(
+			"Depreciation Schedule", row.row_name,
+			["catch_up_amount", "catch_up_from", "catch_up_to"], as_dict=True,
+		)
+		if row.get("row_name") and frappe.get_meta("Depreciation Schedule").has_field("catch_up_amount")
+		else None
+	)
+	if not cu or not flt(cu.catch_up_amount) or not cu.catch_up_from or not cu.catch_up_to:
+		return [row]
+	catch = frappe._dict(
+		row, depreciation_amount=flt(cu.catch_up_amount), schedule_date=getdate(cu.catch_up_to),
+		days_in_period=date_diff(cu.catch_up_to, cu.catch_up_from) + 1, cost_center=None,
+	)
+	period = frappe._dict(row, depreciation_amount=flt(row.depreciation_amount) - flt(cu.catch_up_amount))
+	return [p for p in (catch, period) if flt(p.depreciation_amount)]
+
+
 def _depreciation_legs(asset, aca, row, pya_account, pya_amount, current_amount, segments, cost_center):
 	"""One debit per cost centre the asset sat in during the period
 	(GAP-021 / TC-035), plus the prior-year debit when the period spans
@@ -2400,17 +2519,26 @@ def _post_one(row, posting_date):
 		)
 
 	cost_center = row.cost_center or asset.cost_center
-	segments = cost_center_segments(asset, row)
-	pya_account = None
-	# §4.7: split a row that SPANS fiscal years into a prior-year and a
-	# current-year debit inside ONE entry (catch-up rows can span years).
-	pya_amount, current_amount = _split_row_by_fiscal_year(row, posting_date, company)
-	if flt(pya_amount):
-		pya_account = get_enterprise_account(
-			"pya_expense_account", company, asset.asset_category
+	# FA-014: a row carrying a catch-up posts it on ITS days — attributed to
+	# whoever held the asset then, prior-year days to PYA — and the rest of
+	# the row on the period's own days, in one entry.
+	legs, pya_total, current_total = [], 0.0, 0.0
+	for part in _posting_parts(row):
+		segments = cost_center_segments(asset, part)
+		pya_account = None
+		# §4.7: split a row that SPANS fiscal years into a prior-year and a
+		# current-year debit inside ONE entry (catch-up rows can span years).
+		pya_amount, current_amount = _split_row_by_fiscal_year(part, posting_date, company)
+		if flt(pya_amount):
+			pya_account = get_enterprise_account(
+				"pya_expense_account", company, asset.asset_category
+			)
+		legs += _depreciation_legs(
+			asset, aca, part, pya_account, pya_amount, current_amount, segments, cost_center
 		)
-	pya = bool(flt(pya_amount)) and not flt(current_amount)
-	debit_account = pya_account if pya else aca.depreciation_expense_account
+		pya_total = flt(pya_total + flt(pya_amount))
+		current_total = flt(current_total + flt(current_amount))
+	pya = bool(pya_total) and not current_total
 
 	je = frappe.get_doc(
 		{
@@ -2418,9 +2546,7 @@ def _post_one(row, posting_date):
 			"voucher_type": "Depreciation Entry",
 			"company": company,
 			"posting_date": posting_date,
-			"accounts": _depreciation_legs(
-				asset, aca, row, pya_account, pya_amount, current_amount, segments, cost_center
-			),
+			"accounts": legs,
 		}
 	)
 	je.flags.ignore_permissions = True
