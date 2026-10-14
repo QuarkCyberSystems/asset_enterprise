@@ -443,11 +443,12 @@ def cancel_ava_with_reversal(ava_name, posting_date=None):
 	doc = frappe.get_doc("Asset Value Adjustment", ava_name)
 	frappe.has_permission("Asset Value Adjustment", "cancel", doc, throw=True)
 	_assert_reversal_date(doc.company, doc.get("date"), posting_date, _("AVA"))
+	previous = frappe.flags.get("ae_ava_reversal_date")
 	frappe.flags["ae_ava_reversal_date"] = getdate(posting_date or nowdate())
 	try:
 		doc.cancel()
 	finally:
-		frappe.flags["ae_ava_reversal_date"] = None
+		frappe.flags["ae_ava_reversal_date"] = previous
 	return True
 
 
@@ -466,11 +467,12 @@ def cancel_repair_with_reversal(repair_name, posting_date=None):
 		posting_date,
 		_("Asset Repair"),
 	)
+	previous = frappe.flags.get("ae_repair_reversal_date")
 	frappe.flags["ae_repair_reversal_date"] = getdate(posting_date or nowdate())
 	try:
 		doc.cancel()
 	finally:
-		frappe.flags["ae_repair_reversal_date"] = None
+		frappe.flags["ae_repair_reversal_date"] = previous
 	return True
 
 
@@ -504,3 +506,104 @@ def reversal_date_editable(company):
 		return {"editable": False, "role": None}
 	editable = frappe.session.user == "Administrator" or role in frappe.get_roles()
 	return {"editable": editable, "role": role}
+
+
+# --------------------------------------------------------------------------
+# Server-side contract for other apps (PA code audit 14/10/2026, A04 / D6).
+# Project Accounting calls these instead of keeping its own copies of the
+# asset module's rules; they are plain functions, not HTTP endpoints.
+# --------------------------------------------------------------------------
+
+
+def value_events_other_than(asset, exclude_sources=None):
+	"""Live value events on `asset` that were NOT raised by any of
+	`exclude_sources` — every posted, unreversed Financial Treatment that
+	changed the asset's value (any type: Asset Value Adjustment, Capitalized
+	Maintenance, capitalized repair, reclassification, invoice difference,
+	partial scrap...), depreciation excepted.
+
+	`exclude_sources`: document names (or (doctype, name) pairs) whose own
+	treatments do not count — matched against the treatment's source and
+	its voucher. Financial Treatments are the single record of value events
+	(§3), so a new kind of event is covered without changing this.
+
+	A04: an asset Project Accounting created must not be reversed while
+	something else has changed its value since — the reversal would cancel
+	the asset and leave that value posted against nothing."""
+	names = set()
+	for item in exclude_sources or []:
+		names.add(item[1] if isinstance(item, (list, tuple)) else item)
+	rows = frappe.get_all(
+		"Financial Treatment",
+		filters={"asset": asset, "status": "Posted", "is_reversal": 0},
+		fields=[
+			"name", "source_doctype", "source_name", "voucher_type", "voucher_no",
+			"transaction_category", "transaction_type", "posting_date", "hav_delta", "accum_delta",
+		],
+		order_by="posting_date asc, creation asc",
+	)
+	from frappe.utils import flt
+
+	return [
+		r
+		for r in rows
+		if r.transaction_category != "Depreciation"
+		and (flt(r.hav_delta) or flt(r.accum_delta))
+		and not frappe.db.exists("Financial Treatment", {"reverses": r.name, "docstatus": ("<", 2)})
+		and r.source_name not in names
+		and r.voucher_no not in names
+	]
+
+
+def assert_value_reversible(asset, amount, context=None):
+	"""VR-042: refuse a reversal that would take more value off `asset`
+	than its current net book value can cover."""
+	from asset_enterprise.asset_values import assert_nbv_covers_reversal
+
+	return assert_nbv_covers_reversal(asset, amount, context=context)
+
+
+def live_depreciation_entries(asset):
+	"""Depreciation journal entries that still stand on `asset` (GAP-027 /
+	VR-031): every entry stamped on any of its schedules — a superseded
+	generation copies its posted rows, so one entry is counted once — plus
+	manual depreciation entries, less those reversed per GA-0001-01 (a live
+	Reversal Journal Entry points back through `reversal_of`)."""
+	je_names = set(
+		frappe.db.sql_list(
+			"""select ds.journal_entry from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.docstatus = 1 and ifnull(ds.journal_entry, '') != ''""",
+			asset,
+		)
+	)
+	je_names |= {d.name for d in frappe.get_doc("Asset", asset).get_manual_depreciation_entries()}
+	reversible = frappe.get_meta("Journal Entry").has_field("reversal_of")
+	return sorted(
+		je for je in je_names
+		if not (reversible and frappe.db.exists("Journal Entry", {"reversal_of": je, "docstatus": 1}))
+	)
+
+
+def assert_reversal_date(company, source_posting_date, posting_date, label):
+	"""The reversal-date rules every reversal follows: today needs nothing;
+	any other date needs the company's Reversal Date Edit Role (Asset
+	Settings > Reversals); never before the transaction reversed (VR-022).
+	Returns the date to post on."""
+	return _assert_reversal_date(company, source_posting_date, posting_date, label)
+
+
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def raising_project_settlement():
+	"""Inside this block an Asset Value Adjustment of type Project
+	Settlement may be created — the type is raised only by a settlement
+	(PA-008), never typed by hand. Restores the previous state on exit."""
+	previous = frappe.flags.get("ae_project_settlement")
+	frappe.flags["ae_project_settlement"] = True
+	try:
+		yield
+	finally:
+		frappe.flags["ae_project_settlement"] = previous

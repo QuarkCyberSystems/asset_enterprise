@@ -2504,6 +2504,57 @@ def e43():
 		f"asset's own project field unchanged={kept}")
 
 
+@case("E-44", "PA audit 14/10 (A04 / D6)", "the public reversal checks other apps call answer as the asset module's own rules do")
+def e44():
+	"""asset_enterprise.api's server-side contract for Project Accounting:
+	value_events_other_than lists every live value event not raised by the
+	excluded sources (A04: an upward revaluation after a finalization must
+	block the finalization's reversal); live_depreciation_entries counts an
+	entry once across generations; assert_value_reversible refuses past NBV;
+	the reversal flags are restored, not cleared, after use."""
+	from asset_enterprise import api
+	from asset_enterprise.depreciation import post_schedule_entries
+
+	company = _company()
+	start = getdate(get_first_day(add_months(nowdate(), -3)))
+	asset = _asset(company, gross=12_000, months=12, start=start)
+	schedule = frappe.db.get_value("Asset Depreciation Schedule", {"asset": asset, "status": "Active", "docstatus": 1}, "name")
+	# VR-043: every period ended before the adjustment must be posted
+	post_schedule_entries(schedule, date=get_last_day(add_months(nowdate(), -1)))
+	acquisition = {(r.source_doctype, r.source_name) for r in api.value_events_other_than(asset)}
+	ava = frappe.get_doc({"doctype": "Asset Value Adjustment", "company": company, "asset": asset,
+		"date": nowdate(), "transaction_type": "Upward Revaluation",
+		"new_asset_value": flt(frappe.db.get_value("Asset", asset, "value_after_depreciation") or 0) + 500,
+		"difference_account": frappe.db.get_value("Company", company, "default_expense_account")})
+	ava.flags.ignore_mandatory = True
+	ava.insert(ignore_permissions=True)
+	ava.submit()
+	events = api.value_events_other_than(asset, exclude_sources=list(acquisition))
+	sees_ava = [e.source_name for e in events] == [ava.name]
+	none_left = not api.value_events_other_than(asset, exclude_sources=list(acquisition) + [ava.name])
+	entries = api.live_depreciation_entries(asset)
+	generations = frappe.db.count("Asset Depreciation Schedule", {"asset": asset, "docstatus": 1})
+	nbv = flt(__import__("asset_enterprise.asset_values", fromlist=["x"]).recalculate_asset_values(asset, save=False)["net_book_value"])
+	refused, _msg = _refused(lambda: api.assert_value_reversible(asset, nbv + 100, "E-44"))
+	allowed = not _refused(lambda: api.assert_value_reversible(asset, nbv - 1, "E-44"))[0]
+	frappe.flags["ae_ava_reversal_date"] = "sentinel"
+	api.cancel_ava_with_reversal(ava.name)
+	restored = frappe.flags.get("ae_ava_reversal_date") == "sentinel"
+	frappe.flags["ae_ava_reversal_date"] = None
+	after_reversal = not api.value_events_other_than(asset, exclude_sources=list(acquisition))
+	frappe.flags["ae_project_settlement"] = "outer"
+	with api.raising_project_settlement():
+		inside = frappe.flags.get("ae_project_settlement") is True
+	ps_restored = frappe.flags.get("ae_project_settlement") == "outer"
+	frappe.flags["ae_project_settlement"] = None
+	ok = (sees_ava and none_left and len(entries) == 3 and generations >= 2 and refused and allowed
+		and restored and after_reversal and inside and ps_restored)
+	return ok, (f"value events besides the acquisition: AVA only={sees_ava}, none when it is excluded too={none_left}, "
+		f"none after its reversal={after_reversal}; live depreciation entries {len(entries)} (want 3) over "
+		f"{generations} generation(s); NBV {nbv:,.2f}: +100 refused={refused}, -1 allowed={allowed}; "
+		f"flags restored: reversal date={restored}, project settlement inside/after={inside}/{ps_restored}")
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(

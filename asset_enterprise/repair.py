@@ -2249,11 +2249,12 @@ def repair_post_merge_invoice_adjustments(company=None, asset=None, dry_run=1, c
 		)
 		if dry_run or not ava.purchase_invoice:
 			continue
+		previous = frappe.flags.get("ae_ava_reversal_date")
 		frappe.flags["ae_ava_reversal_date"] = getdate(nowdate())
 		try:
 			frappe.get_doc("Asset Value Adjustment", ava.name).cancel()
 		finally:
-			frappe.flags["ae_ava_reversal_date"] = None
+			frappe.flags["ae_ava_reversal_date"] = previous
 
 		def _side(amount):
 			return (
