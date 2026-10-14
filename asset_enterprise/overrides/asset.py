@@ -781,21 +781,9 @@ class EnterpriseAsset(Asset):
 		exists — schedule-linked JEs AND manual depreciation JEs
 		(Phase 11 F3). A JE already reversed per GA-0001-01 (a live JE
 		points back via reversal_of) no longer counts (TC-042c)."""
-		je_names = [
-			r[0]
-			for r in frappe.db.sql(
-				"""
-				select ds.journal_entry from `tabDepreciation Schedule` ds
-				join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
-				where ads.asset = %s and ads.docstatus = 1
-				  and ifnull(ds.journal_entry, '') != ''
-				""",
-				self.name,
-			)
-		]
-		je_names += [d.name for d in self.get_manual_depreciation_entries()]
+		from asset_enterprise.api import live_depreciation_entries
 
-		live = [je for je in set(je_names) if not self._je_is_reversed(je)]
+		live = live_depreciation_entries(self.name)
 		if live:
 			frappe.throw(
 				_(
