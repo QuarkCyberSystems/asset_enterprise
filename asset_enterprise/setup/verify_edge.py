@@ -2542,6 +2542,11 @@ def e44():
 	restored = frappe.flags.get("ae_ava_reversal_date") == "sentinel"
 	frappe.flags["ae_ava_reversal_date"] = None
 	after_reversal = not api.value_events_other_than(asset, exclude_sources=list(acquisition))
+	frappe.flags["ae_ava_reversal_date"] = "outer"
+	with api.reversing_ava_on("2026-01-05"):
+		dated = str(frappe.flags.get("ae_ava_reversal_date")) == "2026-01-05"
+	restored = restored and dated and frappe.flags.get("ae_ava_reversal_date") == "outer"
+	frappe.flags["ae_ava_reversal_date"] = None
 	frappe.flags["ae_project_settlement"] = "outer"
 	with api.raising_project_settlement():
 		inside = frappe.flags.get("ae_project_settlement") is True

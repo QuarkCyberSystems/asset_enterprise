@@ -607,3 +607,22 @@ def raising_project_settlement():
 		yield
 	finally:
 		frappe.flags["ae_project_settlement"] = previous
+
+
+@contextmanager
+def reversing_ava_on(posting_date):
+	"""Inside this block a cancelled Asset Value Adjustment raises its
+	Reversal AVA on `posting_date` instead of today. For server code that
+	reverses an AVA it raised itself and has already gated the date
+	(assert_reversal_date) — Project Accounting's settlement reversal,
+	whose approver need not hold the AVA cancel right. Not an HTTP
+	endpoint: the desk goes through cancel_ava_with_reversal, which checks
+	the user's permission. Restores the previous date on exit."""
+	from frappe.utils import getdate, nowdate
+
+	previous = frappe.flags.get("ae_ava_reversal_date")
+	frappe.flags["ae_ava_reversal_date"] = getdate(posting_date or nowdate())
+	try:
+		yield
+	finally:
+		frappe.flags["ae_ava_reversal_date"] = previous
