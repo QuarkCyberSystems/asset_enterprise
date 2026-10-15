@@ -823,6 +823,16 @@ def supersede_and_regenerate(
 		end_of_life_override
 		or (last_row and (last_row.get("period_end_date") or last_row.schedule_date))
 	)
+	if not end_of_life_override and not unposted:
+		# A generation with nothing left to post ended because the value ran
+		# out (a decrease to zero), not because the life did. When value
+		# comes back (its reversal), the asset's own life is the horizon —
+		# otherwise the restored value found "no remaining life" and was
+		# charged in one go (D-081 undo, 15/10). A life that has really run
+		# out gives a horizon already passed and changes nothing.
+		life_end = schedule_horizon_from_life(asset_name, finance_book)
+		if life_end and getdate(life_end) > end_of_life:
+			end_of_life = getdate(life_end)
 
 	from asset_enterprise.asset_values import recalculate_asset_values
 

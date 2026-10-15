@@ -3,7 +3,7 @@ these endpoints re-run the authoritative logic)."""
 
 import frappe
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
 
 @frappe.whitelist()
@@ -626,3 +626,157 @@ def reversing_ava_on(posting_date):
 		yield
 	finally:
 		frappe.flags["ae_ava_reversal_date"] = previous
+
+
+# --------------------------------------------------------------------------
+# D-081 (Vivek, 15/10/2026): Project Accounting's Negative Settlement reduces
+# an asset its original settlement added to. The asset side is this module's
+# — one rule with Case A.02 (§12.5), never a copy in PA.
+# --------------------------------------------------------------------------
+
+AVA_SOURCE_FIELDS = ("reduction_source_doctype", "reduction_source_name")
+
+
+def _reduction_split(asset, amount, posting_date):
+	"""(asset row, absorbed, to_expense, blocked reason or None)."""
+	from frappe.utils import flt, getdate
+
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import due_unposted_rows
+	from asset_enterprise.rounding import fa_module_round
+	from asset_enterprise.status import off_register
+
+	row = frappe.db.get_value(
+		"Asset", asset, ["name", "company", "status", "docstatus", "asset_category"], as_dict=True
+	)
+	if not row or row.docstatus != 1:
+		frappe.throw(_("{0} is not a submitted asset — nothing to reduce.").format(asset))
+	amount = fa_module_round(flt(amount), row.company)
+	if amount <= 0:
+		frappe.throw(_("The reduction amount must be positive."))
+	if off_register(row.status):
+		return row, 0.0, amount, None
+	salvage = flt(
+		frappe.db.get_value("Asset Finance Book", {"parent": asset}, "expected_value_after_useful_life") or 0
+	)
+	nbv = flt(recalculate_asset_values(asset, save=False)["net_book_value"])
+	absorbed = fa_module_round(max(0.0, min(amount, nbv - salvage)), row.company)
+	blocked = None
+	if absorbed and due_unposted_rows(asset, getdate(posting_date)):
+		blocked = _(
+			"Depreciation is not up to date for {0} — post the due periods before reducing its "
+			"value (VR-043)."
+		).format(asset)
+	return row, absorbed, fa_module_round(amount - absorbed, row.company), blocked
+
+
+def reduce_asset_value(asset, amount, posting_date, debit_account, source_doctype, source_name,
+		label=None, dimensions=None, dry_run=False):
+	"""Reduce `asset` by `amount` for another module's document (D-081).
+
+	- On the register: an Asset Value Adjustment decrease (type Project
+	  Settlement) takes what the asset can absorb — never below its salvage
+	  (VR-042 cover) — Dr `debit_account` / Cr Fixed Asset, and the schedule
+	  re-prices from `posting_date` (D-075).
+	- The rest, or all of it for an asset off the register: Dr `debit_account`
+	  / Cr the Post-Disposal Invoice Difference account, with the Case A.02
+	  treatment on the asset's history (invoice_diff, one rule).
+
+	`dimensions` ({fieldname: value}; cost_center included) go on both
+	documents. The date passes assert_reversal_date. `dry_run=True` returns
+	the split and writes nothing. Returns {asset, absorbed, to_expense,
+	expense_account, ava, journal_entry, blocked}."""
+	from frappe.utils import getdate
+
+	from asset_enterprise.depreciation import cost_centre_on
+	from asset_enterprise.invoice_diff import post_disposal_account, record_post_disposal_adjustment
+
+	row, absorbed, to_expense, blocked = _reduction_split(asset, amount, posting_date)
+	expense_account = post_disposal_account(asset) if to_expense else None
+	result = frappe._dict(asset=asset, absorbed=absorbed, to_expense=to_expense,
+		expense_account=expense_account, ava=None, journal_entry=None, blocked=blocked)
+	if dry_run:
+		return result
+	if blocked:
+		frappe.throw(blocked, title=_("Depreciation Outstanding"))
+	posting_date = assert_reversal_date(row.company, None, posting_date, label or _("Asset reduction"))
+	dims = dict(dimensions or {})
+	cost_center = dims.pop("cost_center", None) or cost_centre_on(asset, posting_date) \
+		or frappe.db.get_value("Asset", asset, "cost_center")
+	remark = _("Reduction of {0} for {1} {2}").format(asset, source_doctype, label or source_name)
+
+	if absorbed:
+		from asset_enterprise.asset_values import recalculate_asset_values
+		from asset_enterprise.rounding import fa_module_round
+
+		current = flt(recalculate_asset_values(asset, save=False)["net_book_value"])
+		meta = frappe.get_meta("Asset Value Adjustment")
+		ava = frappe.get_doc({
+			"doctype": "Asset Value Adjustment", "asset": asset, "company": row.company,
+			"date": getdate(posting_date), "transaction_type": "Project Settlement",
+			"current_asset_value": current,
+			"new_asset_value": fa_module_round(current - absorbed, row.company),
+			"difference_account": debit_account, "cost_center": cost_center,
+			"reduction_source_doctype": source_doctype, "reduction_source_name": source_name,
+			**{k: v for k, v in dims.items() if meta.has_field(k)},
+		})
+		ava.flags.ignore_permissions = True
+		with raising_project_settlement():
+			ava.insert()
+			ava.submit()
+		result.ava = ava.name
+
+	if to_expense:
+		je_meta = frappe.get_meta("Journal Entry Account")
+		row_dims = {k: v for k, v in dims.items() if je_meta.has_field(k)}
+		je = frappe.get_doc({
+			"doctype": "Journal Entry", "voucher_type": "Journal Entry", "company": row.company,
+			"posting_date": getdate(posting_date), "user_remark": remark,
+			"accounts": [
+				{"account": debit_account, "debit_in_account_currency": to_expense,
+				 "cost_center": cost_center, **row_dims},
+				{"account": expense_account, "credit_in_account_currency": to_expense,
+				 "cost_center": cost_center, "reference_type": "Asset", "reference_name": asset, **row_dims},
+			],
+		})
+		je.flags.ignore_permissions = True
+		je.submit()
+		record_post_disposal_adjustment((source_doctype, source_name), asset, getdate(posting_date),
+			to_expense, journal_entry=je.name)
+		result.journal_entry = je.name
+	return result
+
+
+def undo_asset_value_reduction(source_doctype, source_name, posting_date):
+	"""Reverse everything reduce_asset_value created for that source on
+	`posting_date`: the AVA through its Reversal AVA, the Case A.02 entry
+	through a mirror journal and the treatment's reversal. Returns
+	{reversed: [document names]}."""
+	from frappe.utils import getdate
+
+	from asset_enterprise import tcc
+	from asset_enterprise.invoice_diff import POST_DISPOSAL_ADJUSTMENT
+	from asset_enterprise.restore import _mirror_je
+
+	reversed_docs = []
+	for name in frappe.get_all("Asset Value Adjustment", filters={
+			"reduction_source_doctype": source_doctype, "reduction_source_name": source_name,
+			"docstatus": 1, "reversal_of_ava": ("is", "not set")}, pluck="name"):
+		ava = frappe.get_doc("Asset Value Adjustment", name)
+		date = assert_reversal_date(ava.company, ava.date, posting_date, _("Asset reduction {0}").format(name))
+		ava.flags.ignore_permissions = True
+		with reversing_ava_on(date):
+			ava.cancel()
+		reversed_docs.append(frappe.db.get_value("Asset Value Adjustment", {"reversal_of_ava": name}, "name"))
+	for ft in frappe.get_all("Financial Treatment", filters={
+			"source_doctype": source_doctype, "source_name": source_name, "status": "Posted",
+			"is_reversal": 0, "transaction_type": POST_DISPOSAL_ADJUSTMENT},
+			fields=["name", "journal_entry", "company", "posting_date", "asset"]):
+		date = assert_reversal_date(ft.company, ft.posting_date, posting_date, _("Asset reduction"))
+		mirror = _mirror_je(ft.journal_entry, _("Reversal of asset reduction for {0} {1} (mirrors {2})")
+			.format(source_doctype, source_name, ft.journal_entry), posting_date=getdate(date)) if ft.journal_entry else None
+		tcc.reverse(ft.name, (source_doctype, source_name), posting_date=getdate(date), journal_entry=mirror)
+		if mirror:
+			reversed_docs.append(mirror)
+	return frappe._dict(reversed=[d for d in reversed_docs if d])
+

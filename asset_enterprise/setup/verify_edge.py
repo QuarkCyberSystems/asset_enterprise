@@ -2560,6 +2560,79 @@ def e44():
 		f"flags restored: reversal date={restored}, project settlement inside/after={inside}/{ps_restored}")
 
 
+@case("E-45", "D-081 (15/10)", "a reduction raised for another module takes what the asset can absorb, sends the rest to post-disposal (Case A.02), and undoes cleanly")
+def e45():
+	"""asset_enterprise.api.reduce_asset_value / undo_asset_value_reduction
+	(Project Accounting's Negative Settlement, D-081):
+	1. dry run: the split, nothing written;
+	2. on the register, inside NBV: one Project Settlement AVA decrease;
+	3. beyond NBV - salvage: the AVA takes what is left, the rest goes
+	   Dr debit / Cr Post-Disposal Invoice Difference with the Case A.02
+	   treatment;
+	4. off the register (scrapped): all of it to post-disposal;
+	5. depreciation outstanding: blocked (VR-043), dry run says so;
+	6. undo reverses both: Reversal AVA, mirror journal, treatment reversed."""
+	from asset_enterprise import api, disposal
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.depreciation import post_schedule_entries
+	from asset_enterprise.invoice_diff import POST_DISPOSAL_ADJUSTMENT
+	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
+
+	company = _company()
+	debit = pick_plain_account(company, "Liability")
+
+	def source():
+		return frappe.get_doc({"doctype": "ToDo", "description": "E-45 negative settlement line"}).insert(
+			ignore_permissions=True).name
+
+	def nbv(a):
+		return flt(recalculate_asset_values(a, save=False)["net_book_value"])
+
+	start = getdate(get_first_day(add_months(nowdate(), -2)))
+	asset = _asset(company, gross=12_000, months=12, start=start)
+	post_schedule_entries(frappe.db.get_value("Asset Depreciation Schedule",
+		{"asset": asset, "status": "Active", "docstatus": 1}, "name"), date=get_last_day(add_months(nowdate(), -1)))
+	before = nbv(asset)
+	avas = frappe.db.count("Asset Value Adjustment", {"asset": asset})
+	dry = api.reduce_asset_value(asset, 2_000, nowdate(), debit, "ToDo", "x", dry_run=True)
+	dry_ok = (dry.absorbed == 2_000 and dry.to_expense == 0 and not dry.blocked
+		and frappe.db.count("Asset Value Adjustment", {"asset": asset}) == avas)
+
+	s1 = source()
+	r1 = api.reduce_asset_value(asset, 2_000, nowdate(), debit, "ToDo", s1, label="E-45 line 1")
+	inside_ok = bool(r1.ava) and not r1.journal_entry and abs(nbv(asset) - (before - 2_000)) < 0.01
+
+	s2 = source()
+	left = nbv(asset)
+	r2 = api.reduce_asset_value(asset, left + 700, nowdate(), debit, "ToDo", s2, label="E-45 line 2")
+	a02 = frappe.db.get_value("Financial Treatment", {"source_doctype": "ToDo", "source_name": s2,
+		"transaction_type": POST_DISPOSAL_ADJUSTMENT, "status": "Posted"}, "name")
+	beyond_ok = (abs(r2.absorbed - left) < 0.01 and abs(r2.to_expense - 700) < 0.01 and bool(r2.ava)
+		and bool(r2.journal_entry) and bool(a02) and abs(nbv(asset)) < 0.01)
+
+	scrapped = make_test_asset(company, gross=5_000, submit=True).name
+	disposal.scrap_asset(scrapped, scrap_date=nowdate(), scrapping_type="Damage")
+	s3 = source()
+	r3 = api.reduce_asset_value(scrapped, 400, nowdate(), debit, "ToDo", s3)
+	off_ok = r3.absorbed == 0 and abs(r3.to_expense - 400) < 0.01 and not r3.ava and bool(r3.journal_entry)
+
+	late = _asset(company, gross=6_000, months=12, start=start)
+	blocked = api.reduce_asset_value(late, 100, nowdate(), debit, "ToDo", "x", dry_run=True).blocked
+	refused, _msg = _refused(lambda: api.reduce_asset_value(late, 100, nowdate(), debit, "ToDo", source()))
+
+	u2 = api.undo_asset_value_reduction("ToDo", s2, nowdate())
+	u3 = api.undo_asset_value_reduction("ToDo", s3, nowdate())
+	undo_ok = (len(u2.reversed) == 2 and abs(nbv(asset) - left) < 0.01 and len(u3.reversed) == 1
+		and frappe.db.get_value("Financial Treatment", a02, "status") == "Reversed")
+	ok = dry_ok and inside_ok and beyond_ok and off_ok and bool(blocked) and refused and undo_ok
+	return ok, (f"dry run 2,000 -> absorbed {dry.absorbed}, expense {dry.to_expense}, nothing written={dry_ok}; "
+		f"inside NBV: AVA {r1.ava}, NBV {before:,.2f} -> -2,000 ok={inside_ok}; beyond: absorbed {r2.absorbed:,.2f} "
+		f"+ expense {r2.to_expense:,.2f} via {r2.journal_entry} (A.02 {a02}) ok={beyond_ok}; scrapped asset: "
+		f"all to expense {r3.journal_entry} ok={off_ok}; outstanding depreciation blocked={bool(blocked)} refused={refused}; "
+		f"undo {u2.reversed} / {u3.reversed} ok={undo_ok} (NBV after undo {nbv(asset):,.2f} want {left:,.2f}; "
+		f"A.02 treatment {frappe.db.get_value('Financial Treatment', a02, 'status')})")
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(

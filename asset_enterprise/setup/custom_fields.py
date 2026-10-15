@@ -570,6 +570,25 @@ CUSTOM_FIELDS = {
 			"read_only": 1,
 			"insert_after": "exhaustion_journal_entry",
 		},
+		# D-081 (15/10): a reduction raised for another module's document
+		# (Project Accounting's Negative Settlement line) — the document it
+		# was raised for, so undo_asset_value_reduction finds it
+		{
+			"fieldname": "reduction_source_doctype",
+			"fieldtype": "Link",
+			"label": "Reduction Source Type",
+			"options": "DocType",
+			"read_only": 1,
+			"insert_after": "reversal_of_ava",
+		},
+		{
+			"fieldname": "reduction_source_name",
+			"fieldtype": "Dynamic Link",
+			"label": "Reduction Source",
+			"options": "reduction_source_doctype",
+			"read_only": 1,
+			"insert_after": "reduction_source_doctype",
+		},
 		{
 			"fieldname": "reversed_by_ava",
 			"fieldtype": "Link",
