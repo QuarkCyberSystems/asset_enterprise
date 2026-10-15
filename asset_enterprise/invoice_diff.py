@@ -635,6 +635,34 @@ def _maybe_warn_below_receipt(doc):
 from asset_enterprise.status import OFF_REGISTER as DISPOSED_STATUSES  # noqa: E402
 
 
+def post_disposal_account(asset):
+	"""Case A.02 (§12.5): the account a value change lands in when the asset
+	can no longer carry it — the Post-Disposal Invoice Difference account
+	(Asset Category, else Company default)."""
+	from asset_enterprise.accounts import get_enterprise_account
+
+	category, company = frappe.db.get_value("Asset", asset, ["asset_category", "company"])
+	return get_enterprise_account("post_disposal_invoice_diff_account", company, category)
+
+
+def record_post_disposal_adjustment(source_doc, asset, posting_date, amount, journal_entry=None):
+	"""Case A.02's Financial Treatment: the change is recorded on the asset's
+	history as a Post-Disposal Invoice Adjustment while the money goes to
+	expense, never onto the asset. One rule for the purchase invoice and for
+	a reduction raised by another module (api.reduce_asset_value, D-081)."""
+	from asset_enterprise import tcc
+
+	return tcc.apply(
+		source_doc=source_doc,
+		category="Addition",
+		transaction_type=POST_DISPOSAL_ADJUSTMENT,
+		asset=asset,
+		posting_date=posting_date,
+		amount=abs(flt(amount)),
+		journal_entry=journal_entry,
+	)
+
+
 def pi_on_submit(doc, method=None):
 	if not _enterprise() or not doc.get("pi_asset_allocation"):
 		return
@@ -665,20 +693,8 @@ def pi_on_submit(doc, method=None):
 		if asset.status in DISPOSED_STATUSES:
 			# Case A.02: disposed asset — delta is EXPENSED, no AVA.
 			if price_delta:
-				dest = get_enterprise_account(
-					"post_disposal_invoice_diff_account", asset.company, asset.asset_category
-				)
-				transfer_legs.append((dest, price_delta, row.asset))
-				from asset_enterprise import tcc
-
-				tcc.apply(
-					source_doc=doc,
-					category="Addition",
-					transaction_type=POST_DISPOSAL_ADJUSTMENT,
-					asset=row.asset,
-					posting_date=doc.posting_date,
-					amount=abs(price_delta),
-				)
+				transfer_legs.append((post_disposal_account(row.asset), price_delta, row.asset))
+				record_post_disposal_adjustment(doc, row.asset, doc.posting_date, price_delta)
 			if fx_delta:
 				transfer_legs.append((_exchange_account(doc.company), fx_delta, row.asset))
 			continue
