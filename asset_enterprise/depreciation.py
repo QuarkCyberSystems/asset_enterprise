@@ -824,15 +824,26 @@ def supersede_and_regenerate(
 		or (last_row and (last_row.get("period_end_date") or last_row.schedule_date))
 	)
 	if not end_of_life_override and not unposted:
-		# A generation with nothing left to post ended because the value ran
-		# out (a decrease to zero), not because the life did. When value
-		# comes back (its reversal), the asset's own life is the horizon —
-		# otherwise the restored value found "no remaining life" and was
-		# charged in one go (D-081 undo, 15/10). A life that has really run
-		# out gives a horizon already passed and changes nothing.
-		life_end = schedule_horizon_from_life(asset_name, finance_book)
-		if life_end and getdate(life_end) > end_of_life:
-			end_of_life = getdate(life_end)
+		# A generation with nothing left to post either reached the end of
+		# the asset's life (VR-018: what comes back is charged at once,
+		# ACC-ASS-2026-00217) or stopped early because a decrease took the
+		# value to zero. Only in the second case did an earlier generation
+		# run further: when value comes back (that decrease's reversal), the
+		# schedule resumes to where it ran before — never past the life
+		# horizon — instead of charging the restored value in one go (D-081
+		# undo, 15/10).
+		ran_to = frappe.db.sql(
+			"""select max(coalesce(ds.period_end_date, ds.schedule_date))
+			   from `tabDepreciation Schedule` ds
+			   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+			   where ads.asset = %s and ads.docstatus = 1 and ads.name != %s
+			     and ifnull(ads.finance_book, '') = %s""",
+			(asset_name, old_name, old.get("finance_book") or ""),
+		)[0][0]
+		if ran_to and getdate(ran_to) > end_of_life:
+			life_end = schedule_horizon_from_life(asset_name, finance_book)
+			resume_to = min(getdate(ran_to), getdate(life_end)) if life_end else getdate(ran_to)
+			end_of_life = max(end_of_life, resume_to)
 
 	from asset_enterprise.asset_values import recalculate_asset_values
 
