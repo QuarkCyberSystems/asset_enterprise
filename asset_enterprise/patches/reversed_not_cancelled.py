@@ -16,6 +16,7 @@ Anything else is left as it is and named in the migrate log. Idempotent.
 """
 
 import frappe
+from frappe.model.base_document import get_controller
 from frappe.utils import getdate
 
 
@@ -33,7 +34,7 @@ def execute():
 	platform_fields.install(doctypes=list(REVERSAL_LINKS))
 
 	for doctype, link_field in REVERSAL_LINKS.items():
-		of_field = frappe.get_controller(doctype).reversal_of_field
+		of_field = get_controller(doctype).reversal_of_field
 		meta = frappe.get_meta(doctype)
 		if not (meta.has_field(of_field) and meta.has_field(link_field)):
 			continue
