@@ -2635,7 +2635,8 @@ def e46():
 	   reversed_by_* and reversed_on; every original journal stays posted;
 	3. the original no longer stands (standing readers), a second reverse
 	   and a cancel of the counter-document are refused (no route);
-	4. the form state hides Cancel and names the reversal;
+	4. the form offers Reverse (the platform's action, asking the posting
+	   date) and, once reversed, hides Cancel and names the reversal;
 	5. a repair that capitalized nothing still cancels natively;
 	6. the reversed_not_cancelled patch restores a legacy Cancelled original
 	   and leaves one whose ledger rows were cancelled."""
@@ -2670,6 +2671,11 @@ def e46():
 		if frappe.db.get_value(dt, doc.name, "docstatus") != 1:
 			problems.append(f"{dt} {doc.name}: the refused cancel left docstatus {frappe.db.get_value(dt, doc.name, 'docstatus')}")
 			return None
+		offered = ui_state(dt, doc.name)["actions"]
+		prompt = offered[0].get("prompt") if offered else None
+		if not (offered and offered[0]["label"] == "Reverse" and prompt
+				and [f["fieldname"] for f in prompt["fields"]] == ["posting_date"]):
+			problems.append(f"{dt} {doc.name}: the form does not offer Reverse with its date prompt ({offered})")
 		counter = reverse_document(dt, doc.name)
 		row = frappe.db.get_value(dt, doc.name, ["docstatus", link, "reversed_on"], as_dict=True)
 		c = frappe.db.get_value(dt, counter, ["docstatus", "is_cancellation", "cancellation_against"], as_dict=True)

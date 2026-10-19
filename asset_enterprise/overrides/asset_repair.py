@@ -432,6 +432,17 @@ class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
 	def reversal_source_date(self):
 		return self.get("completion_date") or self.get("failure_date")
 
+	def reversal_note(self):
+		from frappe.utils import fmt_money
+
+		note = _("The capitalized cost {0} leaves {1} and the life grant is retracted.").format(
+			fmt_money(self.get("total_repair_cost") or 0, currency=frappe.get_cached_value("Company", self.company, "default_currency")),
+			self.asset,
+		)
+		if self.get("stock_items"):
+			note += " " + _("Consumed stock items return to their source warehouse by a Material Receipt.")
+		return note
+
 	def reversal_gates(self):
 		self._fully_depreciated_gate(self)
 

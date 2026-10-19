@@ -42,7 +42,16 @@ def require_platform_capabilities():
 	every socket this app's registration requires (qcs_platform Build 0.2
 	§4.0 (8), the new-app / old-platform direction). A platform without
 	`require_capability` predates Build 0.2 step 0; one that does not know
-	the sockets predates step 4 - both are too old."""
+	the sockets predates step 4 - both are too old. One without
+	contracts.Prompt cannot ask a reversal's posting date (D-086)."""
+	from qcs_platform import contracts
+
+	if not hasattr(contracts, "Prompt"):
+		frappe.throw(
+			"asset_enterprise's Reverse asks its posting date through qcs_platform's Action prompt "
+			"(contracts.Prompt); this qcs_platform predates it. Deploy qcs_platform first, then migrate.",
+			title="Platform Too Old",
+		)
 	from asset_enterprise.platform import PLATFORM_CONTRACT, PLATFORM_TOO_OLD, REQUIRES
 
 	try:

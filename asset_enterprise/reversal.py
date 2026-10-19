@@ -26,9 +26,13 @@ A controller mixes in CounterDocumentReversal and supplies:
                               this way (then a plain cancel applies)
     reversal_gates()          refusals that depend on the asset (VR-042...)
     build_reversal(date)      the unsaved counter-document
+    reversal_note()           what the Reverse prompt says it does
 
 and the shared steps — date gate, permission, insert/submit, the
-Reversed stamp — live here, once.
+Reversed stamp — live here, once. The desk's Reverse is the module's
+platform action (platform.AssetLedgerAdapter._reverse_action): the
+platform renders it and asks the posting date before it calls
+api.reverse_document.
 """
 
 import frappe
@@ -53,6 +57,11 @@ class CounterDocumentReversal:
 
 	def reversal_source_date(self):
 		return self.get("posting_date") or self.get("date")
+
+	def reversal_note(self):
+		"""One sentence the Reverse prompt adds: what the reversal does to
+		this document's asset."""
+		return ""
 
 	# -------------------------------------------------------------- shared
 	def is_counter_document(self):

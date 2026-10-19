@@ -426,6 +426,13 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 			return _("Enterprise asset features are off: this adjustment is cancelled, not reversed.")
 		return None
 
+	def reversal_note(self):
+		if not self.get("journal_entry"):
+			return _("Depreciation recalculates from that date.")
+		return _("The mirror of journal entry {0} posts on that date and depreciation recalculates from it.").format(
+			self.journal_entry
+		)
+
 	def reversal_gates(self):
 		# VR-042: a reversal that removes value must be covered by NBV.
 		value_added = flt(self.new_asset_value) - flt(self.current_asset_value)

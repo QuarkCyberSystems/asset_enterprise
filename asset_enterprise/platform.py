@@ -20,7 +20,7 @@ import frappe
 from frappe import _
 
 from asset_enterprise.reversal import REVERSIBLE_DOCTYPES
-from qcs_platform.contracts import API_VERSION, Action, Refusal, Registration
+from qcs_platform.contracts import API_VERSION, Action, Prompt, Refusal, Registration
 
 try:  # Build 0.2 step 4
 	from qcs_platform.contracts import CapabilityUse
@@ -111,12 +111,48 @@ class AssetLedgerAdapter:
 		if not refusal:
 			return None  # not reversed this way: cancels natively
 		title, message, offers_reverse = refusal
-		route = (
-			Action(label=_("Reverse"), method="asset_enterprise.api.reverse_document",
-				args={"doctype": doc.doctype, "name": doc.name})
-			if offers_reverse else None
-		)
+		route = self._reverse_action(doc) if offers_reverse else None
 		return Refusal(title=title, message=message, owner=self.app, route=route)
+
+	def _reverse_action(self, doc):
+		"""Reverse, with its posting date asked first (contracts.Prompt):
+		today by default; editable only for the company's Reversal Date
+		Edit Role, decided here per user - reverse_document checks it again
+		(assert_reversal_date)."""
+		from frappe.utils import nowdate
+
+		from asset_enterprise.api import reversal_date_editable
+
+		gate = reversal_date_editable(doc.company)
+		if gate["editable"]:
+			locked = ""
+		elif gate["role"]:
+			locked = _("Only the {0} role may change this date - the reversal posts today.").format(gate["role"])
+		else:
+			locked = _("No role is configured to change this date - the reversal posts today.")
+		message = _(
+			"A reversal entry posts the mirror of {0} on this date. {0} stays on the record, marked "
+			"Reversed; its ledger entries remain posted."
+		).format(doc.name)
+		return Action(
+			label=_("Reverse"),
+			method="asset_enterprise.api.reverse_document",
+			prompt=Prompt(
+				title=_("Reverse {0}").format(_(doc.reversal_label or doc.doctype)),
+				message=" ".join(filter(None, (message, doc.reversal_note()))),
+				fields=(
+					{
+						"fieldname": "posting_date",
+						"fieldtype": "Date",
+						"label": _("Reversal Posting Date"),
+						"reqd": 1,
+						"default": nowdate(),
+						"read_only": 0 if gate["editable"] else 1,
+						"description": locked,
+					},
+				),
+			),
+		)
 
 	def _consumed_invoice_refusal(self, doc):
 		"""Core refuses cancelling an invoice a standing repair names
@@ -159,6 +195,10 @@ class AssetLedgerAdapter:
 		return ()
 
 	def actions(self, doc):
+		if doc.doctype in REVERSIBLE_DOCTYPES:
+			# the refusal's route is the first action (one dialog shape)
+			refusal = doc.cancel_refusal() if doc.docstatus == 1 and hasattr(doc, "cancel_refusal") else None
+			return (self._reverse_action(doc),) if refusal and refusal[2] else ()
 		if doc.doctype == "Purchase Invoice":
 			from asset_enterprise.consumption import standing_consumers
 

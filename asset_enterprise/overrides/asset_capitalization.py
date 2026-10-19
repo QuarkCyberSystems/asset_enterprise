@@ -467,6 +467,12 @@ class EnterpriseAssetCapitalization(CounterDocumentReversal, AssetCapitalization
 	def is_counter_document(self):
 		return self.get("transaction_type") == "Reversal of Capitalized Maintenance"
 
+	def reversal_note(self):
+		note = _("The service value leaves {0}.").format(self.target_asset)
+		if self.get("stock_items"):
+			note += " " + _("Consumed stock items return to their warehouse by a Material Receipt.")
+		return note
+
 	def reversal_gates(self):
 		# VR-042: what the reversal takes off the target must be covered by
 		# its NBV — the merged sources' NBV plus capitalized services.

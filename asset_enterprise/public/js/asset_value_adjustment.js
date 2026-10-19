@@ -99,23 +99,7 @@ frappe.ui.form.on("Asset Value Adjustment", {
 				"orange"
 			);
 		}
-		// GAP-030: reversed, never cancelled — the original stays submitted
-		// (the platform's headline names its reversal)
-		window.ae_reversal_form(frm, {
-			of_field: "reversal_of_ava",
-			link_field: "reversed_by_ava",
-			label: "Asset Value Adjustment",
-			note: ae_ava_reversal_note(frm),
-		});
+		// GAP-030: reversed, never cancelled — Reverse is the platform's action
+		window.ae_reversal_form(frm, { of_field: "reversal_of_ava", link_field: "reversed_by_ava" });
 	},
 });
-
-function ae_ava_reversal_note(frm) {
-	return `<p>${__("The mirror of journal entry {0} posts on that date and depreciation recalculates from it.", [
-		frm.doc.journal_entry
-			? `<a href="/app/journal-entry/${encodeURIComponent(frm.doc.journal_entry)}"><b>${frappe.utils.escape_html(
-					frm.doc.journal_entry
-			  )}</b></a>`
-			: __("(none)"),
-	])}</p>`;
-}

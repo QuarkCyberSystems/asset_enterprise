@@ -828,7 +828,7 @@ def _run():
 		ava_d = _mk_ava()
 		f9_early = _refused(
 			lambda: reverse_document("Asset Value Adjustment", ava_d.name, posting_date=too_early),
-			"before the AVA posting date",
+			"before the Asset Value Adjustment posting date",
 		)
 		f9_early = f9_early and reversal.is_standing("Asset Value Adjustment", ava_d.name)
 
@@ -2226,7 +2226,7 @@ def _run():
 
 		# reversing must put the materials BACK, not just the money
 		cap30.reload()
-		cap30.cancel()
+		cap30.reverse()
 		reversal = frappe.db.get_value("Asset Capitalization",
 			{"reversal_of_capitalization": cap30.name, "docstatus": 1}, "name")
 		hav_reversed = flt(recalculate_asset_values(t30_target.name, save=False)["historical_asset_value"])
@@ -2333,7 +2333,7 @@ def _run():
 
 		# the sanctioned route still works end to end
 		cm2.reload()
-		cm2.cancel()
+		cm2.reverse()
 		t30e_ok = bool(frappe.db.get_value("Stock Entry",
 			{"asset_capitalization": frappe.db.get_value("Asset Capitalization",
 				{"reversal_of_capitalization": cm2.name, "docstatus": 1}, "name"),
@@ -2439,7 +2439,7 @@ def _run():
 		r1_want = getdate(add_days(add_months(r1_before, 6), 10))
 		# and the reversal hands the life back with the value
 		rep.reload()
-		rep.cancel()
+		rep.reverse()
 		r1_rev = getdate(active_schedule_horizon(r1.name))
 		fb_after = frappe.db.get_value(
 			"Asset Finance Book", {"parent": r1.name},

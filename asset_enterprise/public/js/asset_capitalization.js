@@ -15,15 +15,11 @@ frappe.ui.form.on("Asset Capitalization", {
 	refresh(frm) {
 		set_target_asset_query(frm);
 		// GAP-014 / GAP-030: a Capitalized Maintenance is reversed, never
-		// cancelled; a Standard Capitalization cancels natively
+		// cancelled (Reverse is the platform's action); a Standard
+		// Capitalization cancels natively
 		window.ae_reversal_form(frm, {
 			of_field: "reversal_of_capitalization",
 			link_field: "reversed_by_capitalization",
-			label: "Capitalized Maintenance",
-			eligible: frm.doc.transaction_type === "Capitalized Maintenance",
-			note: `<p>${__(
-				"The service value leaves the target asset, and consumed stock items return to their warehouse by a Material Receipt."
-			)}</p>`,
 		});
 		window.ae_hide_system_only_option(
 			frm,
