@@ -6,10 +6,12 @@
 One adapter answers for the four asset transactions this app posts and
 for a Stock Entry that a capitalization raised. The refusals it used to
 throw from `immutability.py` and `overrides/stock_entry.py` are the same
-words, returned as values; the transactions themselves still cancel
-natively - their controllers raise the counter-document (a Reversal AVA,
-a Reversal Repair, a Reversal of Capitalized Maintenance) or refuse (a
-reversal half, a Scrap Transaction), which is each document's own rule.
+words, returned as values. An Asset Value Adjustment, a Capitalized
+Maintenance and a capitalized Asset Repair are never cancelled: native
+cancel is refused WITH a route, Reverse (reversal.CounterDocumentReversal),
+and their counter-documents carry the platform's reversal pair - this
+module is their author (`reversal_doctypes`, §5.7). A Scrap Transaction
+refuses in its controller.
 `invoice_diff.pr_before_cancel` does invoice-diff work on a receipt's
 cancel and stays a hook, declared here as a legacy effect hook.
 """
@@ -17,6 +19,7 @@ cancel and stays a hook, declared here as a legacy effect hook.
 import frappe
 from frappe import _
 
+from asset_enterprise.reversal import REVERSIBLE_DOCTYPES
 from qcs_platform.contracts import API_VERSION, Action, Refusal, Registration
 
 try:  # Build 0.2 step 4
@@ -31,9 +34,9 @@ OWN = ("Asset Capitalization", "Asset Repair", "Asset Value Adjustment", "Scrap 
 # both sides on the record; UAT 16/08/2026 deleted a capitalization and left
 # the supersession trail naming a document that no longer existed)
 REVERSAL_ROUTE = {
-	"Asset Capitalization": _("submit a Reversal of Capitalized Maintenance against it"),
-	"Asset Repair": _("cancel it - a Reversal Repair is created automatically"),
-	"Asset Value Adjustment": _("cancel it - a Reversal AVA is created automatically"),
+	"Asset Capitalization": _("use Reverse - a Reversal of Capitalized Maintenance posts the mirror"),
+	"Asset Repair": _("use Reverse - a Reversal Repair posts the mirror"),
+	"Asset Value Adjustment": _("use Reverse - a Reversal AVA posts the mirror"),
 	"Scrap Transaction": _("restore the asset, or create a replacement asset"),
 	# NOT Asset: frappe already refuses to delete a submitted one, and
 	# cancelling a Purchase Receipt legitimately deletes the draft or
@@ -55,6 +58,8 @@ class AssetLedgerAdapter:
 	# consumes its cost (cross-app r4 X2)
 	doctypes = OWN + ("Stock Entry", "Journal Entry", "Purchase Invoice")
 	ledger_doctypes = ()
+	# the platform installs its reversal pair here; this module authors it
+	reversal_doctypes = REVERSIBLE_DOCTYPES
 
 	def governs(self, doc):
 		if not _enterprise():
@@ -81,8 +86,10 @@ class AssetLedgerAdapter:
 			return Refusal(title=blocked[0], message=blocked[1], owner=self.app) if blocked else None
 		if doc.doctype == "Purchase Invoice":
 			return self._consumed_invoice_refusal(doc)
+		if doc.doctype in REVERSIBLE_DOCTYPES:
+			return self._reverse_instead(doc)
 		if doc.doctype != "Stock Entry":
-			return None  # cancels natively; the controller raises the reversal or refuses
+			return None  # a Scrap Transaction refuses in its controller
 		# no route on purpose: the issue is not reversible by itself - the
 		# capitalization's reversal posts the Material Receipt that returns the
 		# materials, and cancelling the issue would return them a second time
@@ -95,6 +102,21 @@ class AssetLedgerAdapter:
 			).format(doc.name, doc.asset_capitalization),
 			owner=self.app,
 		)
+
+	def _reverse_instead(self, doc):
+		"""A posted asset transaction is reversed, never cancelled (GAP-030):
+		the refusal carries Reverse as its route; a reversal entry or an
+		already-reversed original refuses with none."""
+		refusal = doc.cancel_refusal() if hasattr(doc, "cancel_refusal") else None
+		if not refusal:
+			return None  # not reversed this way: cancels natively
+		title, message, offers_reverse = refusal
+		route = (
+			Action(label=_("Reverse"), method="asset_enterprise.api.reverse_document",
+				args={"doctype": doc.doctype, "name": doc.name})
+			if offers_reverse else None
+		)
+		return Refusal(title=title, message=message, owner=self.app, route=route)
 
 	def _consumed_invoice_refusal(self, doc):
 		"""Core refuses cancelling an invoice a standing repair names
@@ -111,7 +133,7 @@ class AssetLedgerAdapter:
 			title=_("Invoice Cost Capitalized"),
 			message=_(
 				"Purchase Invoice {0} cannot be cancelled or reversed while its cost stays capitalized by {1}. "
-				"Cancel {2} first - its reversal gives the cost back to the invoice - then reverse the invoice."
+				"Reverse {2} first - its reversal gives the cost back to the invoice - then reverse the invoice."
 			).format(
 				doc.name,
 				", ".join(f"{_(dt)} {name}" for dt, name in consumers),

@@ -45,7 +45,7 @@ override_whitelisted_methods = {
 }
 
 # GA-0005-01 v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
-app_include_js = "/assets/asset_enterprise/js/system_only_option.js"
+app_include_js = "asset_enterprise.bundle.js"
 
 doctype_js = {
 	"Asset": "public/js/asset.js",
@@ -84,8 +84,10 @@ doctype_list_js = {
 	# the badge on both list and form reads from this map — without an
 	# entry, a new status silently displays as the document state
 	"Asset": "public/js/asset_list.js",
-	# reversal AVAs badge as "Reversal", reversed originals as "Reversed"
+	# reversal entries badge as "Reversal", reversed originals as "Reversed"
 	"Asset Value Adjustment": "public/js/asset_value_adjustment_list.js",
+	"Asset Capitalization": "public/js/asset_capitalization_list.js",
+	"Asset Repair": "public/js/asset_repair_list.js",
 }
 
 # GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).

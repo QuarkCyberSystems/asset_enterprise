@@ -834,8 +834,9 @@ def _post_delta_transfer_je(doc, transfer_legs):
 
 
 def pi_on_cancel(doc, method=None):
-	"""Cancel the auto-AVAs — each flows through the Phase 4
-	Reversal-AVA path, unwinding the delta via counter-documents."""
+	"""Reverse the auto-AVAs (GAP-030: each stays submitted, marked
+	Reversed, and its Reversal AVA unwinds the delta) — on today's date,
+	as the invoice's own cancellation posts under the immutable ledger."""
 	if not _enterprise():
 		return
 	for item in doc.items:
@@ -850,12 +851,15 @@ def pi_on_cancel(doc, method=None):
 			"docstatus": 1,
 			# a Reversal AVA is already the undo (a repair may have raised one)
 			"reversal_of_ava": ("is", "not set"),
+			"reversed_by_ava": ("is", "not set"),
 			"date": doc.posting_date,
 			"asset": ["in", [r.asset for r in doc.get("pi_asset_allocation") or []]],
 		},
 		pluck="name",
 	):
-		frappe.get_doc("Asset Value Adjustment", ava_name).cancel()
+		from asset_enterprise import reversal
+
+		reversal.reverse("Asset Value Adjustment", ava_name, check_permission=False)
 
 	# Phase 11c D1: mirror the delta-transfer JE (immutable — original
 	# stays posted) and pair any Case A.02 treatments.

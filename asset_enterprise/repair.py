@@ -2195,7 +2195,8 @@ def find_post_merge_invoice_adjustments(company=None, asset=None):
 		merged_into = frappe.db.get_value("Asset", ava.asset, "merged_into_asset")
 		if not merged_into:
 			continue
-		if frappe.db.exists("Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1}):
+		if frappe.db.exists("Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1}) \
+				or frappe.db.get_value("Asset Value Adjustment", ava.name, "reversed_by_ava"):
 			continue
 		merged_on = frappe.db.get_value(
 			"Composite Merge Log Entry",
@@ -2249,12 +2250,9 @@ def repair_post_merge_invoice_adjustments(company=None, asset=None, dry_run=1, c
 		)
 		if dry_run or not ava.purchase_invoice:
 			continue
-		previous = frappe.flags.get("ae_ava_reversal_date")
-		frappe.flags["ae_ava_reversal_date"] = getdate(nowdate())
-		try:
-			frappe.get_doc("Asset Value Adjustment", ava.name).cancel()
-		finally:
-			frappe.flags["ae_ava_reversal_date"] = previous
+		from asset_enterprise import reversal
+
+		reversal.reverse("Asset Value Adjustment", ava.name, check_permission=False)
 
 		def _side(amount):
 			return (

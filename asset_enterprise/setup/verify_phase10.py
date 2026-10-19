@@ -401,7 +401,7 @@ def _run():
 		nbv_v1 = recalculate_asset_values(v1.name, save=False)["net_book_value"]
 		try:
 			ava.reload()
-			ava.cancel()
+			ava.reverse()
 			print(f"ch07   FAIL (AVA reversal allowed with NBV {nbv_v1} < 50000)")
 			ok = False
 		except frappe.ValidationError as e:

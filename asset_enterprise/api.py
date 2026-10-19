@@ -434,73 +434,23 @@ def _assert_reversal_date(company, source_posting_date, posting_date, label):
 
 
 @frappe.whitelist()
-def cancel_ava_with_reversal(ava_name, posting_date=None):
-	"""C3: cancel a Standard AVA and raise its Reversal AVA on a
-	user-chosen posting date (default today; other dates need the
-	company's Reversal Date Edit Role)."""
-	from frappe.utils import getdate, nowdate
+def reverse_document(doctype, name, posting_date=None):
+	"""Reverse a posted Asset Value Adjustment, Capitalized Maintenance or
+	capitalized Asset Repair by its counter-document (GAP-030; the
+	original stays submitted, marked Reversed). The user needs the cancel
+	right on it; a date other than today needs the company's Reversal Date
+	Edit Role. Returns the counter-document's name."""
+	from asset_enterprise import reversal
 
-	doc = frappe.get_doc("Asset Value Adjustment", ava_name)
-	frappe.has_permission("Asset Value Adjustment", "cancel", doc, throw=True)
-	_assert_reversal_date(doc.company, doc.get("date"), posting_date, _("AVA"))
-	previous = frappe.flags.get("ae_ava_reversal_date")
-	frappe.flags["ae_ava_reversal_date"] = getdate(posting_date or nowdate())
-	try:
-		doc.cancel()
-	finally:
-		frappe.flags["ae_ava_reversal_date"] = previous
-	return True
-
-
-@frappe.whitelist()
-def cancel_repair_with_reversal(repair_name, posting_date=None):
-	"""C3: cancel a capitalized Asset Repair and raise its Reversal
-	Repair on a user-chosen posting date (default today; other dates
-	need the company's Reversal Date Edit Role)."""
-	from frappe.utils import getdate, nowdate
-
-	doc = frappe.get_doc("Asset Repair", repair_name)
-	frappe.has_permission("Asset Repair", "cancel", doc, throw=True)
-	_assert_reversal_date(
-		doc.company,
-		doc.get("completion_date") or doc.get("failure_date"),
-		posting_date,
-		_("Asset Repair"),
-	)
-	previous = frappe.flags.get("ae_repair_reversal_date")
-	frappe.flags["ae_repair_reversal_date"] = getdate(posting_date or nowdate())
-	try:
-		doc.cancel()
-	finally:
-		frappe.flags["ae_repair_reversal_date"] = previous
-	return True
-
-
-@frappe.whitelist()
-def cancel_capitalization_with_reversal(capitalization_name, posting_date=None):
-	"""Cancel Capitalized Maintenance with the governed reversal date."""
-	doc = frappe.get_doc("Asset Capitalization", capitalization_name)
-	frappe.has_permission("Asset Capitalization", "cancel", doc, throw=True)
-	if doc.get("transaction_type") != "Capitalized Maintenance":
-		frappe.throw(_("Only Capitalized Maintenance can be reversed with this action."))
-	chosen = _assert_reversal_date(
-		doc.company, doc.posting_date, posting_date, _("Capitalized Maintenance")
-	)
-	previous = frappe.flags.get("ae_capitalization_reversal_date")
-	frappe.flags["ae_capitalization_reversal_date"] = chosen
-	try:
-		doc.cancel()
-	finally:
-		frappe.flags["ae_capitalization_reversal_date"] = previous
-	return True
+	return reversal.reverse(doctype, name, posting_date=posting_date, check_permission=True)
 
 
 @frappe.whitelist()
 def reversal_date_editable(company):
 	"""C3 UX helper: may the current user change the reversal posting
-	date from today for this company? (Enforcement lives in the cancel
-	endpoints; this only decides whether the dialog's date field is
-	editable.)"""
+	date from today for this company? (Enforcement lives in
+	reverse_document / assert_reversal_date; this only decides whether the
+	dialog's date field is editable.)"""
 	role = _reversal_date_edit_role(company)
 	if not role:
 		return {"editable": False, "role": None}
@@ -607,25 +557,6 @@ def raising_project_settlement():
 		yield
 	finally:
 		frappe.flags["ae_project_settlement"] = previous
-
-
-@contextmanager
-def reversing_ava_on(posting_date):
-	"""Inside this block a cancelled Asset Value Adjustment raises its
-	Reversal AVA on `posting_date` instead of today. For server code that
-	reverses an AVA it raised itself and has already gated the date
-	(assert_reversal_date) — Project Accounting's settlement reversal,
-	whose approver need not hold the AVA cancel right. Not an HTTP
-	endpoint: the desk goes through cancel_ava_with_reversal, which checks
-	the user's permission. Restores the previous date on exit."""
-	from frappe.utils import getdate, nowdate
-
-	previous = frappe.flags.get("ae_ava_reversal_date")
-	frappe.flags["ae_ava_reversal_date"] = getdate(posting_date or nowdate())
-	try:
-		yield
-	finally:
-		frappe.flags["ae_ava_reversal_date"] = previous
 
 
 # --------------------------------------------------------------------------
@@ -761,13 +692,13 @@ def undo_asset_value_reduction(source_doctype, source_name, posting_date):
 	reversed_docs = []
 	for name in frappe.get_all("Asset Value Adjustment", filters={
 			"reduction_source_doctype": source_doctype, "reduction_source_name": source_name,
-			"docstatus": 1, "reversal_of_ava": ("is", "not set")}, pluck="name"):
-		ava = frappe.get_doc("Asset Value Adjustment", name)
-		date = assert_reversal_date(ava.company, ava.date, posting_date, _("Asset reduction {0}").format(name))
-		ava.flags.ignore_permissions = True
-		with reversing_ava_on(date):
-			ava.cancel()
-		reversed_docs.append(frappe.db.get_value("Asset Value Adjustment", {"reversal_of_ava": name}, "name"))
+			"docstatus": 1, "reversal_of_ava": ("is", "not set"), "reversed_by_ava": ("is", "not set")},
+			pluck="name"):
+		from asset_enterprise import reversal
+
+		reversed_docs.append(
+			reversal.reverse("Asset Value Adjustment", name, posting_date=posting_date, check_permission=False)
+		)
 	for ft in frappe.get_all("Financial Treatment", filters={
 			"source_doctype": source_doctype, "source_name": source_name, "status": "Posted",
 			"is_reversal": 0, "transaction_type": POST_DISPOSAL_ADJUSTMENT},

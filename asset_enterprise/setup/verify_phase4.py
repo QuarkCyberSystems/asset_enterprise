@@ -81,7 +81,7 @@ def _run():
 
 		# ------------------------------------------- AVA reverse (VR-034)
 		ava.reload()
-		ava.cancel()
+		ava.reverse()
 
 		reversal_name = frappe.db.get_value(
 			"Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1}, "name"
@@ -121,7 +121,7 @@ def _run():
 				print("ava    loop-guard: FAIL (reversal AVA cancelled)")
 				ok = False
 			except frappe.ValidationError as e:
-				guard = "cannot be cancelled" in str(e)
+				guard = "is a reversal entry" in str(e)
 				print(f"ava    loop-guard throw: {'OK' if guard else 'FAIL'}")
 				ok = ok and guard
 
@@ -174,14 +174,11 @@ def _run():
 			}
 		)
 		guard_doc.name = "AE-GUARD-TEST"
-		try:
-			guard_doc.on_cancel()
-			print("repair loop-guard: FAIL (no throw)")
-			ok = False
-		except frappe.ValidationError as e:
-			guard = "cannot be cancelled" in str(e)
-			print(f"repair loop-guard throw: {'OK' if guard else 'FAIL'}")
-			ok = ok and guard
+		# a Reversal Repair is final: cancel is refused with no Reverse route
+		refusal = guard_doc.cancel_refusal()
+		guard = bool(refusal) and refusal[0] == "Reversal Entry" and refusal[2] is False
+		print(f"repair loop-guard refusal: {refusal and refusal[0]} {'OK' if guard else 'FAIL'}")
+		ok = ok and guard
 
 	finally:
 		frappe.db.rollback(save_point="phase4_verify")

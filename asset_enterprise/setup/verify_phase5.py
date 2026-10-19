@@ -152,7 +152,7 @@ def _run():
 
 		# ------------------------------------- Reversal of CM (GAP-026/B7)
 		cap.reload()
-		cap.cancel()
+		cap.reverse()
 
 		reversal = frappe.db.get_value(
 			"Asset Capitalization",
@@ -190,7 +190,7 @@ def _run():
 				print("revcm  loop-guard: FAIL")
 				ok = False
 			except frappe.ValidationError as e:
-				guard = "cannot be" in str(e)
+				guard = "is a reversal entry" in str(e)
 				print(f"revcm  loop-guard throw: {'OK' if guard else 'FAIL'}")
 				ok = ok and guard
 

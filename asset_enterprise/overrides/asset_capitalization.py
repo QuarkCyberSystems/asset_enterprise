@@ -2,12 +2,13 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
+from asset_enterprise.reversal import REVERSAL_LINKS, CounterDocumentReversal
 from erpnext.assets.doctype.asset_capitalization.asset_capitalization import (
 	AssetCapitalization,
 )
 
 
-class EnterpriseAssetCapitalization(AssetCapitalization):
+class EnterpriseAssetCapitalization(CounterDocumentReversal, AssetCapitalization):
 	"""GA-0005-01 v2.14 Asset Capitalization overrides
 	(GAP-014 / 015 / 017 / 026 / 035).
 
@@ -448,44 +449,37 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 			je = merge.reverse_merge(self)
 			self.add_comment("Comment", _("Reversal posted via Journal Entry {0}.").format(je))
 
-	# -------------------------------------------------------------- cancel
-	def on_cancel(self):
+	# ------------------------------------------------------------ reversal
+	# GAP-014 / GAP-030 pattern (reversal.CounterDocumentReversal): a
+	# Capitalized Maintenance is never cancelled; reverse() raises a
+	# Reversal of Capitalized Maintenance, whose submit (merge.reverse_merge)
+	# mirrors every journal, returns the materials and pairs the treatments.
+	reversal_link_field = REVERSAL_LINKS["Asset Capitalization"]
+	reversal_of_field = "reversal_of_capitalization"
+	reversal_label = "Capitalized Maintenance"
+
+	def reversal_eligible(self):
 		ttype = self.get("transaction_type") or "Standard Capitalization"
 		if not self._enterprise() or ttype == "Standard Capitalization":
-			return super().on_cancel()
+			return _("A {0} is cancelled, not reversed.").format(_(ttype))
+		return None
 
-		if ttype == "Reversal of Capitalized Maintenance":
-			frappe.throw(
-				_(
-					"{0} is a Reversal of Capitalized Maintenance and cannot be "
-					"cancelled. To undo it, submit a fresh Capitalized Maintenance."
-				).format(self.name)
-			)
+	def is_counter_document(self):
+		return self.get("transaction_type") == "Reversal of Capitalized Maintenance"
 
-		from asset_enterprise.api import _assert_reversal_date
-
-		reversal_date = _assert_reversal_date(
-			self.company, self.posting_date,
-			frappe.flags.get("ae_capitalization_reversal_date"),
-			_("Capitalized Maintenance"),
-		)
-
-		# VR-042: the composite must be able to give the merged value back.
+	def reversal_gates(self):
+		# VR-042: what the reversal takes off the target must be covered by
+		# its NBV — the merged sources' NBV plus capitalized services.
 		merged_nbv = sum(
-			frappe.utils.flt(r.net_book_value_at_merge)
+			flt(r.net_book_value_at_merge)
 			for r in frappe.get_all(
 				"Composite Merge Log Entry",
-				filters={
-					"parent": self.target_asset,
-					"merged_via_capitalization": self.name,
-					"status": "Active",
-				},
+				filters={"parent": self.target_asset, "merged_via_capitalization": self.name, "status": "Active"},
 				fields=["net_book_value_at_merge"],
 			)
 		)
-		# service capitalizations add value to the target too (§12.3)
 		service_value = sum(
-			frappe.utils.flt(r.amount)
+			flt(r.amount)
 			for r in frappe.get_all(
 				"Financial Treatment",
 				filters={
@@ -497,31 +491,15 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 				fields=["amount"],
 			)
 		)
-		reversal_value = merged_nbv + service_value
-		if reversal_value > 0:
+		if merged_nbv + service_value > 0:
 			from asset_enterprise.asset_values import assert_nbv_covers_reversal
 
 			assert_nbv_covers_reversal(
-				self.target_asset, reversal_value,
+				self.target_asset, merged_nbv + service_value,
 				context=_("Capitalized Maintenance {0}").format(self.name),
 			)
 
-		# Cancel of a CM -> auto-create the dedicated reversal doc.
-		self.ignore_linked_doctypes = (
-			"Asset Depreciation Schedule",  # triggered_by dynamic link
-			"GL Entry",
-			"Asset",
-			"Asset Capitalization",
-			"Financial Treatment",
-			"Asset Activity",
-			"Journal Entry",
-			# the Material Issue that consumed the stock links back here,
-			# and the reversal's Material Receipt links to the reversal —
-			# neither may block the counter-document being raised (the same
-			# exemption Asset Repair carries for its own stock entries)
-			"Stock Entry",
-			"Stock Ledger Entry",
-		)
+	def build_reversal(self, posting_date):
 		reversal = frappe.get_doc(
 			{
 				"doctype": "Asset Capitalization",
@@ -530,16 +508,19 @@ class EnterpriseAssetCapitalization(AssetCapitalization):
 				"target_asset": self.target_asset,
 				"target_item_code": self.get("target_item_code"),
 				"company": self.company,
-				"posting_date": reversal_date,
+				"posting_date": posting_date,
 				"posting_time": frappe.utils.nowtime(),
+				"set_posting_time": 1,
 				"entry_type": self.get("entry_type"),
 			}
 		)
-		reversal.flags.ignore_permissions = True
 		reversal.flags.ignore_links = True
 		reversal.flags.ignore_mandatory = True
-		reversal.insert()
-		reversal.submit()
+		return reversal
+
+	# Cancel is refused by the module's platform adapter, with Reverse as
+	# the route (platform.AssetLedgerAdapter.can_cancel) — a document that
+	# is not reversed this way (reversal_eligible) cancels natively.
 
 	def _enterprise(self):
 		from asset_enterprise.depreciation import enterprise_enabled

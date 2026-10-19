@@ -212,7 +212,7 @@ def _run():
 			recalculate_asset_values(v1.name, save=False)["historical_asset_value"]
 		)
 		ava.reload()
-		ava.cancel()  # always-reverse despite subsequent posting
+		ava.reverse()  # always-reverse despite subsequent posting
 		values = recalculate_asset_values(v1.name, save=False)
 		posted_rows = frappe.db.sql(
 			"""select count(*) from `tabDepreciation Schedule` ds
@@ -281,7 +281,7 @@ def _run():
 			)
 		)
 		repair.reload()
-		repair.cancel()  # -> Reversal Repair + Material Receipt return
+		repair.reverse()  # -> Reversal Repair + Material Receipt return
 		qty_after_reversal = flt(
 			frappe.db.get_value(
 				"Bin", {"item_code": stock_item, "warehouse": warehouse}, "actual_qty"

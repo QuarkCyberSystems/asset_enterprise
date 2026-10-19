@@ -14,33 +14,17 @@ frappe.ui.form.on("Asset Capitalization", {
 	},
 	refresh(frm) {
 		set_target_asset_query(frm);
-		if (frm.doc.docstatus === 1 && frm.doc.transaction_type === "Capitalized Maintenance") {
-			frm.add_custom_button(__("Reverse Capitalized Maintenance"), () => {
-				const dialog = new frappe.ui.Dialog({
-					title: __("Reverse Capitalized Maintenance"),
-					fields: [{
-						fieldtype: "Date", fieldname: "posting_date",
-						label: __("Reversal Posting Date"), reqd: 1,
-						default: frappe.datetime.get_today(),
-					}],
-					primary_action_label: __("Cancel & Create Reversal"),
-					primary_action(values) {
-						frappe.call({
-							method: "asset_enterprise.api.cancel_capitalization_with_reversal",
-							args: { capitalization_name: frm.doc.name, posting_date: values.posting_date },
-							freeze: true,
-							callback(r) {
-								if (r.exc) return;
-								dialog.hide();
-								frm.reload_doc();
-							},
-						});
-					},
-				});
-				window.ae_apply_reversal_date_gate(dialog, frm.doc.company);
-				dialog.show();
-			}, __("Actions"));
-		}
+		// GAP-014 / GAP-030: a Capitalized Maintenance is reversed, never
+		// cancelled; a Standard Capitalization cancels natively
+		window.ae_reversal_form(frm, {
+			of_field: "reversal_of_capitalization",
+			link_field: "reversed_by_capitalization",
+			label: "Capitalized Maintenance",
+			eligible: frm.doc.transaction_type === "Capitalized Maintenance",
+			note: `<p>${__(
+				"The service value leaves the target asset, and consumed stock items return to their warehouse by a Material Receipt."
+			)}</p>`,
+		});
 		window.ae_hide_system_only_option(
 			frm,
 			"transaction_type",

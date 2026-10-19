@@ -2,12 +2,13 @@ import frappe
 from frappe import _
 from frappe.utils import flt, getdate, nowdate
 
+from asset_enterprise.reversal import REVERSAL_LINKS, CounterDocumentReversal
 from erpnext.assets.doctype.asset_value_adjustment.asset_value_adjustment import (
 	AssetValueAdjustment,
 )
 
 
-class EnterpriseAVA(AssetValueAdjustment):
+class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 	"""GA-0005-01 v2.14 AVA overrides (GAP-013 / GAP-030 / VR-034).
 
 	Forward: core posts the revaluation JE and reschedules (our
@@ -16,16 +17,17 @@ class EnterpriseAVA(AssetValueAdjustment):
 	No Downward Revaluation type exists — negative differences are
 	Impairment (per client, IAS 16).
 
-	Reverse Mode: cancelling a Standard AVA never touches the original
-	JE. Instead a Reversal AVA is auto-created with SWAPPED
-	current/new values, so core's own on_submit posts the mirror JE.
-	The TCC pairs the FTs (original -> Reversed, mirror carries
-	reversal_reference). Framework note: the source doc still moves to
-	docstatus=2 on cancel (frappe semantics) — the LEDGER stays
-	untouched, which is what immutability governs.
-
-	A Reversal AVA itself cannot be cancelled (loop guard).
+	Reverse Mode (GAP-030, reversal.CounterDocumentReversal): an AVA is
+	never cancelled. reverse() raises a Reversal AVA with SWAPPED
+	current/new values, so core's own on_submit posts the mirror JE, and
+	the TCC pairs the FTs (original -> Reversed, mirror carries
+	reversal_reference). The original stays submitted, marked Reversed;
+	its JE stays posted.
 	"""
+
+	reversal_link_field = REVERSAL_LINKS["Asset Value Adjustment"]
+	reversal_of_field = "reversal_of_ava"
+	reversal_label = "Asset Value Adjustment"
 
 	def validate(self):
 		self._enforce_type_contract()
@@ -418,18 +420,13 @@ class EnterpriseAVA(AssetValueAdjustment):
 		return ("Revaluation" if diff >= 0 else "Impairment"), diff, life
 
 	# ------------------------------------------------------------- cancel
-	def on_cancel(self):
+	# --------------------------------------------------------- reversal
+	def reversal_eligible(self):
 		if not self._enterprise():
-			return super().on_cancel()
+			return _("Enterprise asset features are off: this adjustment is cancelled, not reversed.")
+		return None
 
-		if self.get("reversal_of_ava"):
-			frappe.throw(
-				_(
-					"{0} is a Reversal AVA and cannot be cancelled. "
-					"To undo it, submit a fresh Asset Value Adjustment."
-				).format(self.name)
-			)
-
+	def reversal_gates(self):
 		# VR-042: a reversal that removes value must be covered by NBV.
 		value_added = flt(self.new_asset_value) - flt(self.current_asset_value)
 		if value_added > 0:
@@ -437,25 +434,14 @@ class EnterpriseAVA(AssetValueAdjustment):
 
 			assert_nbv_covers_reversal(self.asset, value_added, context=_("AVA {0}").format(self.name))
 
-		# Never touch the original JE. Post the mirror via a Reversal AVA.
-		# The reversal + FT/Activity rows deliberately link this doc —
-		# exempt them from frappe's cancel-time link check.
-		self.ignore_linked_doctypes = (
-			"Asset Depreciation Schedule",  # triggered_by dynamic link
-			"GL Entry",
-			"Asset Value Adjustment",
-			"Financial Treatment",
-			"Asset Activity",
-		)
+	def build_reversal(self, posting_date):
 		reversal = frappe.get_doc(
 			{
 				"doctype": "Asset Value Adjustment",
 				"asset": self.asset,
 				"company": self.company,
 				"finance_book": self.get("finance_book"),
-				# C3: the dialog's chosen date (default today) travels via
-				# this flag; the endpoint validates role + date bounds.
-				"date": getdate(frappe.flags.get("ae_ava_reversal_date") or nowdate()),
+				"date": getdate(posting_date),
 				"transaction_type": self.get("transaction_type"),
 				"current_asset_value": self.new_asset_value,
 				"new_asset_value": self.current_asset_value,  # swap -> core posts mirror JE
@@ -466,22 +452,12 @@ class EnterpriseAVA(AssetValueAdjustment):
 				"reversal_of_ava": self.name,
 			}
 		)
-		reversal.flags.ignore_permissions = True
-		# Source is docstatus=2 mid-cancel; the back-link is the audit
-		# trail we WANT — skip the cancelled-link validation.
 		reversal.flags.ignore_links = True
-		reversal.insert()
-		reversal.submit()
+		return reversal
 
-		from asset_enterprise.tcc import add_snapshot_activity
-
-		add_snapshot_activity(
-			self.asset,
-			_("AVA {0} reversed via Reversal AVA {1}; original JE remains posted.").format(
-				self.name, reversal.name
-			),
-			transaction_type="Reversal",
-		)
+	# Cancel is refused by the module's platform adapter, with Reverse as
+	# the route (platform.AssetLedgerAdapter.can_cancel) — a document that
+	# is not reversed this way (reversal_eligible) cancels natively.
 
 	def _enterprise(self):
 		from asset_enterprise.depreciation import enterprise_enabled

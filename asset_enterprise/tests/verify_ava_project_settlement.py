@@ -192,16 +192,16 @@ def _run():
 			ft and ft.transaction_category == "Addition" and ft.transaction_type == "Project Settlement"
 			and ft.status == "Posted" and flt(ft.hav_delta) == 1_250, str(ft))
 
-		# p6: cancel -> Reversal AVA
-		from asset_enterprise.api import cancel_ava_with_reversal
+		# p6: reverse -> Reversal AVA
+		from asset_enterprise.api import reverse_document
 
 		frappe.local.message_log = []
-		cancel_ava_with_reversal(ava.name, nowdate())
-		check("p7     cancel on an asset with no schedule: no 'nothing to supersede' message",
+		reverse_document("Asset Value Adjustment", ava.name, nowdate())
+		check("p7     reversal on an asset with no schedule: no 'nothing to supersede' message",
 			not _supersede_noise(), str(_supersede_noise()))
 		rev = frappe.db.get_value("Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1},
 			["name", "transaction_type", "journal_entry"], as_dict=True)
-		check("p6     cancel raised a Reversal AVA of type Project Settlement",
+		check("p6     reverse raised a Reversal AVA of type Project Settlement",
 			rev and rev.transaction_type == "Project Settlement" and rev.journal_entry, str(rev))
 		check("p6     the original JE stays posted",
 			frappe.db.get_value("Journal Entry", ava.journal_entry, "docstatus") == 1)
