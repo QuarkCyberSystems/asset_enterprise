@@ -11,8 +11,8 @@ writes from now on.
 
 An original is restored only where the record agrees it was never undone
 in the ledger: its counter-document is submitted and no GL or stock
-ledger row of the original is cancelled. Anything else is left as it is
-and named in the migrate log. Idempotent.
+ledger row and no serial / batch bundle of the original is cancelled.
+Anything else is left as it is and named in the migrate log. Idempotent.
 """
 
 import frappe
@@ -93,6 +93,11 @@ def _settle_pair(doctype, link_field, of_field, counter):
 
 
 def _cancelled_ledger_rows(voucher_no):
-	return frappe.db.count("GL Entry", {"voucher_no": voucher_no, "is_cancelled": 1}) + frappe.db.count(
-		"Stock Ledger Entry", {"voucher_no": voucher_no, "is_cancelled": 1}
+	"""GL and stock ledger rows of the original that were cancelled, and its
+	cancelled Serial and Batch Bundles (the old repair cancel ran
+	cancel_sabb), each an undo the restore must not contradict."""
+	return (
+		frappe.db.count("GL Entry", {"voucher_no": voucher_no, "is_cancelled": 1})
+		+ frappe.db.count("Stock Ledger Entry", {"voucher_no": voucher_no, "is_cancelled": 1})
+		+ frappe.db.count("Serial and Batch Bundle", {"voucher_no": voucher_no, "docstatus": 2})
 	)

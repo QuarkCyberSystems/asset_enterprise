@@ -67,10 +67,18 @@ class CounterDocumentReversal:
 	def is_counter_document(self):
 		return bool(self.get(self.reversal_of_field))
 
-	def reverse(self, posting_date=None, check_permission=True):
+	def reverse(self, posting_date=None, check_permission=True, date_gated=False):
 		"""Reverse this document on `posting_date` (default today) and
-		return the counter-document's name."""
-		from asset_enterprise.api import assert_reversal_date
+		return the counter-document's name.
+
+		Who may and which date are separate questions. `check_permission`
+		asks the session for the cancel right. The date: today needs
+		nothing; another date needs the company's Reversal Date Edit Role,
+		judged when the date is chosen - here, unless the caller already
+		gated it when its user chose it (`date_gated`: Project Accounting's
+		Reversal run, whose approver may post a day later). VR-022 (never
+		before the source) holds for every caller."""
+		from asset_enterprise.api import assert_reversal_date, assert_reversal_not_before_source
 
 		label = _(self.reversal_label or self.doctype)
 		if self.docstatus != 1:
@@ -93,7 +101,10 @@ class CounterDocumentReversal:
 		if check_permission:
 			# the same right that could cancel it before
 			frappe.has_permission(self.doctype, "cancel", self, throw=True)
-		date = getdate(assert_reversal_date(self.company, self.reversal_source_date(), posting_date, label))
+		if date_gated:
+			date = getdate(assert_reversal_not_before_source(self.reversal_source_date(), posting_date, label))
+		else:
+			date = getdate(assert_reversal_date(self.company, self.reversal_source_date(), posting_date, label))
 		self.reversal_gates()
 
 		counter = self.build_reversal(date)
@@ -130,6 +141,21 @@ class CounterDocumentReversal:
 			),
 			transaction_type="Reversal",
 		)
+
+	def on_cancel(self):
+		"""Unreachable for a document reversed this way: the platform's
+		cancel guard (dispatcher.before_cancel -> AssetLedgerAdapter.
+		can_cancel) refuses it first. Should that door ever be bypassed,
+		core's on_cancel - which unposts the ledger - must not run."""
+		if self.cancel_refusal():
+			frappe.throw(
+				_(
+					"{0} {1} reached cancel although it is reversed, never cancelled: the platform's "
+					"cancel guard did not run. Nothing was changed."
+				).format(_(self.doctype), self.name),
+				title=_("Cancel Guard Bypassed"),
+			)
+		return super().on_cancel()
 
 	def cancel_refusal(self):
 		"""Why native cancel is refused, for the platform adapter:
@@ -193,12 +219,13 @@ def is_standing(doctype, name):
 	return bool(frappe.db.exists(doctype, {"name": name, **standing_filters(doctype)}))
 
 
-def reverse(doctype, name, posting_date=None, check_permission=True):
+def reverse(doctype, name, posting_date=None, check_permission=True, date_gated=False):
 	"""Reverse a posted asset document by its counter-document. The one
-	entry point — the desk, the asset module and other apps all come here."""
+	entry point — the desk, the asset module and other apps all come here
+	(CounterDocumentReversal.reverse for `check_permission` / `date_gated`)."""
 	if doctype not in REVERSIBLE_DOCTYPES:
 		frappe.throw(_("{0} is not reversed by counter-document.").format(doctype))
 	doc = frappe.get_doc(doctype, name)
 	if not isinstance(doc, CounterDocumentReversal):
 		frappe.throw(_("{0} is not set up for reversal on this site.").format(doctype))
-	return doc.reverse(posting_date=posting_date or nowdate(), check_permission=check_permission)
+	return doc.reverse(posting_date=posting_date or nowdate(), check_permission=check_permission, date_gated=date_gated)

@@ -20,7 +20,7 @@ import frappe
 from frappe import _
 
 from asset_enterprise.reversal import REVERSIBLE_DOCTYPES
-from qcs_platform.contracts import API_VERSION, Action, Prompt, Refusal, Registration
+from qcs_platform.contracts import API_VERSION, Action, Refusal, Registration
 
 try:  # Build 0.2 step 4
 	from qcs_platform.contracts import CapabilityUse
@@ -120,6 +120,7 @@ class AssetLedgerAdapter:
 		Edit Role, decided here per user - reverse_document checks it again
 		(assert_reversal_date)."""
 		from frappe.utils import nowdate
+		from qcs_platform.contracts import Prompt  # required as `action_prompt` (REQUIRES)
 
 		from asset_enterprise.api import reversal_date_editable
 
@@ -245,7 +246,9 @@ DEPRECIATION_LINK = "depreciation_journal_link_policy"
 # leg unattributed, silently (seen on a site whose get_gl_dict drifted);
 # and consumption reads every invoice line by it (end review 0.2 M-1).
 GL_VOUCHER_ROW = "P8"
-REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, DEPRECIATION_LINK, GL_VOUCHER_ROW)
+# the form kit's Action prompt: Reverse asks its posting date (D-086)
+ACTION_PROMPT = "action_prompt"
+REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, DEPRECIATION_LINK, GL_VOUCHER_ROW, ACTION_PROMPT)
 
 PLATFORM_TOO_OLD = (
 	"asset_enterprise is written against qcs_platform contract {0} (Build 0.2 step 4 or later: the purchase GL, "

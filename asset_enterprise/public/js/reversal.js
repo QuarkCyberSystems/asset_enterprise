@@ -15,15 +15,15 @@ window.ae_reversal_form = function (frm, opts) {
 	}
 };
 
+// A row that is neither keeps the list's own indicator (core's, e.g. a
+// repair's Pending / Completed), else frappe's default by docstatus.
 window.ae_reversal_listview = function (doctype, of_field, link_field) {
-	frappe.listview_settings[doctype] = Object.assign(frappe.listview_settings[doctype] || {}, {
-		add_fields: [of_field, link_field, "docstatus"],
-		get_indicator(doc) {
-			if (doc[of_field]) return [__("Reversal"), "orange", `${of_field},is,set`];
-			if (doc[link_field]) return [__("Reversed"), "grey", `${link_field},is,set`];
-			if (doc.docstatus === 1) return [__("Submitted"), "blue", "docstatus,=,1"];
-			if (doc.docstatus === 2) return [__("Cancelled"), "red", "docstatus,=,2"];
-			return [__("Draft"), "red", "docstatus,=,0"];
-		},
-	});
+	const settings = (frappe.listview_settings[doctype] = frappe.listview_settings[doctype] || {});
+	const prior = settings.get_indicator;
+	settings.add_fields = [...new Set([...(settings.add_fields || []), of_field, link_field, "docstatus"])];
+	settings.get_indicator = function (doc) {
+		if (doc[of_field]) return [__("Reversal"), "orange", `${of_field},is,set`];
+		if (doc[link_field]) return [__("Reversed"), "grey", `${link_field},is,set`];
+		return prior ? prior.call(this, doc) : undefined;
+	};
 };
