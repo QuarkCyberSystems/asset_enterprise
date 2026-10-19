@@ -196,8 +196,9 @@ class AssetLedgerAdapter:
 
 	def actions(self, doc):
 		if doc.doctype in REVERSIBLE_DOCTYPES:
-			# the refusal's route is the first action (one dialog shape)
-			refusal = doc.cancel_refusal() if doc.docstatus == 1 and hasattr(doc, "cancel_refusal") else None
+			# the refusal's route is the first action (one dialog shape); the
+			# form kit renders actions on a submitted document only
+			refusal = doc.cancel_refusal() if hasattr(doc, "cancel_refusal") else None
 			return (self._reverse_action(doc),) if refusal and refusal[2] else ()
 		if doc.doctype == "Purchase Invoice":
 			from asset_enterprise.consumption import standing_consumers
