@@ -2646,7 +2646,7 @@ def e46():
 	from asset_enterprise.merge import standing_capitalization
 	from asset_enterprise.patches.reversed_not_cancelled import _settle_pair
 	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
-	from asset_enterprise.setup.verify_tc import _cm_merge
+	from asset_enterprise.setup.verify_tc import _cm_merge, _stock_in, _stock_item, _warehouse
 
 	company = _company()
 	problems, notes = [], []
@@ -2715,14 +2715,18 @@ def e46():
 	if any(standing_capitalization(j) for j in cap_journals):
 		problems.append(f"{cap.name}: its journals still read as standing after the reversal")
 
-	# --- capitalized Asset Repair
+	# --- capitalized Asset Repair (consumed stock: it posts GL under its own voucher)
 	r_asset = make_test_asset(company, gross=20_000, submit=True)
+	item, warehouse = _stock_item("E46-REPAIR-STOCK"), _warehouse(company)
+	_stock_in(company, item, warehouse, 5, 100)
 
 	def repair(capitalize):
 		r = frappe.get_doc({"doctype": "Asset Repair", "asset": r_asset.name, "company": company,
 			"failure_date": nowdate(), "completion_date": nowdate(), "repair_status": "Completed",
-			"capitalize_repair_cost": capitalize, "repair_cost": 2_500,
-			"cost_center": frappe.db.get_value("Company", company, "cost_center")})
+			"capitalize_repair_cost": capitalize,
+			"cost_center": frappe.db.get_value("Company", company, "cost_center"),
+			"stock_items": [{"item_code": item, "warehouse": warehouse, "consumed_quantity": 1,
+				"valuation_rate": 100, "total_value": 100}] if capitalize else []})
 		r.flags.ignore_permissions = True
 		r.insert()
 		r.submit()

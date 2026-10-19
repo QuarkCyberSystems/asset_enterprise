@@ -689,13 +689,13 @@ def undo_asset_value_reduction(source_doctype, source_name, posting_date):
 	from asset_enterprise.invoice_diff import POST_DISPOSAL_ADJUSTMENT
 	from asset_enterprise.restore import _mirror_je
 
+	from asset_enterprise import reversal
+
 	reversed_docs = []
 	for name in frappe.get_all("Asset Value Adjustment", filters={
 			"reduction_source_doctype": source_doctype, "reduction_source_name": source_name,
-			"docstatus": 1, "reversal_of_ava": ("is", "not set"), "reversed_by_ava": ("is", "not set")},
+			"reversal_of_ava": ("is", "not set"), **reversal.standing_filters("Asset Value Adjustment")},
 			pluck="name"):
-		from asset_enterprise import reversal
-
 		reversed_docs.append(
 			reversal.reverse("Asset Value Adjustment", name, posting_date=posting_date, check_permission=False)
 		)

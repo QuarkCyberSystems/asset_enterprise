@@ -96,9 +96,12 @@ class CounterDocumentReversal:
 			counter.cancellation_against = self.name
 		counter.flags.ignore_permissions = True
 		counter.insert()
-		counter.submit()
-
+		# stamped before the counter-document submits: its on_submit undoes
+		# what this document posted (a journal, a merge), and the readers
+		# that guard those (standing_condition) must already see this one
+		# as reversed - same transaction, so a failed submit takes it back
 		self.db_set({self.reversal_link_field: counter.name, "reversed_on": date}, update_modified=False)
+		counter.submit()
 		self.after_reversal(counter)
 		return counter.name
 
