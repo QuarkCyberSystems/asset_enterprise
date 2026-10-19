@@ -484,9 +484,10 @@ def _later_shape(fixture, shape, acquired_under, moved_to, amount):
 		ava.insert()
 		ava.submit()
 		vouchers.append(ava.journal_entry)
-		ava.reload()
-		ava.cancel()
-		reversal = frappe.db.get_value("Asset Value Adjustment", {"reversal_of_ava": ava.name}, "journal_entry")
+		from asset_enterprise import reversal as reversal_mod
+
+		counter = reversal_mod.reverse("Asset Value Adjustment", ava.name, check_permission=False)
+		reversal = frappe.db.get_value("Asset Value Adjustment", counter, "journal_entry")
 		vouchers.append(reversal)
 	else:  # the sales
 		sale_dims = (moved_to or {}) if shape == "blank_sale" else acquired_under

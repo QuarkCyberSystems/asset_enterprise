@@ -325,7 +325,18 @@ CUSTOM_FIELDS = {
 			"label": "Reversed By Capitalization",
 			"options": "Asset Capitalization",
 			"read_only": 1,
+			"no_copy": 1,
 			"insert_after": "reversal_of_capitalization",
+		},
+		# GAP-030 step 4 (19/10/2026): a reversed document stays submitted;
+		# the date its reversal entry posted
+		{
+			"fieldname": "reversed_on",
+			"fieldtype": "Date",
+			"label": "Reversed On",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "reversed_by_capitalization",
 		},
 		{
 			"fieldname": "source_asset_category",
@@ -509,7 +520,18 @@ CUSTOM_FIELDS = {
 			"label": "Reversed By Repair",
 			"options": "Asset Repair",
 			"read_only": 1,
+			"no_copy": 1,
 			"insert_after": "reversal_of_repair",
+		},
+		# GAP-030 step 4 (19/10/2026): a reversed document stays submitted;
+		# the date its reversal entry posted
+		{
+			"fieldname": "reversed_on",
+			"fieldtype": "Date",
+			"label": "Reversed On",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "reversed_by_repair",
 		},
 	],
 	# ------------------------------------------------- Asset Value Adjustment
@@ -579,6 +601,7 @@ CUSTOM_FIELDS = {
 			"label": "Reduction Source Type",
 			"options": "DocType",
 			"read_only": 1,
+			"no_copy": 1,
 			"insert_after": "reversal_of_ava",
 		},
 		{
@@ -587,6 +610,7 @@ CUSTOM_FIELDS = {
 			"label": "Reduction Source",
 			"options": "reduction_source_doctype",
 			"read_only": 1,
+			"no_copy": 1,
 			"insert_after": "reduction_source_doctype",
 		},
 		{
@@ -595,7 +619,18 @@ CUSTOM_FIELDS = {
 			"label": "Reversed By AVA",
 			"options": "Asset Value Adjustment",
 			"read_only": 1,
+			"no_copy": 1,
 			"insert_after": "reversal_of_ava",
+		},
+		# GAP-030 step 4 (19/10/2026): a reversed document stays submitted;
+		# the date its reversal entry posted
+		{
+			"fieldname": "reversed_on",
+			"fieldtype": "Date",
+			"label": "Reversed On",
+			"read_only": 1,
+			"no_copy": 1,
+			"insert_after": "reversed_by_ava",
 		},
 	],
 	# ------------------------------------- Asset Depreciation Schedule (parent)

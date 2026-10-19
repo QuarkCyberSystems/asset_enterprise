@@ -2524,7 +2524,7 @@ def tc041():
 		"Journal Entry", filters={"user_remark": ("like", f"%{cap.name}%"), "docstatus": 1}, pluck="name"
 	)
 	cap.reload()
-	cap.cancel()
+	cap.reverse()
 
 	reversal = frappe.db.get_value(
 		"Asset Capitalization",
@@ -2624,7 +2624,7 @@ def tc044a():
 		"Asset Value Adjustment", ava.name, "journal_entry"
 	)
 	ava.reload()
-	ava.cancel()
+	ava.reverse()
 
 	reversal = frappe.db.get_value(
 		"Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1},
@@ -2762,7 +2762,7 @@ def tc047a():
 
 	hav_after_repair = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"], 2)
 	repair.reload()
-	repair.cancel()
+	repair.reverse()
 	reversal = frappe.db.get_value(
 		"Asset Repair", {"reversal_of_repair": repair.name, "docstatus": 1}, "name"
 	)
@@ -2810,7 +2810,7 @@ def tc047d():
 	post_schedule_entries(schedule, get_last_day(nowdate()))
 	try:
 		repair.reload()
-		repair.cancel()
+		repair.reverse()
 	except frappe.ValidationError as e:
 		msg = str(e)
 		reversal = frappe.db.count("Asset Repair", {"reversal_of_repair": repair.name})
@@ -2904,7 +2904,7 @@ def tc047e():
 		["name", "voucher_type", "voucher_no", "journal_entry"], as_dict=True,
 	)
 	repair.reload()
-	repair.cancel()
+	repair.reverse()
 	hav_after_rev = flt(recalculate_asset_values(asset.name, save=False)["historical_asset_value"], 2)
 	ok = (
 		flt(repair.repair_cost) == 15_000  # derived from the invoices child
@@ -3379,7 +3379,7 @@ def tc044b():
 	depr_je = depr_je[0] if depr_je else None
 
 	ava.reload()
-	ava.cancel()
+	ava.reverse()
 	reversal = frappe.db.get_value(
 		"Asset Value Adjustment", {"reversal_of_ava": ava.name, "docstatus": 1},
 		["name", "journal_entry", "difference_amount"], as_dict=True,
@@ -3434,7 +3434,7 @@ def tc047b():
 	posted_before = [(str(r.schedule_date), flt(r.depreciation_amount)) for r in rows if r.journal_entry]
 
 	repair.reload()
-	repair.cancel()
+	repair.reverse()
 	reversal = frappe.db.get_value(
 		"Asset Repair", {"reversal_of_repair": repair.name, "docstatus": 1}, "name"
 	)
@@ -3488,7 +3488,7 @@ def tc047c():
 		frappe.db.get_value("Bin", {"item_code": item, "warehouse": warehouse}, "actual_qty")
 	)
 	repair.reload()
-	repair.cancel()
+	repair.reverse()
 	qty_after_reversal = flt(
 		frappe.db.get_value("Bin", {"item_code": item, "warehouse": warehouse}, "actual_qty")
 	)

@@ -275,7 +275,11 @@ def acquisition_voucher_sql(gl="gl", asset="ast"):
 	One indexed probe per branch; the caller bounds the rows it asks
 	about. project_accounting reads it for the Control Category source
 	rule (D-051 / D-053)."""
+	from asset_enterprise.reversal import standing_condition
+
 	types = ", ".join(frappe.db.escape(t) for t in ACQUISITION_JOURNAL_TYPES)
+	# a reversed capitalization stays submitted (GAP-030) but no longer acquires
+	cap_standing = standing_condition("Asset Capitalization", "acq_cap")
 	return f"""(
 		({gl}.voucher_type = 'Purchase Receipt' AND {gl}.voucher_no = {asset}.purchase_receipt
 		 AND EXISTS (SELECT 1 FROM `tabPurchase Receipt` acq_pr
@@ -287,7 +291,7 @@ def acquisition_voucher_sql(gl="gl", asset="ast"):
 		OR ({gl}.voucher_type = 'Asset Capitalization'
 		 AND EXISTS (SELECT 1 FROM `tabAsset Capitalization` acq_cap
 		             WHERE acq_cap.name = {gl}.voucher_no AND acq_cap.target_asset = {asset}.name
-		               AND acq_cap.docstatus = 1))
+		               AND {cap_standing}))
 		OR ({gl}.voucher_type = 'Journal Entry'
 		 AND EXISTS (SELECT 1 FROM `tabFinancial Treatment` acq_ft
 		             JOIN `tabJournal Entry` acq_je ON acq_je.name = acq_ft.journal_entry

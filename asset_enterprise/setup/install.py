@@ -42,7 +42,8 @@ def require_platform_capabilities():
 	every socket this app's registration requires (qcs_platform Build 0.2
 	§4.0 (8), the new-app / old-platform direction). A platform without
 	`require_capability` predates Build 0.2 step 0; one that does not know
-	the sockets predates step 4 - both are too old."""
+	the sockets predates step 4 - both are too old (as is one without the
+	`action_prompt` feature Reverse asks its date through, D-086)."""
 	from asset_enterprise.platform import PLATFORM_CONTRACT, PLATFORM_TOO_OLD, REQUIRES
 
 	try:

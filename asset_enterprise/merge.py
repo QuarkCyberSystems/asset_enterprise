@@ -1153,16 +1153,20 @@ def standing_capitalization(journal_entry):
 	§4)."""
 	if not journal_entry or not frappe.db.table_exists("Financial Treatment"):
 		return None
+	from asset_enterprise.reversal import standing_condition
+
 	fields = "ac.name, ac.target_asset, ac.transaction_type, ac.reversal_of_capitalization"
+	# stands = submitted and not reversed (a reversed one stays submitted, GAP-030)
+	standing = standing_condition("Asset Capitalization", "ac")
 	consumed = ""
 	if frappe.db.table_exists("Asset Consumed Cost Line"):
 		consumed = f"""union all select {fields} from `tabAsset Consumed Cost Line` l
-			join `tabAsset Capitalization` ac on ac.name = l.parent and ac.docstatus = 1
+			join `tabAsset Capitalization` ac on ac.name = l.parent and {standing}
 			where l.gl_voucher_no = %(je)s and l.gl_voucher_type = 'Journal Entry'
 			  and l.parenttype = 'Asset Capitalization'"""
 	found = frappe.db.sql(
 		f"""select {fields} from `tabFinancial Treatment` ft
-		join `tabAsset Capitalization` ac on ac.name = ft.source_name and ac.docstatus = 1
+		join `tabAsset Capitalization` ac on ac.name = ft.source_name and {standing}
 		where ft.journal_entry = %(je)s and ft.source_doctype = 'Asset Capitalization'
 		{consumed}
 		limit 1""",
@@ -1175,7 +1179,7 @@ def standing_capitalization(journal_entry):
 def standalone_reversal_refusal(journal_entry):
 	"""(title, message) when `journal_entry` may not be undone on its own:
 	it was posted for an Asset Capitalization that still stands. Only the
-	capitalization's own cancel (the Reversal of Capitalized Maintenance)
+	capitalization's own Reverse (the Reversal of Capitalized Maintenance)
 	reverses it - otherwise the target keeps the value while the journal,
 	and any project cost line it consumed, comes back (chief r5 M-4). The
 	mirror journal of a Reversal of Capitalized Maintenance is final, like
@@ -1197,7 +1201,7 @@ def standalone_reversal_refusal(journal_entry):
 		_("Reverse the Capitalization"),
 		_(
 			"Journal Entry {0} was posted by Asset Capitalization {1} and cannot be reversed or cancelled on "
-			"its own: the capitalization still stands and keeps the value on {2}. To undo it, cancel {1} - "
+			"its own: the capitalization still stands and keeps the value on {2}. To undo it, use Reverse on {1} - "
 			"its Reversal of Capitalized Maintenance reverses this journal with it."
 		).format(journal_entry, capitalization.name, capitalization.target_asset),
 	)

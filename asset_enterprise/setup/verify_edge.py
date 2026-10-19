@@ -1788,7 +1788,7 @@ def e31():
 
 @case("E-32", "R017 / §3.7.3", "CM reversal uses the role-governed chosen date")
 def e32():
-	from asset_enterprise.api import cancel_capitalization_with_reversal
+	from asset_enterprise.api import reverse_document
 	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
 	from asset_enterprise.setup.verify_tc import _cm_merge
 
@@ -1801,7 +1801,7 @@ def e32():
 	cap = _cm_merge(company, target.name, source.name)
 	chosen = add_days(getdate(nowdate()), 1)
 	frappe.db.delete("Asset Settings Reversal Role", {"parent": "Asset Settings", "company": company})
-	refused, message = _refused(lambda: cancel_capitalization_with_reversal(cap.name, chosen))
+	refused, message = _refused(lambda: reverse_document("Asset Capitalization", cap.name, chosen))
 	if not refused or "Reversal Date Edit Role" not in message:
 		return False, f"ungoverned date was not refused: {message}"
 	settings = frappe.get_single("Asset Settings")
@@ -1809,7 +1809,7 @@ def e32():
 	field = next(f.fieldname for f in settings.meta.fields if f.options == "Asset Settings Reversal Role")
 	settings.append(field, {"company": company, "reversal_date_edit_role": "System Manager"})
 	settings.save(ignore_permissions=True)
-	cancel_capitalization_with_reversal(cap.name, chosen)
+	reverse_document("Asset Capitalization", cap.name, chosen)
 	reversal = frappe.db.get_value("Asset Capitalization",
 		{"reversal_of_capitalization": cap.name, "docstatus": 1}, ["name", "posting_date"], as_dict=True)
 	ok = bool(reversal and getdate(reversal.posting_date) == getdate(chosen))
@@ -1818,7 +1818,6 @@ def e32():
 		fields=["name", "reversed_by"])
 	ok = ok and bool(originals) and all(r.reversed_by and frappe.db.get_value(
 		"Journal Entry", r.reversed_by, "reversal_of") == r.name for r in originals)
-	ok = ok and frappe.flags.get("ae_capitalization_reversal_date") is None
 	return ok, f"date without role refused={refused}; chosen={chosen}, reversal={reversal}"
 
 
@@ -1886,7 +1885,7 @@ def e35():
 	old_cc = next(r.cost_center for r in original.accounts if r.debit_in_account_currency)
 	new_cc = frappe.db.get_value("Cost Center", {"company": company, "is_group": 0, "name": ("!=", old_cc)}, "name")
 	frappe.db.set_value("Asset", asset.name, "acquisition_cost_center", new_cc)
-	ava.cancel()
+	ava.reverse()
 	reversal = frappe.db.get_value("Asset Value Adjustment",
 		{"reversal_of_ava": ava.name, "docstatus": 1}, "journal_entry")
 	mirror = frappe.get_doc("Journal Entry", reversal)
@@ -1902,7 +1901,7 @@ def e36():
 	from erpnext.accounts.doctype.accounting_dimension.accounting_dimension import get_accounting_dimensions
 	from erpnext.accounts.utils import get_fiscal_year
 
-	from asset_enterprise.api import cancel_repair_with_reversal
+	from asset_enterprise.api import reverse_document
 	from asset_enterprise.setup.test_fixtures import make_test_asset
 	from asset_enterprise.setup.verify_tc import _stock_in, _stock_item, _warehouse
 	company = _company()
@@ -1932,7 +1931,7 @@ def e36():
 		repair.submit()
 		original = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": repair.name},
 			fields=fields, order_by="account, debit")
-		cancel_repair_with_reversal(repair.name, chosen)
+		reverse_document("Asset Repair", repair.name, chosen)
 		reversed_by = frappe.db.get_value("Asset Repair", repair.name, "reversed_by_repair")
 		mirrors = frappe.get_all("GL Entry", filters={"voucher_type": "Asset Repair", "voucher_no": reversed_by},
 			fields=fields, order_by="account, credit")
@@ -2383,8 +2382,7 @@ def e41():
 		notes.append(f"service journal {journal} guarded")
 		# the Reversal's mirror journal names the route that exists (cross-app r4)
 		cap.reload()
-		cap.flags.ignore_permissions = True
-		cap.cancel()
+		cap.reverse()
 		reversal = frappe.db.get_value("Asset Capitalization", {"reversal_of_capitalization": cap.name}, "name")
 		mirror = frappe.db.get_value("Financial Treatment", {"source_doctype": "Asset Capitalization",
 			"source_name": reversal, "journal_entry": ("is", "set")}, "journal_entry")
@@ -2537,16 +2535,11 @@ def e44():
 	nbv = flt(__import__("asset_enterprise.asset_values", fromlist=["x"]).recalculate_asset_values(asset, save=False)["net_book_value"])
 	refused, _msg = _refused(lambda: api.assert_value_reversible(asset, nbv + 100, "E-44"))
 	allowed = not _refused(lambda: api.assert_value_reversible(asset, nbv - 1, "E-44"))[0]
-	frappe.flags["ae_ava_reversal_date"] = "sentinel"
-	api.cancel_ava_with_reversal(ava.name)
-	restored = frappe.flags.get("ae_ava_reversal_date") == "sentinel"
-	frappe.flags["ae_ava_reversal_date"] = None
+	api.reverse_document("Asset Value Adjustment", ava.name)
+	# reversed, not cancelled: the AVA stands submitted, marked Reversed
+	restored = frappe.db.get_value("Asset Value Adjustment", ava.name, ["docstatus", "reversed_by_ava"]) == (
+		1, frappe.db.get_value("Asset Value Adjustment", {"reversal_of_ava": ava.name}, "name"))
 	after_reversal = not api.value_events_other_than(asset, exclude_sources=list(acquisition))
-	frappe.flags["ae_ava_reversal_date"] = "outer"
-	with api.reversing_ava_on("2026-01-05"):
-		dated = str(frappe.flags.get("ae_ava_reversal_date")) == "2026-01-05"
-	restored = restored and dated and frappe.flags.get("ae_ava_reversal_date") == "outer"
-	frappe.flags["ae_ava_reversal_date"] = None
 	frappe.flags["ae_project_settlement"] = "outer"
 	with api.raising_project_settlement():
 		inside = frappe.flags.get("ae_project_settlement") is True
@@ -2557,7 +2550,7 @@ def e44():
 	return ok, (f"value events besides the acquisition: AVA only={sees_ava}, none when it is excluded too={none_left}, "
 		f"none after its reversal={after_reversal}; live depreciation entries {len(entries)} (want 3) over "
 		f"{generations} generation(s); NBV {nbv:,.2f}: +100 refused={refused}, -1 allowed={allowed}; "
-		f"flags restored: reversal date={restored}, project settlement inside/after={inside}/{ps_restored}")
+		f"source stands Reversed={restored}, project settlement flag inside/after={inside}/{ps_restored}")
 
 
 @case("E-45", "D-081 (15/10)", "a reduction raised for another module takes what the asset can absorb, sends the rest to post-disposal (Case A.02), and undoes cleanly")
@@ -2631,6 +2624,161 @@ def e45():
 		f"all to expense {r3.journal_entry} ok={off_ok}; outstanding depreciation blocked={bool(blocked)} refused={refused}; "
 		f"undo {u2.reversed} / {u3.reversed} ok={undo_ok} (NBV after undo {nbv(asset):,.2f} want {left:,.2f}; "
 		f"A.02 treatment {frappe.db.get_value('Financial Treatment', a02, 'status')})")
+
+
+@case("E-46", "GAP-030 step 4 / GAP-014 / GAP-033 (client 19/10, ACC-AVA-2026-00046)", "a reversed AVA, Capitalized Maintenance or capitalized repair stays submitted, marked Reversed; Cancel is refused with Reverse as the route")
+def e46():
+	"""asset_enterprise.reversal.CounterDocumentReversal, per doctype:
+	1. native cancel is refused by the platform, with Reverse as its route;
+	2. reverse_document posts the counter-document (submitted, carrying the
+	   platform's pair) and leaves the original docstatus 1 with
+	   reversed_by_* and reversed_on; every original journal stays posted;
+	3. the original no longer stands (standing readers), a second reverse
+	   and a cancel of the counter-document are refused (no route);
+	4. the form offers Reverse (the platform's action, asking the posting
+	   date) and, once reversed, hides Cancel and names the reversal;
+	5. a repair that capitalized nothing still cancels natively;
+	6. the reversed_not_cancelled patch restores a legacy Cancelled original
+	   and leaves one whose ledger rows were cancelled."""
+	from qcs_platform.ledger.dispatcher import LedgerRefusal, ui_state
+
+	from asset_enterprise import reversal
+	from asset_enterprise.api import reverse_document
+	from asset_enterprise.merge import standing_capitalization
+	from asset_enterprise.patches.reversed_not_cancelled import _settle_pair
+	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
+	from asset_enterprise.setup.verify_tc import _cm_merge, _stock_in, _stock_item, _warehouse
+
+	company = _company()
+	problems, notes = [], []
+
+	def refusal_of(doc):
+		try:
+			doc.reload()
+			doc.cancel()
+		except LedgerRefusal as exc:
+			return exc
+		return None
+
+	def journals_posted(names):
+		return all(frappe.db.get_value("Journal Entry", n, "docstatus") == 1 for n in names if n)
+
+	def check_pair(doc, journals):
+		dt, link = doc.doctype, reversal.REVERSAL_LINKS[doc.doctype]
+		refused = refusal_of(doc)
+		if not refused or not refused.route or refused.route.method != "asset_enterprise.api.reverse_document":
+			problems.append(f"{dt} {doc.name}: cancel not refused with the Reverse route ({refused and refused.route})")
+		if frappe.db.get_value(dt, doc.name, "docstatus") != 1:
+			problems.append(f"{dt} {doc.name}: the refused cancel left docstatus {frappe.db.get_value(dt, doc.name, 'docstatus')}")
+			return None
+		offered = ui_state(dt, doc.name)["actions"]
+		prompt = offered[0].get("prompt") if offered else None
+		if not (offered and offered[0]["label"] == "Reverse" and prompt
+				and [f["fieldname"] for f in prompt["fields"]] == ["posting_date"]):
+			problems.append(f"{dt} {doc.name}: the form does not offer Reverse with its date prompt ({offered})")
+		counter = reverse_document(dt, doc.name)
+		row = frappe.db.get_value(dt, doc.name, ["docstatus", link, "reversed_on"], as_dict=True)
+		c = frappe.db.get_value(dt, counter, ["docstatus", "is_cancellation", "cancellation_against"], as_dict=True)
+		if not (row.docstatus == 1 and row.get(link) == counter and getdate(row.reversed_on) == getdate(nowdate())):
+			problems.append(f"{dt} {doc.name}: after reverse {row}, want docstatus 1 / {counter} / today")
+		if not (c.docstatus == 1 and c.is_cancellation == 1 and c.cancellation_against == doc.name):
+			problems.append(f"{dt} {counter}: counter-document {c}")
+		if not journals_posted(journals):
+			problems.append(f"{dt} {doc.name}: an original journal was cancelled ({journals})")
+		if reversal.is_standing(dt, doc.name):
+			problems.append(f"{dt} {doc.name}: still standing after its reversal")
+		again, _msg = _refused(lambda: reverse_document(dt, doc.name))
+		final = refusal_of(frappe.get_doc(dt, counter))
+		if not again or not final or final.route is not None:
+			problems.append(f"{dt}: second reverse refused={again}; counter cancel refused="
+				f"{bool(final)} route={final and final.route}")
+		state = ui_state(dt, doc.name)
+		if not (state["hide_cancel"] and counter in (state["banner"] or "")):
+			problems.append(f"{dt} {doc.name}: form state {state['hide_cancel']} / {state['banner']}")
+		notes.append(f"{dt} {doc.name} -> {counter}")
+		return counter
+
+	# --- Asset Value Adjustment
+	asset = make_test_asset(company, gross=30_000, submit=True)
+	ava = frappe.get_doc({"doctype": "Asset Value Adjustment", "company": company, "asset": asset.name,
+		"date": nowdate(), "transaction_type": "Upward Revaluation",
+		"new_asset_value": flt(frappe.db.get_value("Asset", asset.name, "value_after_depreciation") or 0) + 700,
+		"difference_account": frappe.db.get_value("Company", company, "default_expense_account")})
+	ava.flags.ignore_mandatory = True
+	ava.insert(ignore_permissions=True)
+	ava.submit()
+	ava_counter = check_pair(ava, [ava.journal_entry])
+
+	# --- Capitalized Maintenance
+	target = make_test_asset(company, gross=40_000, submit=True)
+	source = make_test_asset(company, gross=10_000, submit=True)
+	frappe.db.set_value("Asset Category Account", {"parent": target.asset_category, "company_name": company},
+		"capitalization_clearing_account", pick_plain_account(company, "Liability"))
+	cap = _cm_merge(company, target.name, source.name)
+	cap_journals = frappe.get_all("Journal Entry", filters={"user_remark": ("like", f"%{cap.name}%"),
+		"docstatus": 1, "is_reversal": 0}, pluck="name")
+	check_pair(cap, cap_journals)
+	if any(standing_capitalization(j) for j in cap_journals):
+		problems.append(f"{cap.name}: its journals still read as standing after the reversal")
+
+	# --- capitalized Asset Repair (consumed stock: it posts GL under its own voucher)
+	r_asset = make_test_asset(company, gross=20_000, submit=True)
+	item, warehouse = _stock_item("E46-REPAIR-STOCK"), _warehouse(company)
+	_stock_in(company, item, warehouse, 5, 100)
+
+	def repair(capitalize):
+		r = frappe.get_doc({"doctype": "Asset Repair", "asset": r_asset.name, "company": company,
+			"failure_date": nowdate(), "completion_date": nowdate(), "repair_status": "Completed",
+			"capitalize_repair_cost": capitalize,
+			"cost_center": frappe.db.get_value("Company", company, "cost_center"),
+			"stock_items": [{"item_code": item, "warehouse": warehouse, "consumed_quantity": 1,
+				"valuation_rate": 100, "total_value": 100}] if capitalize else []})
+		r.flags.ignore_permissions = True
+		r.insert()
+		r.submit()
+		return r
+
+	rep = repair(1)
+	check_pair(rep, [])
+
+	# --- a repair that capitalized nothing cancels natively
+	plain = repair(0)
+	plain.reload()
+	plain.cancel()
+	if frappe.db.get_value("Asset Repair", plain.name, "docstatus") != 2:
+		problems.append(f"{plain.name}: an expensed repair did not cancel natively")
+
+	# --- the patch: a legacy original left Cancelled by the old flow
+	if ava_counter:
+		frappe.db.set_value("Asset Value Adjustment", ava.name,
+			{"docstatus": 2, "reversed_by_ava": None, "reversed_on": None}, update_modified=False)
+		frappe.db.set_value("Asset Value Adjustment", ava_counter,
+			{"is_cancellation": 0, "cancellation_against": None}, update_modified=False)
+		_settle_pair("Asset Value Adjustment", "reversed_by_ava", "reversal_of_ava",
+			frappe.get_doc("Asset Value Adjustment", ava_counter))
+		_settle_pair("Asset Value Adjustment", "reversed_by_ava", "reversal_of_ava",
+			frappe.get_doc("Asset Value Adjustment", ava_counter))  # idempotent
+		row = frappe.db.get_value("Asset Value Adjustment", ava.name,
+			["docstatus", "reversed_by_ava", "reversed_on"], as_dict=True)
+		pair = frappe.db.get_value("Asset Value Adjustment", ava_counter, "cancellation_against")
+		comments = frappe.db.count("Comment", {"reference_doctype": "Asset Value Adjustment",
+			"reference_name": ava.name, "content": ("like", "Restored to Submitted%")})
+		if not (row.docstatus == 1 and row.reversed_by_ava == ava_counter and row.reversed_on
+				and pair == ava.name and comments == 1):
+			problems.append(f"patch: {ava.name} {row}, pair {pair}, comments {comments}")
+	rep_counter = frappe.db.get_value("Asset Repair", rep.name, "reversed_by_repair")
+	if rep_counter and frappe.db.exists("GL Entry", {"voucher_no": rep.name}):
+		frappe.db.set_value("Asset Repair", rep.name, {"docstatus": 2, "reversed_by_repair": None},
+			update_modified=False)
+		frappe.db.sql("update `tabGL Entry` set is_cancelled = 1 where voucher_no = %s", rep.name)
+		_settle_pair("Asset Repair", "reversed_by_repair", "reversal_of_repair",
+			frappe.get_doc("Asset Repair", rep_counter))
+		if frappe.db.get_value("Asset Repair", rep.name, "docstatus") != 2:
+			problems.append(f"patch: {rep.name} restored although its ledger rows are cancelled")
+	else:
+		problems.append(f"{rep.name}: no GL under the repair voucher to probe the patch's ledger check")
+
+	return not problems, "; ".join(problems or notes)
 
 
 def run(only=None):

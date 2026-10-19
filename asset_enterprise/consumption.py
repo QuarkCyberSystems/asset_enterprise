@@ -170,23 +170,23 @@ def _unlinked_return_line(lines, row, projects):
 
 
 def consumed_elsewhere(purchase_invoice, account, exclude_parent=None):
-	"""{(invoice row, cost centre): amount} other SUBMITTED consumers took
-	from the invoice's lines on `account` - one query. A cancelled consumer
-	(its reversal document stands) has given its lines back."""
+	"""{(invoice row, cost centre): amount} other STANDING consumers took
+	from the invoice's lines on `account` - one query. A reversed consumer
+	(submitted, its reversal document stands) has given its lines back."""
 	if not frappe.db.table_exists(LINE_DOCTYPE):
 		return {}
 	joins = " ".join(
 		f"left join `tab{dt}` p{i} on l.parenttype = '{dt}' and p{i}.name = l.parent"
 		for i, dt in enumerate(CONSUMERS)
 	)
-	status = "coalesce(" + ", ".join(f"p{i}.docstatus" for i in range(len(CONSUMERS))) + ")"
+	standing = _standing_consumer_sql()
 	return {
 		(detail or None, cc or None): flt(amount)
 		for detail, cc, amount in frappe.db.sql(
 			f"""select l.purchase_invoice_item, l.cost_center, sum(l.amount)
 			from `tab{LINE_DOCTYPE}` l {joins}
 			where l.purchase_invoice = %s and l.expense_account = %s and l.parent != %s
-			  and {status} = 1
+			  and {standing}
 			group by l.purchase_invoice_item, l.cost_center""",
 			(purchase_invoice, account, exclude_parent or ""),
 		)
@@ -194,22 +194,30 @@ def consumed_elsewhere(purchase_invoice, account, exclude_parent=None):
 
 
 def standing_consumers(purchase_invoice):
-	"""[(doctype, name)] of the submitted repairs and capitalizations whose
+	"""[(doctype, name)] of the standing repairs and capitalizations whose
 	recorded lines consume the invoice's cost - one indexed query. A
-	cancelled consumer (its reversal stands) has given its lines back."""
+	reversed consumer (its reversal stands) has given its lines back."""
 	if not purchase_invoice or not frappe.db.table_exists(LINE_DOCTYPE):
 		return []
 	joins = " ".join(
 		f"left join `tab{dt}` p{i} on l.parenttype = '{dt}' and p{i}.name = l.parent"
 		for i, dt in enumerate(CONSUMERS)
 	)
-	status = "coalesce(" + ", ".join(f"p{i}.docstatus" for i in range(len(CONSUMERS))) + ")"
+	standing = _standing_consumer_sql()
 	return [tuple(r) for r in frappe.db.sql(
 		f"""select distinct l.parenttype, l.parent from `tab{LINE_DOCTYPE}` l {joins}
-		where l.purchase_invoice = %s and {status} = 1
+		where l.purchase_invoice = %s and {standing}
 		order by l.parenttype, l.parent""",
 		purchase_invoice,
 	)]
+
+
+def _standing_consumer_sql():
+	"""The line's consumer (whichever of the CONSUMERS joins matched)
+	stands: submitted and not reversed (reversal.standing_condition)."""
+	from asset_enterprise.reversal import standing_condition
+
+	return "(" + " or ".join(standing_condition(dt, f"p{i}") for i, dt in enumerate(CONSUMERS)) + ")"
 
 
 def _rank(line, dims, cost_center, projects):
@@ -428,6 +436,8 @@ def _legacy_repairs():
 	"""Submitted capitalizing repairs with invoice rows and no recorded
 	invoice line - submitted before this record existed - oldest first.
 	Readable before the record's table exists (the upgrade census)."""
+	from asset_enterprise.reversal import standing_condition
+
 	if not frappe.db.table_exists("Asset Repair Purchase Invoice"):
 		return []
 	reversal = "and ifnull(ar.transaction_type, '') != 'Reversal'" if frappe.db.has_column(
@@ -437,7 +447,7 @@ def _legacy_repairs():
 		LINE_DOCTYPE) else ""
 	return frappe.db.sql_list(
 		f"""select ar.name from `tabAsset Repair` ar
-		where ar.docstatus = 1 and ar.capitalize_repair_cost = 1 {reversal}
+		where {standing_condition("Asset Repair", "ar")} and ar.capitalize_repair_cost = 1 {reversal}
 		  and exists (select 1 from `tabAsset Repair Purchase Invoice` ari where ari.parent = ar.name
 		      and ari.parenttype = 'Asset Repair' and ifnull(ari.purchase_invoice, '') != '')
 		  {recorded}

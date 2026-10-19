@@ -718,10 +718,10 @@ def _run():
 		# company Reversal Date Edit Role (Asset Settings > Reversals).
 		# The endpoints enforce server-side; Administrator passes.
 		from asset_enterprise.api import (
-			cancel_ava_with_reversal,
-			cancel_repair_with_reversal,
 			reversal_date_editable,
+			reverse_document,
 		)
+		from asset_enterprise import reversal
 
 		f9_role = "AE Reversal Date Editor"
 		if not frappe.db.exists("Role", f9_role):
@@ -794,7 +794,7 @@ def _run():
 		f9_today = bool(
 			_as_user(
 				norole_user.name,
-				lambda: cancel_ava_with_reversal(ava_a.name, posting_date=nowdate()),
+				lambda: reverse_document("Asset Value Adjustment", ava_a.name, posting_date=nowdate()),
 			)
 		)
 		f9_today = f9_today and _rev_date_of(ava_a.name) == getdate(nowdate())
@@ -802,7 +802,7 @@ def _run():
 		# (b) another date + Administrator (has the role): date flows to
 		# the Reversal AVA AND the mirror FT.
 		ava_b = _mk_ava()
-		f9_other = bool(cancel_ava_with_reversal(ava_b.name, posting_date=other_date))
+		f9_other = bool(reverse_document("Asset Value Adjustment", ava_b.name, posting_date=other_date))
 		f9_other = f9_other and _rev_date_of(ava_b.name) == getdate(other_date)
 		ft_b = frappe.db.get_value(
 			"Financial Treatment",
@@ -817,20 +817,20 @@ def _run():
 		f9_gate = _as_user(
 			norole_user.name,
 			lambda: _refused(
-				lambda: cancel_ava_with_reversal(ava_c.name, posting_date=other_date),
+				lambda: reverse_document("Asset Value Adjustment", ava_c.name, posting_date=other_date),
 				"requires the",
 			),
 		)
-		f9_gate = f9_gate and frappe.db.get_value("Asset Value Adjustment", ava_c.name, "docstatus") == 1
+		f9_gate = f9_gate and reversal.is_standing("Asset Value Adjustment", ava_c.name)
 
 		# (d) a date before the source posting date: refused even for
 		# Administrator.
 		ava_d = _mk_ava()
 		f9_early = _refused(
-			lambda: cancel_ava_with_reversal(ava_d.name, posting_date=too_early),
-			"before the AVA posting date",
+			lambda: reverse_document("Asset Value Adjustment", ava_d.name, posting_date=too_early),
+			"before the Asset Value Adjustment posting date",
 		)
-		f9_early = f9_early and frappe.db.get_value("Asset Value Adjustment", ava_d.name, "docstatus") == 1
+		f9_early = f9_early and reversal.is_standing("Asset Value Adjustment", ava_d.name)
 
 		# (e) no role configured for the company: another date refused
 		# even for Administrator; today still fine.
@@ -839,7 +839,7 @@ def _run():
 			"delete from `tabAsset Settings Reversal Role` where parent = 'Asset Settings'"
 		)
 		f9_noconf = _refused(
-			lambda: cancel_ava_with_reversal(ava_e.name, posting_date=other_date),
+			lambda: reverse_document("Asset Value Adjustment", ava_e.name, posting_date=other_date),
 			"No Reversal Date Edit Role is configured",
 		)
 		as9 = frappe.get_doc("Asset Settings")
@@ -870,7 +870,7 @@ def _run():
 
 		r1_asset = make_test_asset(company, gross=500_000, submit=True)
 		repair1 = _mk_repair(r1_asset)
-		f9_rep = bool(cancel_repair_with_reversal(repair1.name, posting_date=other_date))
+		f9_rep = bool(reverse_document("Asset Repair", repair1.name, posting_date=other_date))
 		rev_rep1 = frappe.db.get_value(
 			"Asset Repair", {"reversal_of_repair": repair1.name, "docstatus": 1}, "name"
 		)
@@ -895,7 +895,7 @@ def _run():
 		f9_rep_gate = _as_user(
 			norole_user.name,
 			lambda: _refused(
-				lambda: cancel_repair_with_reversal(repair2.name, posting_date=other_date),
+				lambda: reverse_document("Asset Repair", repair2.name, posting_date=other_date),
 				"requires the",
 			),
 		)
@@ -974,7 +974,7 @@ def _run():
 
 		# (4) mirror FT: is_reversal=1, reverses -> original, account_set,
 		# sub-type carried from the original.
-		cancel_ava_with_reversal(ava10.name, posting_date=nowdate())
+		reverse_document("Asset Value Adjustment", ava10.name, posting_date=nowdate())
 		mirror_ft = frappe.db.get_value(
 			"Financial Treatment",
 			{"asset": a10.name, "is_reversal": 1, "status": "Posted"},
@@ -2226,7 +2226,7 @@ def _run():
 
 		# reversing must put the materials BACK, not just the money
 		cap30.reload()
-		cap30.cancel()
+		cap30.reverse()
 		reversal = frappe.db.get_value("Asset Capitalization",
 			{"reversal_of_capitalization": cap30.name, "docstatus": 1}, "name")
 		hav_reversed = flt(recalculate_asset_values(t30_target.name, save=False)["historical_asset_value"])
@@ -2333,7 +2333,7 @@ def _run():
 
 		# the sanctioned route still works end to end
 		cm2.reload()
-		cm2.cancel()
+		cm2.reverse()
 		t30e_ok = bool(frappe.db.get_value("Stock Entry",
 			{"asset_capitalization": frappe.db.get_value("Asset Capitalization",
 				{"reversal_of_capitalization": cm2.name, "docstatus": 1}, "name"),
@@ -2439,7 +2439,7 @@ def _run():
 		r1_want = getdate(add_days(add_months(r1_before, 6), 10))
 		# and the reversal hands the life back with the value
 		rep.reload()
-		rep.cancel()
+		rep.reverse()
 		r1_rev = getdate(active_schedule_horizon(r1.name))
 		fb_after = frappe.db.get_value(
 			"Asset Finance Book", {"parent": r1.name},
@@ -2491,7 +2491,7 @@ def _run():
 		c1_after = getdate(active_schedule_horizon(c1.name))
 		c1_want = getdate(add_days(add_months(c1_before, 18), 10))
 		cap.reload()
-		cap.cancel()
+		cap.reverse()
 		c1_rev = getdate(active_schedule_horizon(c1.name))
 		t22_ok = c1_after == c1_want and c1_rev == c1_before
 		print(

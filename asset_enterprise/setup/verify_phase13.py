@@ -344,7 +344,7 @@ def _run():
 		ava.submit()
 		mid_fa = gl_asset_sum(fa, v1.name) - b_fa2
 		ava.reload()
-		ava.cancel()
+		ava.reverse()
 		d_fa2 = gl_asset_sum(fa, v1.name) - b_fa2
 		d_oci = gl_bal(oci) - b_oci
 		orig_je_live = frappe.db.get_value(

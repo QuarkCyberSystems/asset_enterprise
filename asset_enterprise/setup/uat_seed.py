@@ -380,12 +380,11 @@ def _run():
 		ava_up.flags.ignore_permissions = True
 		ava_up.insert()
 		ava_up.submit()
-		ava_up.reload()
-		ava_up.cancel()
-		reversal = frappe.db.get_value(
-			"Asset Value Adjustment", {"reversal_of_ava": ava_up.name}, "name")
+		from asset_enterprise import reversal as reversal_mod
+
+		reversal = reversal_mod.reverse("Asset Value Adjustment", ava_up.name, check_permission=False)
 		_note("G", "Asset Value Adjustment", ava_up.name,
-			f"cancelled → Reversal AVA {reversal} posted mirror JE; both FTs paired; HAV back to 100,000")
+			f"reversed → Reversal AVA {reversal} posted mirror JE; both FTs paired; HAV back to 100,000")
 		frappe.db.commit()
 	except Exception as e:
 		_fail("G", e)

@@ -2,10 +2,11 @@ import frappe
 from frappe import _
 from frappe.utils import add_days, add_months, cint, flt, getdate, now, nowdate
 
+from asset_enterprise.reversal import REVERSAL_LINKS, CounterDocumentReversal
 from erpnext.assets.doctype.asset_repair.asset_repair import AssetRepair
 
 
-class EnterpriseAssetRepair(AssetRepair):
+class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
 	"""GA-0005-01 v2.14 Asset Repair overrides (GAP-033 / VR-038).
 
 	Standard Repair (forward): core posts Dr Fixed Asset / Cr expense
@@ -405,47 +406,54 @@ class EnterpriseAssetRepair(AssetRepair):
 			transaction_type="Reversal",
 		)
 
-	# ------------------------------------------------------------- cancel
-	def on_cancel(self):
+	# ------------------------------------------------------------ reversal
+	# GAP-033 / GAP-030 pattern (reversal.CounterDocumentReversal): a
+	# capitalized repair is never cancelled; reverse() raises a Reversal
+	# Repair, whose submit (_submit_reversal) mirrors the repair's GL under
+	# its own voucher, returns the consumed stock by Material Receipt and
+	# pairs the treatments. The original stays submitted, marked Reversed —
+	# so its consumption Stock Entry and serial/batch bundle stand as
+	# history too (the old cancel path cancelled the bundle the still-
+	# submitted issue used).
+	reversal_link_field = REVERSAL_LINKS["Asset Repair"]
+	reversal_of_field = "reversal_of_repair"
+	reversal_label = "Asset Repair"
+
+	def reversal_eligible(self):
 		if not self._enterprise():
-			return super().on_cancel()
+			return _("Enterprise asset features are off: this repair is cancelled, not reversed.")
+		if not self.get("capitalize_repair_cost") and self.get("transaction_type") != "Reversal":
+			return _("A repair that was expensed, not capitalized, is cancelled, not reversed.")
+		return None
 
-		if self.get("transaction_type") == "Reversal":
-			frappe.throw(
-				_(
-					"{0} is a Reversal Repair and cannot be cancelled. "
-					"To undo it, submit a fresh Standard Repair."
-				).format(self.name)
-			)
+	def is_counter_document(self):
+		return self.get("transaction_type") == "Reversal" or bool(self.get("reversal_of_repair"))
 
-		if not self.get("capitalize_repair_cost"):
-			return super().on_cancel()
+	def reversal_source_date(self):
+		return self.get("completion_date") or self.get("failure_date")
 
+	def reversal_note(self):
+		from frappe.utils import fmt_money
+
+		note = _("The capitalized cost {0} leaves {1} and the life grant is retracted.").format(
+			fmt_money(self.get("total_repair_cost") or 0, currency=frappe.get_cached_value("Company", self.company, "default_currency")),
+			self.asset,
+		)
+		if self.get("stock_items"):
+			note += " " + _("Consumed stock items return to their source warehouse by a Material Receipt.")
+		return note
+
+	def reversal_gates(self):
 		self._fully_depreciated_gate(self)
 
-		# Replace the destructive core path with a Reversal Repair. The
-		# reversal + FT/Activity rows deliberately link this doc.
-		self.ignore_linked_doctypes = (
-			"Asset Depreciation Schedule",  # triggered_by dynamic link
-			"GL Entry",
-			"Stock Ledger Entry",
-			"Stock Entry",  # core's consumption SE + our return SE link this repair
-			"Asset Repair",
-			"Financial Treatment",
-			"Asset Activity",
-			"Journal Entry",
-		)
-		self.cancel_sabb()
-
+	def build_reversal(self, posting_date):
 		reversal = frappe.get_doc(
 			{
 				"doctype": "Asset Repair",
 				"asset": self.asset,
 				"company": self.company,
 				"failure_date": self.failure_date,
-				"completion_date": getdate(
-					frappe.flags.get("ae_repair_reversal_date") or nowdate()
-				),
+				"completion_date": getdate(posting_date),
 				"repair_status": "Completed",
 				"repair_cost": 0,
 				"capitalize_repair_cost": 0,  # financials flow via _submit_reversal
@@ -456,11 +464,15 @@ class EnterpriseAssetRepair(AssetRepair):
 				"description": _("Reversal of {0}").format(self.name),
 			}
 		)
-		reversal.flags.ignore_permissions = True
-		# Source is docstatus=2 mid-cancel; the back-link is the audit trail.
 		reversal.flags.ignore_links = True
-		reversal.insert()
-		reversal.submit()
+		return reversal
+
+	def after_reversal(self, counter):
+		pass  # _submit_reversal records the asset's history row itself
+
+	# Cancel is refused by the module's platform adapter, with Reverse as
+	# the route (platform.AssetLedgerAdapter.can_cancel) — a document that
+	# is not reversed this way (reversal_eligible) cancels natively.
 
 	def _fully_depreciated_gate(self, repair_source):
 		"""VR-038: block reversal when the asset is fully depreciated.
