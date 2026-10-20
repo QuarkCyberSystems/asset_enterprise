@@ -1,6 +1,6 @@
 import frappe
 from frappe import _
-from frappe.utils import add_days, add_months, cint, flt, getdate, now, nowdate
+from frappe.utils import add_days, add_months, cint, flt, get_link_to_form, getdate, now, nowdate
 
 from asset_enterprise.reversal import REVERSAL_LINKS, CounterDocumentReversal
 from erpnext.assets.doctype.asset_repair.asset_repair import AssetRepair
@@ -154,6 +154,30 @@ class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
 					"you want to undo and cancel it."
 				),
 				title=_("Not a Manual Transaction Type"),
+			)
+
+	def validate_purchase_invoice_repair_cost(self, row):
+		"""D-089: an invoice that settled a service receipt holds only the
+		price variance in its own GL; what it can still capitalize is its
+		lines' whole cost (`consumption.unconsumed`). Any other invoice is
+		core's check."""
+		from asset_enterprise import consumption
+
+		if not consumption.settles_receipts(row.purchase_invoice, row.expense_account):
+			return super().validate_purchase_invoice_repair_cost(row)
+		available = consumption.unconsumed(row.purchase_invoice, row.expense_account, exclude_parent=self.name)
+		if flt(row.repair_cost) > available:
+			frappe.throw(
+				_(
+					"Row #{0}: Repair cost {1} exceeds available amount {2} for Purchase Invoice {3} and Account {4}"
+				).format(
+					row.idx,
+					frappe.bold(frappe.format_value(row.repair_cost, {"fieldtype": "Currency"})),
+					frappe.bold(frappe.format_value(available, {"fieldtype": "Currency"})),
+					get_link_to_form("Purchase Invoice", row.purchase_invoice),
+					frappe.bold(row.expense_account),
+				),
+				title=_("Invalid Repair Cost"),
 			)
 
 	# ---------------------------------------------- consumed cost lines

@@ -114,6 +114,9 @@ CLASS_OVERRIDE_TARGETS = [
 		"asset_enterprise.overrides.asset_repair.EnterpriseAssetRepair"),
 	("erpnext.assets.doctype.asset_repair.asset_repair", "AssetRepair", "get_gl_entries_for_consumed_items", 3,
 		"asset_enterprise.overrides.asset_repair.EnterpriseAssetRepair"),
+	# D-089: the repair-cost cap of an invoice that settled a service receipt
+	("erpnext.assets.doctype.asset_repair.asset_repair", "AssetRepair", "validate_purchase_invoice_repair_cost", 2,
+		"asset_enterprise.overrides.asset_repair.EnterpriseAssetRepair"),
 	("erpnext.assets.doctype.asset_capitalization.asset_capitalization", "AssetCapitalization",
 		"get_gl_entries_for_consumed_service_items", 5,
 		"asset_enterprise.overrides.asset_capitalization.EnterpriseAssetCapitalization"),

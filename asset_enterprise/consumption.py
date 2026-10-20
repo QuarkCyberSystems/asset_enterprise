@@ -111,9 +111,17 @@ def _returns_of(purchase_invoice):
 def invoice_lines(purchase_invoice, account):
 	"""The invoice's live lines on `account`: one per (invoice row, cost
 	centre, dimensions), earliest first, each at its live net - its own
-	rows less its returns' rows on that invoice row (M-3)."""
+	rows less its returns' rows on that invoice row (M-3).
+
+	D-089: an invoice row that settled a service receipt's accrual posts
+	only the price variance on the account; the rest of its cost is the
+	receipt line's, which the row cleared. Such a row is one line of its
+	whole cost, in two `parts`: the receipt portion it cleared (net of its
+	debit notes' restores, on the receipt line) and its signed variance (on
+	the invoice row) - see `_settled_parts`."""
 	dims = _dimensions()
 	cols = "".join(f", gl.`{d}`" for d in dims)
+	settled = _settled_parts(purchase_invoice, account)
 	lines = frappe.db.sql(
 		f"""select gl.voucher_detail_no, gl.cost_center {cols},
 		       sum(gl.debit - gl.credit) as amount, min(concat(gl.creation, '|', gl.name)) as first
@@ -121,11 +129,17 @@ def invoice_lines(purchase_invoice, account):
 		where gl.voucher_type = 'Purchase Invoice' and gl.voucher_no = %s and gl.account = %s
 		  and gl.is_cancelled = 0
 		group by gl.voucher_detail_no, gl.cost_center {cols}
-		having sum(gl.debit - gl.credit) > 0
 		order by first""",
 		(purchase_invoice, account),
 		as_dict=True,
 	)
+	lines = [ln for ln in lines if flt(ln.amount) > 0 or ln.voucher_detail_no in settled]
+	for row, part in settled.items():
+		if not any(ln.voucher_detail_no == row for ln in lines):
+			# no variance: the row's whole cost is the receipt portion
+			lines.append(frappe._dict(voucher_detail_no=row, cost_center=part.cost_center, amount=0.0,
+				first=part.first, **{d: part.dims.get(d) for d in dims}))
+	lines.sort(key=lambda ln: ln.first or "")
 	returned_rows, returns = _returns_of(purchase_invoice)
 	if returns and lines:
 		projects = project_fields()
@@ -152,7 +166,67 @@ def invoice_lines(purchase_invoice, account):
 				target = _unlinked_return_line(lines, row, projects)
 			if target:
 				target.amount = flt(target.amount) + flt(row.amount)
+	for ln in lines:
+		part = settled.get(ln.voucher_detail_no)
+		if part:
+			ln.parts = [
+				frappe._dict(kind="receipt", amount=part.amount, purchase_receipt=part.purchase_receipt,
+					purchase_receipt_item=part.purchase_receipt_item),
+				frappe._dict(kind="variance", amount=flt(ln.amount)),
+			]
+			ln.amount = flt(part.amount) + flt(ln.amount)
 	return [ln for ln in lines if flt(ln.amount) > 0]
+
+
+def _settled_parts(purchase_invoice, account):
+	"""{invoice row: frappe._dict(amount, purchase_receipt,
+	purchase_receipt_item, cost_center, dims, first)} for the rows of the
+	invoice that settled a service receipt's accrual on `account` (D-089,
+	qcs_platform.core.provisional): the receipt portion each row stands for
+	- what it cleared, less what its debit notes restored - with the
+	receipt line's cost centre and dimensions. A legacy row (cleared under
+	the receipt voucher; its invoice carries the gross cost) is left out.
+	Four queries per invoice."""
+	try:
+		from qcs_platform.core import provisional
+	except ImportError:
+		return {}
+	clearings = {
+		row: c for row, c in provisional.clearings(purchase_invoice).items()
+		if not c.legacy and c.expense_account == account
+	}
+	if not clearings:
+		return {}
+	returned_rows, _returns = _returns_of(purchase_invoice)
+	company = frappe.db.get_value("Purchase Invoice", purchase_invoice, "company")
+	restored = provisional.cleared_by_rows([r for r, origin in returned_rows.items() if origin in clearings], company)
+	for return_row, amount in restored.items():
+		clearings[returned_rows[return_row]].amount += flt(amount)  # a restore is a credit: negative
+	dims = _dimensions()
+	cols = "".join(f", gl.`{d}`" for d in dims)
+	booked = {}
+	for row in frappe.db.sql(
+		f"""select gl.voucher_detail_no, gl.cost_center {cols}, concat(gl.creation, '|', gl.name) as first
+		from `tabGL Entry` gl
+		where gl.voucher_type = 'Purchase Receipt' and gl.voucher_detail_no in %s and gl.account = %s
+		  and gl.is_cancelled = 0 and gl.debit > gl.credit
+		order by gl.creation, gl.name""",
+		(tuple({c.pr_detail for c in clearings.values()}), account),
+		as_dict=True,
+	):
+		booked.setdefault(row.voucher_detail_no, row)
+	out = {}
+	for row, c in clearings.items():
+		gl = booked.get(c.pr_detail) or frappe._dict()
+		out[row] = frappe._dict(
+			amount=flt(c.amount),
+			purchase_receipt=c.purchase_receipt,
+			purchase_receipt_item=c.pr_detail,
+			cost_center=gl.get("cost_center"),
+			dims={d: gl.get(d) for d in dims},
+			first=gl.get("first"),
+		)
+	return out
 
 
 def _unlinked_return_line(lines, row, projects):
@@ -172,7 +246,9 @@ def _unlinked_return_line(lines, row, projects):
 def consumed_elsewhere(purchase_invoice, account, exclude_parent=None):
 	"""{(invoice row, cost centre): amount} other STANDING consumers took
 	from the invoice's lines on `account` - one query. A reversed consumer
-	(submitted, its reversal document stands) has given its lines back."""
+	(submitted, its reversal document stands) has given its lines back.
+	For a settled row (D-089) the receipt part's share is also keyed
+	(invoice row, cost centre, "receipt")."""
 	if not frappe.db.table_exists(LINE_DOCTYPE):
 		return {}
 	joins = " ".join(
@@ -180,17 +256,25 @@ def consumed_elsewhere(purchase_invoice, account, exclude_parent=None):
 		for i, dt in enumerate(CONSUMERS)
 	)
 	standing = _standing_consumer_sql()
-	return {
-		(detail or None, cc or None): flt(amount)
-		for detail, cc, amount in frappe.db.sql(
-			f"""select l.purchase_invoice_item, l.cost_center, sum(l.amount)
-			from `tab{LINE_DOCTYPE}` l {joins}
-			where l.purchase_invoice = %s and l.expense_account = %s and l.parent != %s
-			  and {standing}
-			group by l.purchase_invoice_item, l.cost_center""",
-			(purchase_invoice, account, exclude_parent or ""),
-		)
-	}
+	receipt_part = (
+		"ifnull(l.purchase_receipt_item, '') != ''"
+		if frappe.db.has_column(LINE_DOCTYPE, "purchase_receipt_item") else "0"
+	)
+	out = {}
+	for detail, cc, is_receipt, amount in frappe.db.sql(
+		f"""select l.purchase_invoice_item, l.cost_center, {receipt_part}, sum(l.amount)
+		from `tab{LINE_DOCTYPE}` l {joins}
+		where l.purchase_invoice = %s and l.expense_account = %s and l.parent != %s
+		  and {standing}
+		group by l.purchase_invoice_item, l.cost_center, {receipt_part}""",
+		(purchase_invoice, account, exclude_parent or ""),
+	):
+		key = (detail or None, cc or None)
+		out[key] = out.get(key, 0.0) + flt(amount)
+		if is_receipt:
+			# D-089: what other consumers took of a settled row's receipt part
+			out[(*key, "receipt")] = out.get((*key, "receipt"), 0.0) + flt(amount)
+	return out
 
 
 def standing_consumers(purchase_invoice):
@@ -249,6 +333,9 @@ def _free_capacity(invoice, account, lines):
 			"expense_account": account,
 			"cost_center": ln.cost_center,
 			"dimensions": json.dumps({d: ln.get(d) for d in _dimensions()}, sort_keys=True),
+			# D-089: a settled row's cost is mostly its receipt line's
+			**({"purchase_receipt": ln.parts[0].purchase_receipt, "purchase_receipt_item": ln.parts[0].purchase_receipt_item}
+				if ln.get("parts") else {}),
 		}
 		for ln in lines
 	]
@@ -312,7 +399,7 @@ def plan(requests, company, exclude_parent=None, prior=None, prefer_free=False):
 					taken[key] = taken.get(key, 0) + take
 					remaining = _round(remaining - take, company)
 		for key, (line, take) in takes.items():
-			rows.append({
+			row = {
 				"source_row": source_row,
 				"purchase_invoice": invoice,
 				"purchase_invoice_item": line.voucher_detail_no,
@@ -320,10 +407,39 @@ def plan(requests, company, exclude_parent=None, prior=None, prefer_free=False):
 				"cost_center": line.cost_center,
 				"amount": _round(take, company),
 				"dimensions": json.dumps({d: line.get(d) for d in _dimensions()}, sort_keys=True),
-			})
+			}
+			if line.get("parts"):
+				rows.extend(_split_parts(row, line, take, key, elsewhere, taken, company))
+			else:
+				rows.append(row)
 		if remaining > 0:
 			short.append((request, remaining))
 	return rows, short
+
+
+def _split_parts(row, line, take, key, elsewhere, taken, company):
+	"""D-089: a take of a settled row's line is split between its receipt
+	part and its variance part, pro rata to the two (the variance may be
+	negative: a lower price). A take that empties the line takes exactly
+	what each part has left, so the two project lines reach zero together.
+	One record row per part; the receipt part names the receipt line."""
+	receipt, variance = line.parts
+	receipt_key = (*key, "receipt")
+	receipt_left = flt(receipt.amount) - elsewhere.get(receipt_key[2:], 0) - taken.get(receipt_key, 0)
+	line_left = flt(line.amount) - elsewhere.get(key[2:], 0) - (taken.get(key, 0) - take)
+	if _round(take - line_left, company) >= 0:
+		receipt_share = _round(receipt_left, company)
+	else:
+		receipt_share = _round(take * flt(receipt.amount) / flt(line.amount), company)
+	taken[receipt_key] = taken.get(receipt_key, 0) + receipt_share
+	out = []
+	if receipt_share:
+		out.append({**row, "amount": receipt_share, "purchase_receipt": receipt.purchase_receipt,
+			"purchase_receipt_item": receipt.purchase_receipt_item})
+	variance_share = _round(take - receipt_share, company)
+	if variance_share:
+		out.append({**row, "amount": variance_share})
+	return out
 
 
 def repair_cover(repair):
@@ -560,3 +676,34 @@ def accounts_with_project_lines(company, accounts):
 		where company = %s and account in %s and is_cancelled = 0 and debit > credit and ({condition})""",
 		(company, accounts),
 	))
+
+
+# ------------------------------------------------------- repair cost cap
+def settles_receipts(purchase_invoice, account):
+	"""The invoice settled a service receipt's accrual on `account` (D-089):
+	its GL there holds only the price variance."""
+	return bool(purchase_invoice and account and _settled_parts(purchase_invoice, account))
+
+
+def unconsumed(purchase_invoice, account, exclude_parent=None):
+	"""What the invoice's lines on `account` still give: their whole cost
+	(a settled row's receipt part included) less what other standing
+	consumers took."""
+	total = sum(flt(line.amount) for line in invoice_lines(purchase_invoice, account))
+	taken = sum(v for k, v in consumed_elsewhere(purchase_invoice, account, exclude_parent=exclude_parent).items() if len(k) == 2)
+	return max(flt(total - taken, 2), 0.0)
+
+
+@frappe.whitelist()
+def get_unallocated_repair_cost(purchase_invoice=None, expense_account=None, exclude_asset_repair=None):
+	"""Core's Asset Repair helper (`override_whitelisted_methods`): core
+	reads the invoice's own GL on the account, which for an invoice that
+	settled a service receipt (D-089) is only the price variance - the
+	receipt line holds the rest. Such an invoice answers through the
+	recorded lines; any other is core's answer."""
+	from erpnext.assets.doctype.asset_repair import asset_repair as core
+
+	if not settles_receipts(purchase_invoice, expense_account):
+		return core.get_unallocated_repair_cost(purchase_invoice, expense_account, exclude_asset_repair)
+	frappe.has_permission("Purchase Invoice", "read", purchase_invoice, throw=True)
+	return unconsumed(purchase_invoice, expense_account, exclude_parent=exclude_asset_repair)
