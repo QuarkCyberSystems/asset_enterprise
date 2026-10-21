@@ -525,24 +525,20 @@ def value_adjustment_refusal(asset):
 
 
 @frappe.whitelist()
-@frappe.validate_and_sanitize_search_inputs
-def value_adjustment_assets(doctype, txt, searchfield, start, page_len, filters):
-	"""Link query for Asset Value Adjustment -> Asset. Core offers only
-	depreciating assets; CH-47 lets a submitted asset that is not
-	depreciating take an adjustment too, unless its category forbids it -
-	the same rule value_adjustment_refusal applies on save."""
-	filters = filters or {}
-	company = filters.get("company")
-	return frappe.db.sql(
-		f"""
-		select a.name, a.asset_name from `tabAsset` a
-		left join `tabAsset Category` c on c.name = a.asset_category
-		where a.docstatus = 1 and ifnull(a.is_group_node, 0) = 0
-		  and (a.calculate_depreciation = 1
-		       or ifnull(c.forbid_value_adjustment_without_depreciation, 0) = 0)
-		  {"and a.company = %(company)s" if company else ""}
-		  and (a.name like %(txt)s or a.asset_name like %(txt)s)
-		order by a.name limit %(start)s, %(page_len)s
-		""",
-		{"company": company, "txt": f"%{txt or ''}%", "start": start or 0, "page_len": page_len or 20},
+def value_of_accounting_dimensions(asset_name):
+	"""Override of core's get_value_of_accounting_dimensions, which the
+	Asset Value Adjustment form calls when an asset is picked and whose
+	answer frm.call writes straight back onto the form. Core reads every
+	dimension off the Asset record; this app's Asset dimension is named
+	`asset` - on the adjustment that field IS the asset - and an Asset
+	record's own asset dimension is empty, so core set the picked asset
+	back to empty on every pick (client 21/10/2026, ACC-ASS-2026-00369).
+	A dimension whose document type is Asset answers the asset itself."""
+	from erpnext.assets.doctype.asset_value_adjustment.asset_value_adjustment import (
+		get_value_of_accounting_dimensions,
 	)
+
+	values = get_value_of_accounting_dimensions(asset_name) or {}
+	for fieldname in frappe.get_all("Accounting Dimension", filters={"document_type": "Asset"}, pluck="fieldname"):
+		values[fieldname] = asset_name
+	return values
