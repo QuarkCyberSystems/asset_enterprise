@@ -60,9 +60,11 @@ def reverse_original_assets(doc, original):
 
 	Only the assets of the rows the Cancellation carries are reversed, and
 	such a row is reversed whole: which of a row's assets a reduced quantity
-	would give back is not the document's to say. A Cancellation that
-	leaves an asset row of the receipt out is refused by core's own check
-	behind this one (the receipt's other assets still stand)."""
+	would give back is not the document's to say. An asset linked to the
+	receipt without a row (`purchase_receipt_item` is stamped by core's
+	`make_asset` only) goes with the whole receipt, as on native cancel; a
+	Cancellation that leaves rows out is refused naming it. One that leaves
+	an asset row out is refused by core's own check behind this one."""
 	if not enterprise_enabled():
 		return
 	import frappe
@@ -71,20 +73,35 @@ def reverse_original_assets(doc, original):
 
 	from asset_enterprise.invoice_diff import reverse_receipt_assets
 
-	rows = {r.purchase_receipt_item: r for r in doc.get("items") or [] if r.get("purchase_receipt_item")}
-	if not rows:
+	carried = {r.purchase_receipt_item: r for r in doc.get("items") or [] if r.get("purchase_receipt_item")}
+	original_qty = {r.name: flt(r.qty) for r in frappe.get_all(
+		"Purchase Receipt Item", filters={"parent": original, "parenttype": "Purchase Receipt"}, fields=["name", "qty"])}
+	standing = frappe.get_all("Asset", filters={"purchase_receipt": original, "docstatus": 1},
+		fields=["name", "purchase_receipt_item"])
+	if not standing:
 		return
-	with_assets = set(frappe.get_all("Asset", filters={"purchase_receipt": original, "docstatus": 1,
-		"purchase_receipt_item": ("in", list(rows))}, pluck="purchase_receipt_item"))
-	for name in with_assets:
-		original_qty = flt(frappe.db.get_value("Purchase Receipt Item", name, "qty"))
-		if abs(flt(rows[name].qty)) != original_qty:
+	reversing = []
+	for row_name in sorted({a.purchase_receipt_item for a in standing if a.purchase_receipt_item in carried}):
+		row = carried[row_name]
+		if abs(flt(row.qty)) != original_qty.get(row_name):
 			frappe.throw(
 				_("Row {0}: {1} created assets on {2}; its reversal must carry the whole row ({3}), not {4}.").format(
-					rows[name].idx, rows[name].item_code, original, original_qty, abs(flt(rows[name].qty))),
+					row.idx, row.item_code, original, original_qty.get(row_name), abs(flt(row.qty))),
 				title=_("Asset Row Reversed Whole"),
 			)
-	reverse_receipt_assets(original, receipt_items=with_assets)
+		reversing.extend(a.name for a in standing if a.purchase_receipt_item == row_name)
+	unrowed = [a.name for a in standing if a.purchase_receipt_item not in original_qty]
+	if unrowed:
+		if set(original_qty) - set(carried):
+			frappe.throw(
+				_("{0} {1} linked to {2} without a receipt row; they are reversed only with the whole receipt, "
+					"and this reversal leaves rows of it out.").format(
+					_("Asset") if len(unrowed) == 1 else _("Assets"), ", ".join(unrowed), original),
+				title=_("Asset Reversed With the Whole Receipt"),
+			)
+		reversing.extend(unrowed)
+	if reversing:
+		reverse_receipt_assets(original, assets=reversing)
 
 
 def skip_depreciation_link_guess(doc, asset, je_row):
