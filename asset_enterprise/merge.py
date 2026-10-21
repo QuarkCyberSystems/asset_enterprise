@@ -1016,11 +1016,20 @@ def add_days_safe(posting_date):
 
 
 def _return_consumed_materials(source_cap, reversal_doc, posting_date):
-	"""Put back what a Capitalized Maintenance issued (Material Receipt).
+	"""Put back what a Capitalized Maintenance issued.
 
-	Valuation follows each Item's own method at receipt time — for a
-	kernel item that is the current periodic rate (GA-0003), exactly as
-	TC-047c describes for the repair reversal.
+	The issue's own ledger owner decides how: where another owner of the
+	Material Issue offers a reversal document for it (periodic_valuation's
+	Create Cancellation on a routed item), that document is raised and
+	submitted here, inside the platform's `performing_reversal` - this
+	app's "not by itself" refusal on the issue is lifted for its own act
+	(D-093) - so the stock returns as an exact reversal of the issue: the
+	valuation event reads as a cancellation of it, netting what the issue
+	moved, never as a new receipt (TSK-2026-00952 point 4). Where nobody
+	offers one, or the offer is refused (the issue's period is closed, and
+	the kernel asks for a current-period entry instead), a Material Receipt
+	to the source warehouse at the issue's rate returns the materials, as
+	before (TC-047c); the refusal is kept on the reversal's record.
 	"""
 	issue = frappe.db.get_value(
 		"Stock Entry",
@@ -1038,6 +1047,16 @@ def _return_consumed_materials(source_cap, reversal_doc, posting_date):
 	rows = [r for r in rows if flt(r.qty)]
 	if not rows:
 		return None
+	reversed_by_owner, refusal = _reverse_issue_through_owner(issue, reversal_doc, posting_date)
+	if reversed_by_owner:
+		return reversed_by_owner
+	if refusal:
+		reversal_doc.add_comment(
+			"Comment",
+			_("The exact reversal of {0} was refused ({1}); the materials return by a Material Receipt.").format(
+				issue, refusal
+			),
+		)
 	se = frappe.get_doc(
 		{
 			"doctype": "Stock Entry",
@@ -1065,6 +1084,37 @@ def _return_consumed_materials(source_cap, reversal_doc, posting_date):
 	se.insert()
 	se.submit()
 	return se.name
+
+
+def _reverse_issue_through_owner(issue, reversal_doc, posting_date):
+	"""(name of the owner's reversal document, None) when another owner of
+	the issue offers one and it posts; (None, refusal text) when the offer
+	is refused; (None, None) when nobody offers. The attempt runs under a
+	savepoint: a refused offer leaves nothing behind."""
+	from qcs_platform.ledger.dispatcher import performing_reversal, reversal_offer
+
+	issue_doc = frappe.get_doc("Stock Entry", issue)
+	offer = reversal_offer(issue_doc, by="asset_enterprise")
+	if offer is None:
+		return None, None
+	frappe.db.savepoint("ae_issue_reversal")
+	try:
+		with performing_reversal("asset_enterprise", "Stock Entry", issue):
+			name = frappe.get_attr(offer.method)("Stock Entry", issue)
+			reversal = frappe.get_doc("Stock Entry", name)
+			reversal.posting_date = posting_date
+			reversal.set_posting_time = 1
+			# the issue's reversal belongs to the capitalization's reversal,
+			# as the issue belongs to the capitalization
+			reversal.asset_capitalization = reversal_doc.name
+			reversal.flags.ignore_permissions = True
+			reversal.save()
+			reversal.submit()
+			return reversal.name, None
+	except frappe.ValidationError as exc:
+		frappe.db.rollback(save_point="ae_issue_reversal")
+		frappe.clear_last_message()
+		return None, frappe.utils.strip_html(str(exc))
 
 
 def reverse_merge(reversal_doc):

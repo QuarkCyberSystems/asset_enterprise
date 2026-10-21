@@ -470,7 +470,7 @@ class EnterpriseAssetCapitalization(CounterDocumentReversal, AssetCapitalization
 	def reversal_note(self):
 		note = _("The service value leaves {0}.").format(self.target_asset)
 		if self.get("stock_items"):
-			note += " " + _("Consumed stock items return to their warehouse by a Material Receipt.")
+			note += " " + _("Consumed stock items return to their warehouse - by the reversal of the Material Issue where its valuation offers one, else by a Material Receipt.")
 		return note
 
 	def reversal_gates(self):

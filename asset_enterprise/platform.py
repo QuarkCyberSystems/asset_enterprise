@@ -91,14 +91,16 @@ class AssetLedgerAdapter:
 		if doc.doctype != "Stock Entry":
 			return None  # a Scrap Transaction refuses in its controller
 		# no route on purpose: the issue is not reversible by itself - the
-		# capitalization's reversal posts the Material Receipt that returns the
-		# materials, and cancelling the issue would return them a second time
+		# capitalization's reversal returns the materials (through the
+		# issue's own reversal document where its valuation offers one, else
+		# a Material Receipt; merge._return_consumed_materials), and
+		# cancelling the issue would return them a second time
 		return Refusal(
 			title=_("Reverse the Capitalization"),
 			message=_(
 				"{0} was raised by Asset Capitalization {1} and cannot be cancelled on its own - the "
-				"materials are returned by reversing that capitalization, which posts a Material "
-				"Receipt and leaves both movements on the record."
+				"materials are returned by reversing that capitalization, which leaves both movements "
+				"on the record."
 			).format(doc.name, doc.asset_capitalization),
 			owner=self.app,
 		)
