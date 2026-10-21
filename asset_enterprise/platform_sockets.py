@@ -7,7 +7,7 @@ journal classes (qcs_platform Build 0.2 step 4, §4.10 / §4.12; N-4 RULED
 at package import (`overrides/patches.py`); the classes' overrides are the
 platform's, so the platform owns the methods and asks these functions
 through the hooks of the same name (hooks.py). The registration requires
-the three sockets (platform.py): while one is unhealthy the platform
+the sockets (platform.py): while one is unhealthy the platform
 refuses the postings that rely on it (`capability_uses`), and the migrate
 fails.
 
@@ -48,6 +48,20 @@ def keep_receipt_assets(doc, field):
 	from qcs_platform.core.sockets import KEEP
 
 	return KEEP if enterprise_enabled() else None
+
+
+def reverse_original_assets(doc, original):
+	"""`receipt_reversal_assets` (GAP-004.4, D-095): a receipt reversed by its
+	Cancellation document - ERPNext's own return of it, which is how a
+	receipt carrying periodic-valuation rows is reversed - reverses the
+	assets it created exactly as its native cancel would, as the
+	Cancellation is submitted. Core's return refuses while those assets
+	stand; the platform asks this first."""
+	if not enterprise_enabled():
+		return
+	from asset_enterprise.invoice_diff import reverse_receipt_assets
+
+	reverse_receipt_assets(original)
 
 
 def skip_depreciation_link_guess(doc, asset, je_row):
@@ -92,6 +106,12 @@ def purchase_with_asset_rows(doc, event=None):
 	if event == "cancel" and doc.get("is_return"):
 		return False
 	return _asset_rows(doc) and enterprise_enabled()
+
+
+def receipt_cancellation_with_asset_rows(doc, event=None):
+	"""A receipt's Cancellation document with a fixed-asset row: its submit
+	reverses the original's assets through the receipt-reversal socket."""
+	return bool(doc.get("is_cancellation") and doc.get("cancellation_against")) and purchase_with_asset_rows(doc, event)
 
 
 def depreciation_journal(doc, event=None):
