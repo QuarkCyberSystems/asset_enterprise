@@ -280,18 +280,17 @@ def pr_before_cancel(doc, method=None):
 	reverse_receipt_assets(doc.name)
 
 
-def reverse_receipt_assets(receipt):
+def reverse_receipt_assets(receipt, receipt_items=None):
 	"""Reverse the submitted assets Purchase Receipt `receipt` created - the
 	cascade of its native cancel (pr_before_cancel) and of its Cancellation
 	document's submit (the platform's `receipt_reversal_assets` socket,
-	D-095), one rule for both. Refused while an asset carries posted
-	depreciation, in the words the client has seen (FA-012 / CH-42 use the
-	same rule)."""
-	submitted = frappe.get_all(
-		"Asset",
-		filters={"purchase_receipt": receipt, "docstatus": 1},
-		pluck="name",
-	)
+	D-095), one rule for both; `receipt_items` limits it to the assets of
+	those receipt rows. Refused while an asset carries posted depreciation,
+	in the words the client has seen (FA-012 / CH-42 use the same rule)."""
+	filters = {"purchase_receipt": receipt, "docstatus": 1}
+	if receipt_items is not None:
+		filters["purchase_receipt_item"] = ("in", list(receipt_items) or [""])
+	submitted = frappe.get_all("Asset", filters=filters, pluck="name")
 	if not submitted:
 		return
 

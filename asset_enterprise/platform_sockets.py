@@ -56,12 +56,35 @@ def reverse_original_assets(doc, original):
 	receipt carrying periodic-valuation rows is reversed - reverses the
 	assets it created exactly as its native cancel would, as the
 	Cancellation is submitted. Core's return refuses while those assets
-	stand; the platform asks this first."""
+	stand; the platform asks this first.
+
+	Only the assets of the rows the Cancellation carries are reversed, and
+	such a row is reversed whole: which of a row's assets a reduced quantity
+	would give back is not the document's to say. A Cancellation that
+	leaves an asset row of the receipt out is refused by core's own check
+	behind this one (the receipt's other assets still stand)."""
 	if not enterprise_enabled():
 		return
+	import frappe
+	from frappe import _
+	from frappe.utils import flt
+
 	from asset_enterprise.invoice_diff import reverse_receipt_assets
 
-	reverse_receipt_assets(original)
+	rows = {r.purchase_receipt_item: r for r in doc.get("items") or [] if r.get("purchase_receipt_item")}
+	if not rows:
+		return
+	with_assets = set(frappe.get_all("Asset", filters={"purchase_receipt": original, "docstatus": 1,
+		"purchase_receipt_item": ("in", list(rows))}, pluck="purchase_receipt_item"))
+	for name in with_assets:
+		original_qty = flt(frappe.db.get_value("Purchase Receipt Item", name, "qty"))
+		if abs(flt(rows[name].qty)) != original_qty:
+			frappe.throw(
+				_("Row {0}: {1} created assets on {2}; its reversal must carry the whole row ({3}), not {4}.").format(
+					rows[name].idx, rows[name].item_code, original, original_qty, abs(flt(rows[name].qty))),
+				title=_("Asset Row Reversed Whole"),
+			)
+	reverse_receipt_assets(original, receipt_items=with_assets)
 
 
 def skip_depreciation_link_guess(doc, asset, je_row):
