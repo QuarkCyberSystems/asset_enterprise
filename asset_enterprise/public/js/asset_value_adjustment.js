@@ -69,17 +69,6 @@ function ae_apply_difference_account(frm) {
 }
 
 frappe.ui.form.on("Asset Value Adjustment", {
-	// CH-47 / CH-53: core offers only depreciating assets; a submitted asset
-	// that is not depreciating takes an adjustment too unless its category
-	// forbids it. Core sets its filter in setup; app scripts load after the
-	// doctype's, so this replaces it (server rule: value_adjustment_refusal).
-	setup(frm) {
-		frm.set_query("asset", () => ({
-			query: "asset_enterprise.overrides.ava.value_adjustment_assets",
-			filters: { company: frm.doc.company },
-		}));
-	},
-
 	asset(frm) {
 		ae_apply_difference_account(frm);
 	},

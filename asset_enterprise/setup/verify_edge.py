@@ -2784,19 +2784,20 @@ def e46():
 @case("E-47", "CH-47 / CH-53 (client 21/10, ACC-ASS-2026-00369)", "a manual value adjustment of an asset that is not depreciating is allowed unless its category forbids it; system-raised adjustments and reversals are never refused")
 def e47():
 	"""asset_enterprise.overrides.ava.value_adjustment_refusal and the form's
-	value_adjustment_assets query:
+	value_of_accounting_dimensions answer:
 	1. a submitted asset that is not depreciating (Pending Depreciation
 	   Setup) takes an Upward Revaluation and an Initial Impairment; its
-	   value moves; the asset query offers it;
+	   value moves; a pick keeps it (the dimension write-back answers the
+	   asset itself);
 	2. a life adjustment on it is refused (no useful life runs yet);
 	3. its category flagged Forbid Value Adjustment Without Depreciation:
-	   a manual adjustment is refused, the query no longer offers it, the
+	   a manual adjustment is refused, the
 	   reversal of the earlier adjustment still posts and gives the value
 	   back, and a Project Settlement adjustment (raised by its flow) posts;
 	4. a depreciating asset of the same flagged category is unaffected."""
 	from asset_enterprise import api, reversal
 	from asset_enterprise.asset_values import recalculate_asset_values
-	from asset_enterprise.overrides.ava import value_adjustment_assets
+	from asset_enterprise.overrides.ava import value_adjustment_refusal, value_of_accounting_dimensions
 	from asset_enterprise.setup.test_fixtures import make_test_asset
 
 	company = _company()
@@ -2816,7 +2817,9 @@ def e47():
 		return doc
 
 	def offered(a):
-		return a in [r[0] for r in value_adjustment_assets("Asset", a, "name", 0, 20, {"company": company})]
+		# what the form keeps after a pick: the dimension write-back must
+		# answer the asset itself, and the server rule must not refuse it
+		return value_of_accounting_dimensions(a).get("asset") == a and not value_adjustment_refusal(a)
 
 	pending = make_test_asset(company, gross=2_600, submit=True)
 	pending.reload()
@@ -2825,7 +2828,7 @@ def e47():
 	up = adjust(pending.name, "Upward Revaluation", 400)
 	down = adjust(pending.name, "Initial Impairment", -300)
 	if nbv(pending.name) != 2_700 or not offered(pending.name):
-		problems.append(f"default category: NBV {nbv(pending.name)} (want 2,700), offered={offered(pending.name)}")
+		problems.append(f"default category: NBV {nbv(pending.name)} (want 2,700), kept on pick={offered(pending.name)}")
 	refused, msg = _refused(lambda: adjust(pending.name, "Useful Life Adjustment", adjusted_life_months=6))
 	if not refused or "no useful life" not in msg:
 		problems.append(f"life adjustment on a non-depreciating asset: refused={refused} {msg}")
@@ -2836,7 +2839,7 @@ def e47():
 	if not refused or "forbids a value adjustment" not in msg:
 		problems.append(f"flagged category: manual adjustment refused={refused} {msg}")
 	if offered(pending.name):
-		problems.append("flagged category: the asset query still offers the asset")
+		problems.append("flagged category: the rule does not refuse the asset")
 	reversal.reverse("Asset Value Adjustment", up.name)
 	if nbv(pending.name) != 2_300:
 		problems.append(f"flagged category: the reversal of {up.name} left NBV {nbv(pending.name)} (want 2,300)")

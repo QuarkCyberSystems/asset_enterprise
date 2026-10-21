@@ -42,6 +42,9 @@ override_doctype_class = {
 override_whitelisted_methods = {
 	"erpnext.assets.doctype.asset.depreciation.restore_asset": "asset_enterprise.restore.restore_asset",
 	"erpnext.assets.doctype.asset.depreciation.scrap_asset": "asset_enterprise.disposal.scrap_asset",
+	# the AVA form writes these values back onto itself; the asset dimension
+	# must answer the asset, not clear it (overrides.ava)
+	"erpnext.assets.doctype.asset_value_adjustment.asset_value_adjustment.get_value_of_accounting_dimensions": "asset_enterprise.overrides.ava.value_of_accounting_dimensions",
 }
 
 # GA-0005-01 v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
