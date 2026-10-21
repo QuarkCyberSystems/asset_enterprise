@@ -264,6 +264,17 @@ CUSTOM_FIELDS = {
 			"insert_after": "subject_to_impairment_review",
 			"description": "Assets in this category are expensed, not capitalised. All accounts below — Fixed Asset and Accumulated Depreciation included — must be Expense accounts. Locked once the category has a submitted asset.",
 		},
+		# CH-47 lets a submitted asset that is not depreciating (Pending
+		# Depreciation Setup, Non-Depreciable) take a manual value
+		# adjustment; a category that wants its value fixed until
+		# depreciation is set up says so here (Vivek, 21/10/2026).
+		{
+			"fieldname": "forbid_value_adjustment_without_depreciation",
+			"fieldtype": "Check",
+			"label": "Forbid Value Adjustment Without Depreciation",
+			"insert_after": "non_depreciable_category",
+			"description": "When set, a manual Asset Value Adjustment is refused for an asset of this category that is not depreciating. Adjustments raised by an invoice or a project settlement, and reversals, are not affected.",
+		},
 	],
 	# ---------------------------------------------------- Asset Capitalization
 	"Asset Capitalization": [

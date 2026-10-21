@@ -2781,6 +2781,83 @@ def e46():
 	return not problems, "; ".join(problems or notes)
 
 
+@case("E-47", "CH-47 / CH-53 (client 21/10, ACC-ASS-2026-00369)", "a manual value adjustment of an asset that is not depreciating is allowed unless its category forbids it; system-raised adjustments and reversals are never refused")
+def e47():
+	"""asset_enterprise.overrides.ava.value_adjustment_refusal and the form's
+	value_adjustment_assets query:
+	1. a submitted asset that is not depreciating (Pending Depreciation
+	   Setup) takes an Upward Revaluation and an Initial Impairment; its
+	   value moves; the asset query offers it;
+	2. a life adjustment on it is refused (no useful life runs yet);
+	3. its category flagged Forbid Value Adjustment Without Depreciation:
+	   a manual adjustment is refused, the query no longer offers it, the
+	   reversal of the earlier adjustment still posts and gives the value
+	   back, and a Project Settlement adjustment (raised by its flow) posts;
+	4. a depreciating asset of the same flagged category is unaffected."""
+	from asset_enterprise import api, reversal
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.overrides.ava import value_adjustment_assets
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	company = _company()
+	account = frappe.db.get_value("Company", company, "default_expense_account")
+	problems, notes = [], []
+
+	def nbv(a):
+		return flt(recalculate_asset_values(a, save=False)["net_book_value"], 2)
+
+	def adjust(a, ttype, delta=0, **extra):
+		doc = frappe.get_doc({"doctype": "Asset Value Adjustment", "company": company, "asset": a,
+			"date": nowdate(), "transaction_type": ttype, "difference_account": account,
+			"new_asset_value": nbv(a) + delta, **extra})
+		doc.flags.ignore_mandatory = True
+		doc.insert(ignore_permissions=True)
+		doc.submit()
+		return doc
+
+	def offered(a):
+		return a in [r[0] for r in value_adjustment_assets("Asset", a, "name", 0, 20, {"company": company})]
+
+	pending = make_test_asset(company, gross=2_600, submit=True)
+	pending.reload()
+	if pending.calculate_depreciation or pending.status != "Pending Depreciation Setup":
+		return None, f"fixture asset {pending.name} is {pending.status} / depreciating={pending.calculate_depreciation}"
+	up = adjust(pending.name, "Upward Revaluation", 400)
+	down = adjust(pending.name, "Initial Impairment", -300)
+	if nbv(pending.name) != 2_700 or not offered(pending.name):
+		problems.append(f"default category: NBV {nbv(pending.name)} (want 2,700), offered={offered(pending.name)}")
+	refused, msg = _refused(lambda: adjust(pending.name, "Useful Life Adjustment", adjusted_life_months=6))
+	if not refused or "no useful life" not in msg:
+		problems.append(f"life adjustment on a non-depreciating asset: refused={refused} {msg}")
+
+	category = pending.asset_category
+	frappe.db.set_value("Asset Category", category, "forbid_value_adjustment_without_depreciation", 1)
+	refused, msg = _refused(lambda: adjust(pending.name, "Upward Revaluation", 100))
+	if not refused or "forbids a value adjustment" not in msg:
+		problems.append(f"flagged category: manual adjustment refused={refused} {msg}")
+	if offered(pending.name):
+		problems.append("flagged category: the asset query still offers the asset")
+	reversal.reverse("Asset Value Adjustment", up.name)
+	if nbv(pending.name) != 2_300:
+		problems.append(f"flagged category: the reversal of {up.name} left NBV {nbv(pending.name)} (want 2,300)")
+	with api.raising_project_settlement():
+		settled = adjust(pending.name, "Project Settlement", 50)
+	if nbv(pending.name) != 2_350:
+		problems.append(f"flagged category: Project Settlement {settled.name} left NBV {nbv(pending.name)} (want 2,350)")
+
+	depreciating = _asset(company, gross=12_000, months=12)
+	frappe.db.set_value("Asset", depreciating, "asset_category", category)
+	before = nbv(depreciating)
+	if not offered(depreciating):
+		problems.append(f"flagged category: depreciating {depreciating} not offered")
+	refused, msg = _refused(lambda: adjust(depreciating, "Upward Revaluation", 500))
+	if refused or nbv(depreciating) != flt(before + 500, 2):
+		problems.append(f"flagged category: depreciating {depreciating} refused={refused} {msg} NBV {before} -> {nbv(depreciating)}")
+	notes.append(f"{pending.name}: +400 {up.name}, -300 {down.name}, life refused; flagged: manual refused, hidden, "
+		f"reversal and Project Settlement {settled.name} posted; depreciating {depreciating} unaffected")
+	return not problems, "; ".join(problems or notes)
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(
