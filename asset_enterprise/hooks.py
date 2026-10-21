@@ -23,6 +23,8 @@ qcs_platform_registration = "asset_enterprise.platform.get_registration"
 purchase_gl_post_processors = ["asset_enterprise.platform_sockets.attribute_purchase_gl"]
 receipt_asset_delete_policy = ["asset_enterprise.platform_sockets.keep_receipt_assets"]
 depreciation_journal_link_policy = ["asset_enterprise.platform_sockets.skip_depreciation_link_guess"]
+# D-095: a receipt's Cancellation (its return) reverses the assets it created
+receipt_reversal_assets = ["asset_enterprise.platform_sockets.reverse_original_assets"]
 
 # GA-0005-01 v2.14 — controller overrides (build plan §2.1).
 # Phase 0: pass-through subclasses; behavior lands per phase.

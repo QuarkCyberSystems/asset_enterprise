@@ -239,6 +239,8 @@ class AssetLedgerAdapter:
 PLATFORM_CONTRACT = "0.2"
 PURCHASE_GL = "purchase_gl_post_processors"
 RECEIPT_ASSETS = "receipt_asset_delete_policy"
+# D-095: a receipt's Cancellation reverses the assets the receipt created
+RECEIPT_REVERSAL = "receipt_reversal_assets"
 DEPRECIATION_LINK = "depreciation_journal_link_policy"
 # P8, the platform's GL voucher row: gl_attribution finds a purchase leg's
 # line through the GL row's voucher_detail_no, which core leaves blank on
@@ -248,7 +250,7 @@ DEPRECIATION_LINK = "depreciation_journal_link_policy"
 GL_VOUCHER_ROW = "P8"
 # the form kit's Action prompt: Reverse asks its posting date (D-086)
 ACTION_PROMPT = "action_prompt"
-REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, DEPRECIATION_LINK, GL_VOUCHER_ROW, ACTION_PROMPT)
+REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, RECEIPT_REVERSAL, DEPRECIATION_LINK, GL_VOUCHER_ROW, ACTION_PROMPT)
 
 PLATFORM_TOO_OLD = (
 	"asset_enterprise is written against qcs_platform contract {0} (Build 0.2 step 4 or later: the purchase GL, "
@@ -270,6 +272,8 @@ def capability_uses():
 	  service invoice posts one merged row with no line;
 	- a receipt / invoice with a fixed-asset row: its GL's asset legs
 	  (submit: the purchase GL socket), its assets on cancel;
+	- a receipt's Cancellation with a fixed-asset row: the original's
+	  assets, reversed as it is submitted (D-095);
 	- a Depreciation Entry journal with an asset row: its schedule-row link
 	  (submit);
 	- a repost on an Enterprise Assets site: it rebuilds reached receipts'
@@ -285,6 +289,7 @@ def capability_uses():
 		CapabilityUse(doctypes=purchases, names=(GL_VOUCHER_ROW,), events=("submit",), applies=ps.enterprise_site),
 		CapabilityUse(doctypes=purchases, names=(PURCHASE_GL,), events=("submit",), applies=ps.purchase_with_asset_rows),
 		CapabilityUse(doctypes=purchases, names=(RECEIPT_ASSETS,), events=("cancel",), applies=ps.purchase_with_asset_rows),
+		CapabilityUse(doctypes=("Purchase Receipt",), names=(RECEIPT_REVERSAL,), events=("submit",), applies=ps.receipt_cancellation_with_asset_rows),
 		CapabilityUse(doctypes=("Journal Entry",), names=(DEPRECIATION_LINK,), events=("submit",), applies=ps.depreciation_journal),
 		CapabilityUse(
 			doctypes=("Repost Item Valuation", "Repost Accounting Ledger"),

@@ -277,11 +277,20 @@ def pr_before_cancel(doc, method=None):
 	"""
 	if not _enterprise():
 		return
-	submitted = frappe.get_all(
-		"Asset",
-		filters={"purchase_receipt": doc.name, "docstatus": 1},
-		pluck="name",
-	)
+	reverse_receipt_assets(doc.name)
+
+
+def reverse_receipt_assets(receipt, assets=None):
+	"""Reverse the submitted assets Purchase Receipt `receipt` created - the
+	cascade of its native cancel (pr_before_cancel) and of its Cancellation
+	document's submit (the platform's `receipt_reversal_assets` socket,
+	D-095), one rule for both; `assets` limits it to those of them. Refused
+	while an asset carries posted depreciation, in the words the client has
+	seen (FA-012 / CH-42 use the same rule)."""
+	filters = {"purchase_receipt": receipt, "docstatus": 1}
+	if assets is not None:
+		filters["name"] = ("in", list(assets) or [""])
+	submitted = frappe.get_all("Asset", filters=filters, pluck="name")
 	if not submitted:
 		return
 
@@ -305,7 +314,7 @@ def pr_before_cancel(doc, method=None):
 				"depreciation. Reverse those depreciation entries first (Reversal "
 				"Journal Entry per GA-0001-01), then reverse the receipt."
 			).format(
-				doc.name,
+				receipt,
 				", ".join(f"{n} ({c} {'entry' if c == 1 else 'entries'})" for n, c in blocked),
 			),
 			title=_("Depreciation Already Posted"),
@@ -314,12 +323,12 @@ def pr_before_cancel(doc, method=None):
 	for name in submitted:
 		asset = frappe.get_doc("Asset", name)
 		asset.flags.ignore_permissions = True
-		# The receipt is mid-cancel, so its own link back from the asset
+		# The receipt is being reversed, so its own link back from the asset
 		# must not re-trigger the check we are already inside.
 		asset.flags.ignore_links = True
 		asset.cancel()
 		frappe.msgprint(
-			_("Asset {0} reversed with Purchase Receipt {1}.").format(name, doc.name),
+			_("Asset {0} reversed with Purchase Receipt {1}.").format(name, receipt),
 			alert=True,
 		)
 
