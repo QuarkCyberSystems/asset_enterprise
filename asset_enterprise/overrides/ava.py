@@ -48,6 +48,7 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 		if self._enterprise():
 			self._refuse_manual_invoice_adjustment()
 			self._refuse_manual_project_settlement()
+			self._refuse_forbidden_without_depreciation()
 			# Same rule as everywhere else: the entry belongs to the centre
 			# that held the asset on the adjustment date. Core otherwise
 			# falls back to the company's depreciation cost centre
@@ -97,6 +98,34 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 			# core auto-filled into current_asset_value.
 			self.new_asset_value = self.current_asset_value
 			self.difference_amount = 0
+
+	def _refuse_forbidden_without_depreciation(self):
+		"""CH-47 / CH-53: a manual adjustment of an asset that is not
+		depreciating is allowed unless its category forbids it. A reversal
+		gives back what was posted, and Invoice Adjustment / Project
+		Settlement are raised by their own flows - none of them is refused."""
+		if (
+			not self.get("asset")
+			or self.get("reversal_of_ava")
+			or self.get("transaction_type") in SYSTEM_RAISED_TYPES
+		):
+			return
+		reason = value_adjustment_refusal(self.asset)
+		if reason:
+			frappe.throw(reason, title=_("Value Adjustment Forbidden"))
+		if self.get("transaction_type") in LIFE_TYPES and not frappe.db.get_value(
+			"Asset", self.asset, "calculate_depreciation"
+		):
+			# no useful life runs before depreciation is set up, so a life
+			# adjustment would post and change nothing
+			frappe.throw(
+				_(
+					"{0} is not depreciating, so it has no useful life to adjust. Set the life when "
+					"depreciation is enabled; to change only its value, use Upward Revaluation or "
+					"Initial Impairment."
+				).format(self.asset),
+				title=_("No Useful Life Yet"),
+			)
 
 	def _refuse_manual_invoice_adjustment(self):
 		"""Client, 24/08: "Invoice adjustment in select should not be
@@ -470,3 +499,50 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 		from asset_enterprise.depreciation import enterprise_enabled
 
 		return enterprise_enabled()
+
+
+# AVA types raised by another flow, never typed by hand (the two refusals
+# above); a category's value-adjustment rule does not apply to them
+SYSTEM_RAISED_TYPES = ("Invoice Adjustment", "Project Settlement")
+# the types that change the useful life (§3.4)
+LIFE_TYPES = ("Useful Life Adjustment", "Value + Life Adjustment")
+
+
+def value_adjustment_refusal(asset):
+	"""Why a manual Asset Value Adjustment may not adjust `asset` (CH-53),
+	or None. A depreciating asset is always adjustable; one that is not
+	(Pending Depreciation Setup, Non-Depreciable - CH-47) is, unless its
+	category is flagged Forbid Value Adjustment Without Depreciation."""
+	row = frappe.db.get_value("Asset", asset, ["calculate_depreciation", "asset_category"], as_dict=True)
+	if not row or row.calculate_depreciation or not row.asset_category:
+		return None
+	if not frappe.db.get_value("Asset Category", row.asset_category, "forbid_value_adjustment_without_depreciation"):
+		return None
+	return _(
+		"{0} is not depreciating, and its category {1} forbids a value adjustment until "
+		"depreciation is set up (Asset Category > Forbid Value Adjustment Without Depreciation)."
+	).format(asset, row.asset_category)
+
+
+@frappe.whitelist()
+@frappe.validate_and_sanitize_search_inputs
+def value_adjustment_assets(doctype, txt, searchfield, start, page_len, filters):
+	"""Link query for Asset Value Adjustment -> Asset. Core offers only
+	depreciating assets; CH-47 lets a submitted asset that is not
+	depreciating take an adjustment too, unless its category forbids it -
+	the same rule value_adjustment_refusal applies on save."""
+	filters = filters or {}
+	company = filters.get("company")
+	return frappe.db.sql(
+		f"""
+		select a.name, a.asset_name from `tabAsset` a
+		left join `tabAsset Category` c on c.name = a.asset_category
+		where a.docstatus = 1 and ifnull(a.is_group_node, 0) = 0
+		  and (a.calculate_depreciation = 1
+		       or ifnull(c.forbid_value_adjustment_without_depreciation, 0) = 0)
+		  {"and a.company = %(company)s" if company else ""}
+		  and (a.name like %(txt)s or a.asset_name like %(txt)s)
+		order by a.name limit %(start)s, %(page_len)s
+		""",
+		{"company": company, "txt": f"%{txt or ''}%", "start": start or 0, "page_len": page_len or 20},
+	)
