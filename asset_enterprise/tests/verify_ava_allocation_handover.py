@@ -18,6 +18,11 @@ app imports none):
   h6  without lines, refused
   h7  reversed, never cancelled: the Reversal releases the positions before
       its mirror posts; the original stays submitted; the value is restored
+  h8  the asset's project, WBS and cost component, filled on the header as
+      the desk does, never reach the entry (D-098 (b))
+  h9  a negative position reduces the asset (Dr the allocation account /
+      Cr the asset), within what it can absorb (D-081 (3)); mixed signs are
+      refused
 
 Savepoint-rolled-back.
 """
@@ -194,3 +199,47 @@ def _run():
 		check("h7 the original stays submitted", frappe.db.get_value("Asset Value Adjustment", doc.name, "docstatus") == 1)
 		check("h7 the value is restored", flt(get_asset_value_after_depreciation(asset.name)) == value_before,
 			f"{value_before} vs {get_asset_value_after_depreciation(asset.name)} ({rev_name})")
+
+		_dimensions_and_reduction(company, account, cc, stub)
+
+
+def _dimensions_and_reduction(company, account, cc, stub):
+	from erpnext.assets.doctype.asset.asset import get_asset_value_after_depreciation
+
+	from asset_enterprise.gl_attribution import dimension_fields
+	from asset_enterprise.setup.test_fixtures import make_test_asset
+
+	asset = make_test_asset(company, gross=50_000, submit=True)
+	stub.positions = {"ASSET|D8": (asset.name, "ENGINEERING", 2_000.0)}
+	dims = {}
+	for fieldname in dimension_fields("Asset Value Adjustment"):
+		if fieldname == "asset":
+			continue
+		target = frappe.get_meta("Asset Value Adjustment").get_field(fieldname).options
+		value = frappe.db.get_value(target, {"docstatus": 1} if frappe.get_meta(target).is_submittable else {}, "name")
+		if value:
+			dims[fieldname] = value
+	doc = frappe.get_doc({"doctype": "Asset Value Adjustment", "company": company, "asset": asset.name, "date": nowdate(),
+		"transaction_type": TYPE, "handover_lines": json.dumps([{"key": "ASSET|D8", "amount": 2_000.0}]), **dims})
+	doc.insert(ignore_permissions=True)
+	check("h8 the header dimensions are cleared", not any(doc.get(f) for f in dims), str({f: doc.get(f) for f in dims}))
+	doc.submit()
+	leg = frappe.get_all("GL Entry", filters={"voucher_no": doc.journal_entry, "account": account, "is_cancelled": 0},
+		fields=["cost_center", *[f for f in dims if frappe.get_meta("GL Entry").has_field(f)]])
+	check("h8 the allocation-account leg stays on the technical centre with no project",
+		leg and leg[0].cost_center == cc and not any(leg[0].get(f) for f in dims if f in leg[0]), str(leg))
+
+	stub.positions = {"ASSET|D9": (asset.name, "MAINTENANCE", -500.0), "ASSET|D9P": (asset.name, "ENGINEERING", 300.0)}
+	try:
+		_ava(asset, [{"key": "ASSET|D9", "amount": -500.0}, {"key": "ASSET|D9P", "amount": 300.0}])
+		check("h9 positive and negative positions in one adjustment are refused", False, "saved")
+	except frappe.ValidationError as exc:
+		check("h9 positive and negative positions in one adjustment are refused", "separate" in str(exc), str(exc)[:150])
+	before = flt(get_asset_value_after_depreciation(asset.name))
+	neg = _ava(asset, [{"key": "ASSET|D9", "amount": -500.0}])
+	neg.submit()
+	legs = frappe.get_all("GL Entry", filters={"voucher_no": neg.journal_entry, "is_cancelled": 0}, fields=["account", "debit", "credit"])
+	check("h9 a negative position reduces the asset: Dr the allocation account",
+		any(l.account == account and flt(l.debit) == 500.0 for l in legs), str(legs))
+	check("h9 ... by 500", flt(get_asset_value_after_depreciation(asset.name)) == before - 500.0,
+		f"{before} -> {get_asset_value_after_depreciation(asset.name)}")

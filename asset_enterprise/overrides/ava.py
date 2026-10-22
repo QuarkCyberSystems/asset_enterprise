@@ -307,7 +307,13 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 			frappe.flags.ae_defer_reschedule = self.asset
 		try:
 			if not ul_only:
-				super().on_submit()
+				import contextlib
+
+				from asset_enterprise import allocation_handover
+
+				# a Cost Allocation Handover's entry is admitted by this document (D-098 (a))
+				with allocation_handover.posting_context(self) or contextlib.nullcontext():
+					super().on_submit()
 		finally:
 			frappe.flags.ae_defer_reschedule = None
 		if not self._enterprise():

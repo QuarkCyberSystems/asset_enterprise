@@ -14,6 +14,17 @@ debits the asset and credits the allocation account the positions name, on
 their cost centre, in the statutory book; the module records the value
 change and recalculates depreciation as for any addition.
 
+A negative position - a correction after the asset took the cost - is taken
+by the same type as a reduction (Vivek, 22 Oct 2026; D-081 (3)): core's
+decrease entry debits the allocation account and credits the asset, within
+what the asset can absorb above its salvage value.
+
+The Stage B entry carries no project, WBS or cost component (D-098 (b)): the
+allocation account is credited (or debited) on the technical cost centre
+only, wherever the asset itself was acquired. The entry is raised inside
+`qcs_platform.handover.posting`, so the allocating app admits it by this
+document and stamps it.
+
 Reversed, never cancelled (GAP-030 step 4): the Reversal AVA releases the
 positions it took before its mirror entry posts, and they are pending again.
 """
@@ -85,15 +96,49 @@ def validate(ava):
 	if named:
 		ava.difference_account = named[0].account
 		ava.cost_center = named[0].cost_center
-	total = flt(sum(flt(line["amount"]) for line in taken), 2)
-	if total <= 0:
+	_clear_project_dimensions(ava)
+	places = ava.precision("difference_amount") or 2
+	total = flt(sum(flt(line["amount"]) for line in taken), places)
+	if not total:
+		frappe.throw(_("The positions taken add up to nothing."), title=_("Nothing Taken"))
+	if any(flt(line["amount"]) * total < 0 for line in taken):
 		frappe.throw(
-			_("A Cost Allocation Handover adds value; a negative position is a correction the asset takes "
-				"through Initial Impairment once it is reviewed."),
-			title=_("Negative Position"),
+			_("Take positive and negative positions in separate adjustments: one adds value, the other reduces it."),
+			title=_("Mixed Positions"),
 		)
+	if total < 0:
+		_assert_reducible(ava, -total)
 	ava.set_current_asset_value()  # core's: the carrying value, filled when empty
-	ava.new_asset_value = flt(flt(ava.current_asset_value) + total, 2)
+	ava.new_asset_value = flt(flt(ava.current_asset_value) + total, places)
+
+
+def _clear_project_dimensions(ava):
+	"""D-098 (b): the Stage B entry belongs to the technical cost centre, not
+	to a project - the form fills the asset's dimensions on pick."""
+	from asset_enterprise.gl_attribution import dimension_fields
+
+	for fieldname in dimension_fields(ava.doctype):
+		if fieldname != "asset" and ava.get(fieldname):
+			ava.set(fieldname, None)
+
+
+def _assert_reducible(ava, amount):
+	"""A negative take reduces the asset (D-081 (3)): all of it above the
+	asset's salvage value, with depreciation current - else the position
+	stays pending until it can be taken."""
+	from asset_enterprise.api import reduce_asset_value
+
+	split = reduce_asset_value(ava.asset, amount, ava.date, ava.difference_account, ava.doctype, ava.name or "",
+		dry_run=True)
+	if split.blocked:
+		frappe.throw(split.blocked, title=_("Depreciation Outstanding"))
+	if split.to_expense:
+		frappe.throw(
+			_("{0} can absorb only {1} of the {2} correction above its salvage value; the position stays pending "
+				"until the asset can take it.").format(ava.asset, frappe.format(split.absorbed, "Currency"),
+				frappe.format(amount, "Currency")),
+			title=_("Correction Larger Than the Asset"),
+		)
 
 
 def consume(ava):
@@ -118,3 +163,19 @@ def release_for_reversal(reversal):
 	from qcs_platform import handover
 
 	handover.release(original)
+
+
+def posting_context(ava):
+	"""The platform context the AVA's entry is raised in: `take` for a
+	handover, `release` for its reversal's mirror (D-098 (a)); None for any
+	other adjustment."""
+	from qcs_platform import handover
+
+	if ava.get("reversal_of_ava"):
+		original = frappe.get_doc("Asset Value Adjustment", ava.reversal_of_ava)
+		if original.get("transaction_type") == TYPE:
+			return handover.posting(original, "release")
+		return None
+	if ava.get("transaction_type") == TYPE:
+		return handover.posting(ava, "take")
+	return None
