@@ -36,8 +36,12 @@ def _run():
 			"Scrapping Type Account", {"parent": "Damage", "company": company}, "gl_account"
 		)
 		if not damage_account:
+			# a plain expense ledger: the first Expense leaf on a fresh chart is
+			# the Depreciation-type one, which core refuses on the scrap journal
 			damage_account = frappe.db.get_value(
-				"Account", {"company": company, "root_type": "Expense", "is_group": 0}, "name"
+				"Account",
+				{"company": company, "root_type": "Expense", "is_group": 0, "account_type": ("in", ("", None))},
+				"name",
 			)
 			st = frappe.get_doc("Scrapping Type", "Damage")
 			st.append("accounts", {"company": company, "gl_account": damage_account})
