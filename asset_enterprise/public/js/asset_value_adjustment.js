@@ -68,6 +68,42 @@ function ae_apply_difference_account(frm) {
 	});
 }
 
+// GAP-030 (GA-0002-02): a Cost Allocation Handover takes the asset's
+// pending allocated cost; the account, cost centre and amount are the
+// positions taken, never typed.
+const AE_ALLOCATION_HANDOVER = "Cost Allocation Handover";
+
+function ae_allocation_handover(frm) {
+	const on = frm.doc.transaction_type === AE_ALLOCATION_HANDOVER && !frm.doc.reversal_of_ava;
+	["difference_account", "cost_center", "new_asset_value"].forEach((f) =>
+		frm.set_df_property(f, "read_only", on ? 1 : 0)
+	);
+	if (!on || frm.doc.docstatus !== 0) return;
+	frm.add_custom_button(__("Get Pending Allocations"), () => {
+		if (!frm.doc.asset || !frm.doc.company) {
+			frappe.msgprint(__("Choose the asset first."));
+			return;
+		}
+		frappe
+			.xcall("asset_enterprise.allocation_handover.get_pending", { asset: frm.doc.asset, company: frm.doc.company })
+			.then((r) => {
+				if (!r.available) {
+					frappe.msgprint(__("No installed app allocates cost to assets on this site, so nothing is pending."));
+					return;
+				}
+				if (!r.lines.length) {
+					frappe.msgprint(__("Nothing is pending for {0}.", [frm.doc.asset]));
+					return;
+				}
+				frm.set_value("handover_lines", JSON.stringify(r.lines.map((l) => ({ key: l.key, amount: l.amount }))));
+				frm.set_value("difference_account", r.account);
+				frm.set_value("cost_center", r.cost_center);
+				frm.set_value("new_asset_value", flt(frm.doc.current_asset_value) + flt(r.total));
+				frappe.show_alert({ message: __("{0} pending taken", [format_currency(r.total)]), indicator: "green" });
+			});
+	});
+}
+
 frappe.ui.form.on("Asset Value Adjustment", {
 	asset(frm) {
 		ae_apply_difference_account(frm);
@@ -75,12 +111,14 @@ frappe.ui.form.on("Asset Value Adjustment", {
 
 	transaction_type(frm) {
 		ae_apply_difference_account(frm);
+		ae_allocation_handover(frm);
 	},
 
 	refresh(frm) {
 		window.ae_hide_system_only_option(frm, "transaction_type", "Invoice Adjustment");
 		window.ae_hide_system_only_option(frm, "transaction_type", AE_PROJECT_SETTLEMENT);
 		ae_apply_difference_account(frm);
+		ae_allocation_handover(frm);
 		if (frm.doc.reversal_of_ava) {
 			frm.set_intro(
 				__(

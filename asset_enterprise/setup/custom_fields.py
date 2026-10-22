@@ -553,8 +553,28 @@ CUSTOM_FIELDS = {
 			"fieldname": "transaction_type",
 			"fieldtype": "Select",
 			"label": "Transaction Type",
-			"options": "\nInitial Impairment\nUpward Revaluation\nInvoice Adjustment\nUseful Life Adjustment\nValue + Life Adjustment\nProject Settlement",
+			"options": "\nInitial Impairment\nUpward Revaluation\nInvoice Adjustment\nUseful Life Adjustment\nValue + Life Adjustment\nProject Settlement\nCost Allocation Handover",
 			"insert_after": "company",
+		},
+		# GAP-030 (GA-0002-02): the pending allocation positions a Cost
+		# Allocation Handover takes, and the app it took them from (the
+		# platform resolver stamps handover_source)
+		{
+			"fieldname": "handover_lines",
+			"fieldtype": "Long Text",
+			"label": "Handover Lines",
+			"hidden": 1,
+			"no_copy": 1,
+			"insert_after": "transaction_type",
+		},
+		{
+			"fieldname": "handover_source",
+			"fieldtype": "Data",
+			"label": "Allocated By",
+			"read_only": 1,
+			"no_copy": 1,
+			"depends_on": "eval:doc.transaction_type==='Cost Allocation Handover'",
+			"insert_after": "handover_lines",
 		},
 		{
 			# C6 §9.1: optional free-text sub-type (e.g. a value-and-life

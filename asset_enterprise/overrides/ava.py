@@ -46,6 +46,11 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 		# account from the account-resolution chain by transaction type;
 		# the user can still override.
 		if self._enterprise():
+			from asset_enterprise import allocation_handover
+
+			# GAP-030 (GA-0002-02): the account, cost centre and amount of a
+			# Cost Allocation Handover are the positions it takes
+			allocation_handover.validate(self)
 			self._refuse_manual_invoice_adjustment()
 			self._refuse_manual_project_settlement()
 			self._refuse_forbidden_without_depreciation()
@@ -214,7 +219,7 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 			self.current_asset_value = flt(self.current_asset_value)
 			self.difference_amount = 0
 		elif ttype in ("Initial Impairment", "Upward Revaluation", "Invoice Adjustment",
-				"Project Settlement") and (
+				"Project Settlement", "Cost Allocation Handover") and (
 			months or days
 		):
 			frappe.throw(
@@ -254,6 +259,16 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 			self.db_set("journal_entry", mirror)
 
 	# ------------------------------------------------------------- submit
+	def before_submit(self):
+		if not self._enterprise():
+			return
+		from asset_enterprise import allocation_handover
+
+		# take the positions (and admit this document's entry), or give a
+		# reversed handover's positions back before its mirror posts
+		allocation_handover.consume(self)
+		allocation_handover.release_for_reversal(self)
+
 	def on_submit(self):
 		# VR-043 (client, 10/09): an impairment or revaluation is measured
 		# FROM the carrying amount, so periods left unposted make it a
@@ -439,7 +454,7 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 			return "Impairment", diff, 0
 		if ttype == "Upward Revaluation":
 			return "Revaluation", diff, 0
-		if ttype in ("Invoice Adjustment", "Project Settlement"):
+		if ttype in ("Invoice Adjustment", "Project Settlement", "Cost Allocation Handover"):
 			return "Addition", diff, 0
 		if ttype == "Value + Life Adjustment":
 			# §3.4 multi-treatment collapses into one FT carrying both deltas.

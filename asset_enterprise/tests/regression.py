@@ -77,6 +77,13 @@ def run(phases=None, raise_on_fail=True):
 	print(f"\n{'=' * 20} PROJECT SETTLEMENT AVA {'=' * 20}")
 	results["project_settlement_ava"] = _verdict(*_capture(verify_ava_project_settlement.run))
 
+	# the Cost Allocation Handover AVA type (GA-0002-02 GAP-030), against a
+	# stub source; it rolls back like the phases
+	from asset_enterprise.tests import verify_ava_allocation_handover
+
+	print(f"\n{'=' * 20} COST ALLOCATION HANDOVER AVA {'=' * 20}")
+	results["allocation_handover_ava"] = _verdict(*_capture(verify_ava_allocation_handover.run))
+
 	# the platform registration suite runs with every sweep (Build 0.1 §12)
 	from asset_enterprise.tests import smoke_platform_registration
 
