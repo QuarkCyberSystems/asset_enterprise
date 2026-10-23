@@ -15,6 +15,9 @@ Every rule applies only while Enterprise Assets is enabled; with it off a
 site behaves exactly like core.
 """
 
+import frappe
+from frappe import _
+
 from asset_enterprise.depreciation import enterprise_enabled
 
 
@@ -183,3 +186,36 @@ def landed_cost_rebuilds_gl(doc=None, event=None):
 	from qcs_platform.core.guards import is_immutable_ledger_enabled
 
 	return enterprise_enabled() and not is_immutable_ledger_enabled()
+
+
+def basis_correction(action, pre, destination, delta, clearing_account):
+	"""Platform `basis_correction_owners` (GA-0009-01 GAP-054; manual §9.8):
+	a non-monetary advance applied to an invoice slice that acquired an asset
+	corrects the asset's acquisition cost - through this module, never a
+	journal. A decrease is the asset's own reduction for another module's
+	document (`api.reduce_asset_value`, D-081: absorbed on the register, the
+	rest by the post-disposal rule); its reversal undoes exactly that. An
+	increase has no ruled mechanics yet (G05) and is refused by name."""
+	if destination.get("kind") != "Asset" or not enterprise_enabled():
+		return None
+	from frappe.utils import flt
+
+	from asset_enterprise import api
+
+	if action == "reverse":
+		undone = api.undo_asset_value_reduction(pre.doctype, pre.reversal_of, pre.posting_date)
+		return ("Asset Value Adjustment", undone.reversed[0]) if undone.reversed else ("Asset", destination["assets"][0])
+	if flt(delta) > 0:
+		frappe.throw(_("NONMONETARY_ROUTE_UNRULED: an asset basis increase of {0} has no ruled mechanics (G05).").format(delta),
+			title=_("Basis Rule Not Ruled"))
+	assets = destination.get("assets") or []
+	if not assets:
+		frappe.throw(_("The invoice slice {0} names no asset to correct.").format(pre.origin_slice))
+	share = abs(flt(delta)) / len(assets)
+	first = None
+	for i, asset in enumerate(assets):
+		amount = abs(flt(delta)) - share * (len(assets) - 1) if i == len(assets) - 1 else share
+		done = api.reduce_asset_value(asset, amount, pre.posting_date, clearing_account, pre.doctype, pre.name,
+			label=pre.origin_slice, dimensions=destination.get("dimensions"))
+		first = first or (("Asset Value Adjustment", done.ava) if done.ava else ("Journal Entry", done.journal_entry))
+	return first
