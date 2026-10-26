@@ -1,0 +1,326 @@
+{
+ "app": "asset_enterprise",
+ "creation": "2026-10-26 12:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Workspace Sidebar",
+ "header_icon": "fixed_assets",
+ "idx": 0,
+ "items": [
+  {
+   "type": "Link",
+   "label": "Home",
+   "link_type": "Workspace",
+   "link_to": "Fixed Assets",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "home",
+   "idx": 1
+  },
+  {
+   "type": "Link",
+   "label": "Asset",
+   "link_type": "DocType",
+   "link_to": "Asset",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "laptop",
+   "idx": 2
+  },
+  {
+   "type": "Link",
+   "label": "Asset Tree",
+   "link_type": "DocType",
+   "link_to": "Asset Tree",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "list-tree",
+   "idx": 3
+  },
+  {
+   "type": "Link",
+   "label": "Asset Value Adjustment",
+   "link_type": "DocType",
+   "link_to": "Asset Value Adjustment",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "scale",
+   "idx": 4
+  },
+  {
+   "type": "Link",
+   "label": "Asset Capitalization",
+   "link_type": "DocType",
+   "link_to": "Asset Capitalization",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "sprout",
+   "idx": 5
+  },
+  {
+   "type": "Link",
+   "label": "Asset Movement",
+   "link_type": "DocType",
+   "link_to": "Asset Movement",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "move-horizontal",
+   "idx": 6
+  },
+  {
+   "type": "Link",
+   "label": "Scrap Transaction",
+   "link_type": "DocType",
+   "link_to": "Scrap Transaction",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "trash-2",
+   "idx": 7
+  },
+  {
+   "type": "Section Break",
+   "label": "Depreciation",
+   "link_type": "DocType",
+   "icon": "trending-down",
+   "collapsible": 1,
+   "indent": 1,
+   "keep_closed": 1,
+   "idx": 8
+  },
+  {
+   "type": "Link",
+   "label": "Mass Asset Depreciation",
+   "link_type": "DocType",
+   "link_to": "Mass Asset Depreciation",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 9
+  },
+  {
+   "type": "Link",
+   "label": "Mass Depreciation Reversal",
+   "link_type": "DocType",
+   "link_to": "Mass Depreciation Reversal",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 10
+  },
+  {
+   "type": "Link",
+   "label": "Depreciation Schedule",
+   "link_type": "DocType",
+   "link_to": "Asset Depreciation Schedule",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 11
+  },
+  {
+   "type": "Link",
+   "label": "Asset Depreciation Ledger",
+   "link_type": "Report",
+   "link_to": "Asset Depreciation Ledger",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 12
+  },
+  {
+   "type": "Link",
+   "label": "Depreciations and Balances",
+   "link_type": "Report",
+   "link_to": "Asset Depreciations and Balances",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 13
+  },
+  {
+   "type": "Section Break",
+   "label": "Maintenance",
+   "link_type": "DocType",
+   "icon": "wrench",
+   "collapsible": 1,
+   "indent": 1,
+   "keep_closed": 1,
+   "idx": 14
+  },
+  {
+   "type": "Link",
+   "label": "Asset Repair",
+   "link_type": "DocType",
+   "link_to": "Asset Repair",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 15
+  },
+  {
+   "type": "Link",
+   "label": "Asset Maintenance",
+   "link_type": "DocType",
+   "link_to": "Asset Maintenance",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 16
+  },
+  {
+   "type": "Link",
+   "label": "Asset Maintenance Log",
+   "link_type": "DocType",
+   "link_to": "Asset Maintenance Log",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 17
+  },
+  {
+   "type": "Link",
+   "label": "Asset Maintenance Team",
+   "link_type": "DocType",
+   "link_to": "Asset Maintenance Team",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 18
+  },
+  {
+   "type": "Section Break",
+   "label": "Reports",
+   "link_type": "DocType",
+   "icon": "sheet",
+   "collapsible": 1,
+   "indent": 1,
+   "keep_closed": 1,
+   "idx": 19
+  },
+  {
+   "type": "Link",
+   "label": "Fixed Asset Register",
+   "link_type": "Report",
+   "link_to": "Fixed Asset Register",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 20
+  },
+  {
+   "type": "Link",
+   "label": "Asset Activity",
+   "link_type": "Report",
+   "link_to": "Asset Activity",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 21
+  },
+  {
+   "type": "Link",
+   "label": "Asset Daily Reconciliation",
+   "link_type": "Report",
+   "link_to": "Asset Daily Reconciliation",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 22
+  },
+  {
+   "type": "Link",
+   "label": "Asset Tree Report",
+   "link_type": "Report",
+   "link_to": "Asset Tree",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 23
+  },
+  {
+   "type": "Link",
+   "label": "Replacement Chain",
+   "link_type": "Report",
+   "link_to": "Replacement Chain",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 24
+  },
+  {
+   "type": "Link",
+   "label": "Composite Merge Log",
+   "link_type": "Report",
+   "link_to": "Composite Merge Log Report",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 25
+  },
+  {
+   "type": "Section Break",
+   "label": "Setup",
+   "link_type": "DocType",
+   "icon": "sliders-horizontal",
+   "collapsible": 1,
+   "indent": 1,
+   "keep_closed": 1,
+   "idx": 26
+  },
+  {
+   "type": "Link",
+   "label": "Asset Category",
+   "link_type": "DocType",
+   "link_to": "Asset Category",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 27
+  },
+  {
+   "type": "Link",
+   "label": "Item",
+   "link_type": "DocType",
+   "link_to": "Item",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 28
+  },
+  {
+   "type": "Link",
+   "label": "Location",
+   "link_type": "DocType",
+   "link_to": "Location",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 29
+  },
+  {
+   "type": "Link",
+   "label": "Financial Treatment",
+   "link_type": "DocType",
+   "link_to": "Financial Treatment",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 30
+  },
+  {
+   "type": "Link",
+   "label": "Transaction Category",
+   "link_type": "DocType",
+   "link_to": "Transaction Category",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 31
+  },
+  {
+   "type": "Link",
+   "label": "Scrapping Type",
+   "link_type": "DocType",
+   "link_to": "Scrapping Type",
+   "child": 1,
+   "collapsible": 1,
+   "idx": 32
+  },
+  {
+   "type": "Link",
+   "label": "Settings",
+   "link_type": "DocType",
+   "link_to": "Asset Settings",
+   "child": 0,
+   "collapsible": 1,
+   "icon": "settings",
+   "idx": 33
+  }
+ ],
+ "modified": "2026-10-26 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Asset Enterprise",
+ "name": "Fixed Assets",
+ "owner": "Administrator",
+ "standard": 1,
+ "title": "Fixed Assets"
+}
