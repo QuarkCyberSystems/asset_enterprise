@@ -1,6 +1,6 @@
 {
  "app": "asset_enterprise",
- "creation": "2026-10-26 12:00:00.000000",
+ "creation": "2026-10-26 15:00:00.000000",
  "docstatus": 0,
  "doctype": "Workspace Sidebar",
  "header_icon": "fixed_assets",
@@ -79,7 +79,6 @@
   {
    "type": "Section Break",
    "label": "Depreciation",
-   "link_type": "DocType",
    "icon": "trending-down",
    "collapsible": 1,
    "indent": 1,
@@ -134,7 +133,6 @@
   {
    "type": "Section Break",
    "label": "Maintenance",
-   "link_type": "DocType",
    "icon": "wrench",
    "collapsible": 1,
    "indent": 1,
@@ -180,7 +178,6 @@
   {
    "type": "Section Break",
    "label": "Reports",
-   "link_type": "DocType",
    "icon": "sheet",
    "collapsible": 1,
    "indent": 1,
@@ -244,7 +241,6 @@
   {
    "type": "Section Break",
    "label": "Setup",
-   "link_type": "DocType",
    "icon": "sliders-horizontal",
    "collapsible": 1,
    "indent": 1,
@@ -316,7 +312,7 @@
    "idx": 33
   }
  ],
- "modified": "2026-10-26 12:00:00.000000",
+ "modified": "2026-10-26 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "Asset Enterprise",
  "name": "Fixed Assets",
