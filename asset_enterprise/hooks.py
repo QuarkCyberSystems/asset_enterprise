@@ -21,6 +21,8 @@ qcs_platform_registration = "asset_enterprise.platform.get_registration"
 # platform overrides (they were runtime wraps of the core classes until
 # then). Required by the registration; see platform_sockets.py.
 purchase_gl_post_processors = ["asset_enterprise.platform_sockets.attribute_purchase_gl"]
+# GA-0009-01 GAP-054: a non-monetary advance's basis correction on an acquired asset (platform socket)
+basis_correction_owners = ["asset_enterprise.platform_sockets.basis_correction"]
 receipt_asset_delete_policy = ["asset_enterprise.platform_sockets.keep_receipt_assets"]
 depreciation_journal_link_policy = ["asset_enterprise.platform_sockets.skip_depreciation_link_guess"]
 # D-095: a receipt's Cancellation (its return) reverses the assets it created

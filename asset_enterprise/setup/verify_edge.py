@@ -2626,6 +2626,45 @@ def e45():
 		f"A.02 treatment {frappe.db.get_value('Financial Treatment', a02, 'status')})")
 
 
+@case("E-45b", "GA-0009-01 GAP-054 (Treasury non-monetary application)", "a non-monetary advance's basis correction on an acquired asset reduces its cost through this module and is undone with the reconciliation's reversal; an increase is refused by name")
+def e45b():
+	"""platform_sockets.basis_correction (platform `basis_correction_owners`):
+	1. a destination that is not an asset is not this module's (None);
+	2. an asset basis increase has no ruled mechanics: refused
+	   NONMONETARY_ROUTE_UNRULED;
+	3. a decrease of 300 is the asset's own reduction (an AVA Dr the
+	   clearing account), NBV down 300;
+	4. the reconciliation's reversal undoes exactly that (NBV restored)."""
+	from asset_enterprise import platform_sockets
+	from asset_enterprise.asset_values import recalculate_asset_values
+	from asset_enterprise.setup.test_fixtures import make_test_asset, pick_plain_account
+
+	company = _company()
+	clearing = pick_plain_account(company, "Liability")
+	asset = make_test_asset(company, gross=10_000, submit=True).name
+
+	def nbv():
+		return flt(recalculate_asset_values(asset, save=False)["net_book_value"])
+
+	def reconciliation(reversal_of=None):
+		name = frappe.get_doc({"doctype": "ToDo", "description": "E-45b reconciliation"}).insert(ignore_permissions=True).name
+		return frappe._dict(doctype="ToDo", name=name, company=company, posting_date=nowdate(), origin_slice="PINV-X:row",
+			reversal_of=reversal_of)
+
+	destination = {"kind": "Asset", "assets": [asset], "dimensions": {}}
+	not_mine = platform_sockets.basis_correction("post", reconciliation(), {"kind": "Stock"}, -300, clearing) is None
+	increase, message = _refused(lambda: platform_sockets.basis_correction("post", reconciliation(), destination, 300, clearing))
+	before = nbv()
+	pre = reconciliation()
+	made = platform_sockets.basis_correction("post", pre, destination, -300, clearing)
+	reduced_ok = bool(made) and made[0] == "Asset Value Adjustment" and abs(nbv() - (before - 300)) < 0.01
+	undone = platform_sockets.basis_correction("reverse", reconciliation(reversal_of=pre.name), destination, -300, clearing)
+	undo_ok = bool(undone) and abs(nbv() - before) < 0.01
+	ok = not_mine and increase and "NONMONETARY_ROUTE_UNRULED" in (message or "") and reduced_ok and undo_ok
+	return ok, (f"not mine={not_mine}; increase refused={increase} ({(message or '')[:60]}); decrease {made} NBV {before:,.2f} -> "
+		f"{before - 300:,.2f} ok={reduced_ok}; reversal {undone} NBV back ok={undo_ok}")
+
+
 @case("E-46", "GAP-030 step 4 / GAP-014 / GAP-033 (client 19/10, ACC-AVA-2026-00046)", "a reversed AVA, Capitalized Maintenance or capitalized repair stays submitted, marked Reversed; Cancel is refused with Reverse as the route")
 def e46():
 	"""asset_enterprise.reversal.CounterDocumentReversal, per doctype:
