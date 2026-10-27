@@ -364,6 +364,33 @@ def _routed_issue_case(fixtures, adapter, checks):
 			checks("X-AE valuation's Cancellation document is refused at validate", False, "made")
 		except LedgerRefusal as exc:
 			checks("X-AE valuation's Cancellation document is refused at validate", "asset_enterprise" in exc.owners, str(exc.owners))
+		# D-093 / TSK-2026-00952 point 4: the capitalization's reversal returns
+		# the materials THROUGH valuation's reversal of the issue - an exact
+		# cancellation (reason "cancellation", reversal_of the issue's event,
+		# the issue marked reversed), not a Material Receipt booked as a new
+		# receipt
+		on_hand_before = flt(frappe.db.get_value("Bin", {"item_code": MAP_ITEM, "warehouse": wh}, "actual_qty"))
+		cap = frappe.get_doc("Asset Capitalization", issue.asset_capitalization)
+		cap.reverse()
+		reversal = frappe.db.get_value("Asset Capitalization", {"reversal_of_capitalization": cap.name, "docstatus": 1}, "name")
+		back = frappe.get_all("Stock Entry", filters={"asset_capitalization": reversal, "docstatus": 1},
+			fields=["name", "is_cancellation", "cancellation_against", "stock_entry_type", "posting_date"])
+		checks("X-AE the capitalization's reversal raised valuation's Cancellation of the issue, not a Material Receipt",
+			len(back) == 1 and back[0].is_cancellation and back[0].cancellation_against == issue.name
+			and back[0].stock_entry_type != "Material Receipt", str(back))
+		if back:
+			events = frappe.get_all("Inventory Valuation Event",
+				filters={"source_docname": back[0].name, "is_cancelled": 0}, fields=["reason_code", "reversal_of", "qty_basis"])
+			issue_event = frappe.db.get_value("Inventory Valuation Event", {"source_docname": issue.name, "is_cancelled": 0}, "name")
+			checks("X-AE its valuation event is a cancellation of the issue's event",
+				len(events) == 1 and events[0].reason_code == "cancellation" and events[0].reversal_of == issue_event, str(events))
+			from qcs_platform.core.reversal import reversed_by
+
+			checks("X-AE the issue reads as reversed by it", reversed_by("Stock Entry", issue.name) == back[0].name)
+			checks("X-AE the materials are back on hand",
+				flt(frappe.db.get_value("Bin", {"item_code": MAP_ITEM, "warehouse": wh}, "actual_qty")) == on_hand_before + 1)
+			state = ui_state("Stock Entry", issue.name)
+			checks("X-AE Create Cancellation is not offered on the reversed issue", "Create Cancellation" not in [a["label"] for a in state["actions"]], str(state["actions"]))
 
 
 def _capability_use_cases(checks):
