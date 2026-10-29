@@ -314,34 +314,30 @@ class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
 		]
 		make_gl_entries(gl_map, merge_entries=False)
 
-		# 2. Stock return — Material Receipt of the consumed items
-		#    (Sales-Return pattern; valuation per Item method, GA-0003).
-		se_name = None
-		if source.get("stock_items"):
-			se = frappe.get_doc(
+		# 2. Stock return - through the repair's issue's own reversal where
+		#    its valuation owner offers one (a cancellation of the issue),
+		#    refused when that owner refuses it (never backdated, DR-71),
+		#    else a Material Receipt of the consumed items (TC-047c).
+		from asset_enterprise.stock_return import return_consumed_stock
+
+		issue = frappe.db.get_value("Stock Entry",
+			{"asset_repair": source.name, "docstatus": 1, "stock_entry_type": "Material Issue"}, "name")
+		se_name = return_consumed_stock(
+			issue, self, reversal_date,
+			[
 				{
-					"doctype": "Stock Entry",
-					"stock_entry_type": "Material Receipt",
-					"company": self.company or source.company,
-					"posting_date": reversal_date,
-					"set_posting_time": 1,
-					"items": [
-						{
-							"item_code": row.item_code,
-							"qty": flt(row.consumed_quantity),
-							"t_warehouse": row.warehouse,
-							"basic_rate": flt(row.valuation_rate),
-							"allow_zero_valuation_rate": 0,
-						}
-						for row in source.stock_items
-						if flt(row.consumed_quantity)
-					],
+					"item_code": row.item_code,
+					"qty": flt(row.consumed_quantity),
+					"t_warehouse": row.warehouse,
+					"basic_rate": flt(row.valuation_rate),
+					"allow_zero_valuation_rate": 0,
 				}
-			)
-			se.flags.ignore_permissions = True
-			se.insert()
-			se.submit()
-			se_name = se.name
+				for row in source.get("stock_items") or []
+				if flt(row.consumed_quantity)
+			],
+			link_field="asset_repair" if issue else None,
+		)
+		if se_name:
 			self.add_comment(
 				"Comment", _("Consumed stock returned via Stock Entry {0}.").format(se_name)
 			)
@@ -410,7 +406,7 @@ class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
 	# GAP-033 / GAP-030 pattern (reversal.CounterDocumentReversal): a
 	# capitalized repair is never cancelled; reverse() raises a Reversal
 	# Repair, whose submit (_submit_reversal) mirrors the repair's GL under
-	# its own voucher, returns the consumed stock by Material Receipt and
+	# its own voucher, returns the consumed stock (stock_return) and
 	# pairs the treatments. The original stays submitted, marked Reversed —
 	# so its consumption Stock Entry and serial/batch bundle stand as
 	# history too (the old cancel path cancelled the bundle the still-
@@ -440,7 +436,7 @@ class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
 			self.asset,
 		)
 		if self.get("stock_items"):
-			note += " " + _("Consumed stock items return to their source warehouse by a Material Receipt.")
+			note += " " + _("Consumed stock items return to their warehouse as the reversal of their Material Issue where its valuation offers one - that reversal posts only in the current period, so date this one there - else by a Material Receipt.")
 		return note
 
 	def reversal_gates(self):

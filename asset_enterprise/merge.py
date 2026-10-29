@@ -1016,21 +1016,11 @@ def add_days_safe(posting_date):
 
 
 def _return_consumed_materials(source_cap, reversal_doc, posting_date):
-	"""Put back what a Capitalized Maintenance issued.
+	"""Put back what a Capitalized Maintenance issued - through the issue's
+	own reversal where its valuation owner offers one, refused when that
+	owner refuses it, else by Material Receipt (stock_return)."""
+	from asset_enterprise.stock_return import issue_rows_as_receipt, return_consumed_stock
 
-	The issue's own ledger owner decides how: where another owner of the
-	Material Issue offers a reversal document for it (periodic_valuation's
-	Create Cancellation on a routed item), that document is raised and
-	submitted here, inside the platform's `performing_reversal` - this
-	app's "not by itself" refusal on the issue is lifted for its own act
-	(D-093) - so the stock returns as an exact reversal of the issue: the
-	valuation event reads as a cancellation of it, netting what the issue
-	moved, never as a new receipt (TSK-2026-00952 point 4). Where nobody
-	offers one, or the offer is refused (the issue's period is closed, and
-	the kernel asks for a current-period entry instead), a Material Receipt
-	to the source warehouse at the issue's rate returns the materials, as
-	before (TC-047c); the refusal is kept on the reversal's record.
-	"""
 	issue = frappe.db.get_value(
 		"Stock Entry",
 		{"asset_capitalization": source_cap.name, "docstatus": 1,
@@ -1039,82 +1029,8 @@ def _return_consumed_materials(source_cap, reversal_doc, posting_date):
 	)
 	if not issue:
 		return None
-	rows = frappe.get_all(
-		"Stock Entry Detail",
-		filters={"parent": issue},
-		fields=["item_code", "qty", "s_warehouse", "basic_rate", "cost_center", "expense_account"],
-	)
-	rows = [r for r in rows if flt(r.qty)]
-	if not rows:
-		return None
-	reversed_by_owner, refusal = _reverse_issue_through_owner(issue, reversal_doc, posting_date)
-	if reversed_by_owner:
-		return reversed_by_owner
-	if refusal:
-		reversal_doc.add_comment(
-			"Comment",
-			_("The exact reversal of {0} was refused ({1}); the materials return by a Material Receipt.").format(
-				issue, refusal
-			),
-		)
-	se = frappe.get_doc(
-		{
-			"doctype": "Stock Entry",
-			"stock_entry_type": "Material Receipt",
-			"company": source_cap.company,
-			"posting_date": posting_date,
-			"set_posting_time": 1,
-			"asset_capitalization": reversal_doc.name,
-			"items": [
-				{
-					"item_code": r.item_code,
-					"qty": flt(r.qty),
-					"t_warehouse": r.s_warehouse,
-					"basic_rate": flt(r.basic_rate) or None,
-					"cost_center": r.cost_center,
-					# the mirrored journal debits the account the issue
-					# credited the asset from; the receipt credits it back
-					"expense_account": r.expense_account,
-				}
-				for r in rows
-			],
-		}
-	)
-	se.flags.ignore_permissions = True
-	se.insert()
-	se.submit()
-	return se.name
-
-
-def _reverse_issue_through_owner(issue, reversal_doc, posting_date):
-	"""(name of the owner's reversal document, None) when another owner of
-	the issue offers one and it posts; (None, refusal text) when the offer
-	is refused; (None, None) when nobody offers. The attempt runs under a
-	savepoint: a refused offer leaves nothing behind."""
-	from qcs_platform.ledger.dispatcher import performing_reversal, reversal_offer
-
-	issue_doc = frappe.get_doc("Stock Entry", issue)
-	offer = reversal_offer(issue_doc, by="asset_enterprise")
-	if offer is None:
-		return None, None
-	frappe.db.savepoint("ae_issue_reversal")
-	try:
-		with performing_reversal("asset_enterprise", "Stock Entry", issue):
-			name = frappe.get_attr(offer.method)("Stock Entry", issue)
-			reversal = frappe.get_doc("Stock Entry", name)
-			reversal.posting_date = posting_date
-			reversal.set_posting_time = 1
-			# the issue's reversal belongs to the capitalization's reversal,
-			# as the issue belongs to the capitalization
-			reversal.asset_capitalization = reversal_doc.name
-			reversal.flags.ignore_permissions = True
-			reversal.save()
-			reversal.submit()
-			return reversal.name, None
-	except frappe.ValidationError as exc:
-		frappe.db.rollback(save_point="ae_issue_reversal")
-		frappe.clear_last_message()
-		return None, frappe.utils.strip_html(str(exc))
+	return return_consumed_stock(issue, reversal_doc, posting_date, issue_rows_as_receipt(issue),
+		link_field="asset_capitalization")
 
 
 def reverse_merge(reversal_doc):

@@ -74,9 +74,12 @@ class AssetLedgerAdapter:
 			from asset_enterprise.consumption import standing_consumers
 
 			return not doc.is_new() and bool(standing_consumers(doc.name))
-		# a Material Issue raised by an Asset Capitalization is an artefact
-		# of that capitalization, not an independent document
-		return bool(doc.get("asset_capitalization"))
+		# a Material Issue raised by an Asset Capitalization - or by a
+		# capitalized Asset Repair - is an artefact of it, not an independent
+		# document: only that transaction's reversal returns its stock
+		if doc.get("asset_capitalization"):
+			return True
+		return bool(doc.get("asset_repair")) and _capitalized_repair(doc.asset_repair)
 
 	def can_cancel(self, doc):
 		if doc.doctype == "Journal Entry":
@@ -90,10 +93,22 @@ class AssetLedgerAdapter:
 			return self._reverse_instead(doc)
 		if doc.doctype != "Stock Entry":
 			return None  # a Scrap Transaction refuses in its controller
+		if not doc.get("asset_capitalization"):
+			# a capitalized repair's issue (governs): the same rule, its
+			# repair's reversal returns the stock (stock_return)
+			return Refusal(
+				title=_("Reverse the Repair"),
+				message=_(
+					"{0} was raised by Asset Repair {1} and cannot be cancelled or reversed on its own - "
+					"the stock is returned by reversing that repair, which leaves both movements on the "
+					"record."
+				).format(doc.name, doc.asset_repair),
+				owner=self.app,
+			)
 		# no route on purpose: the issue is not reversible by itself - the
 		# capitalization's reversal returns the materials (through the
 		# issue's own reversal document where its valuation offers one, else
-		# a Material Receipt; merge._return_consumed_materials), and
+		# a Material Receipt; stock_return.return_consumed_stock), and
 		# cancelling the issue would return them a second time
 		return Refusal(
 			title=_("Reverse the Capitalization"),
@@ -219,6 +234,14 @@ class AssetLedgerAdapter:
 					primary=False,
 				),
 			)
+		if doc.doctype == "Stock Entry" and doc.get("asset_repair"):
+			return (
+				Action(
+					label=_("Open Asset Repair"),
+					route_to=f"/app/asset-repair/{doc.asset_repair}",
+					primary=False,
+				),
+			)
 		return ()
 
 	def locked_fields(self, doc):
@@ -233,6 +256,13 @@ class AssetLedgerAdapter:
 	def posts_rows(self, doc):
 		return False  # the capitalization posts; the issue's rows are core's or valuation's
 
+
+
+def _capitalized_repair(name):
+	"""A capitalized Asset Repair (not a Reversal Repair): its Material
+	Issue's stock comes back only through the repair's reversal."""
+	row = frappe.db.get_value("Asset Repair", name, ["docstatus", "capitalize_repair_cost", "transaction_type"], as_dict=True)
+	return bool(row and row.docstatus == 1 and row.capitalize_repair_cost and row.get("transaction_type") != "Reversal")
 
 # qcs_platform Build 0.2 step 4 (§4.10, §4.12): the purchase GL
 # attribution, the receipt-asset keep rule and the depreciation-link rule

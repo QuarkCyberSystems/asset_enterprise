@@ -392,6 +392,99 @@ def _routed_issue_case(fixtures, adapter, checks):
 			state = ui_state("Stock Entry", issue.name)
 			checks("X-AE Create Cancellation is not offered on the reversed issue", "Create Cancellation" not in [a["label"] for a in state["actions"]], str(state["actions"]))
 
+	_routed_backdated_refusal(fixtures, checks, MAP_ITEM)
+	_routed_repair_case(fixtures, checks, MAP_ITEM)
+
+
+def _routed_backdated_refusal(fixtures, checks, item):
+	"""TSK-2026-01005 / D-105: when the issue's valuation owner refuses its
+	exact reversal (a Cancellation is never backdated, DR-71), the
+	capitalization's Reverse is refused with the reason - no Material
+	Receipt fallback, nothing posted before the refusal."""
+	from unittest import mock
+
+	from qcs_platform.ledger.dispatcher import reversal_offer
+	from qcs_platform.testkit import isolated
+
+	with isolated():
+		wh = f"_SMK Stores - {frappe.db.get_value('Company', fixtures.company, 'abbr')}"
+		issue = fixtures.capitalization_issue(stock_item=item, warehouse=wh)
+		offer = reversal_offer(issue, by="asset_enterprise")
+		checks("X-AE-B valuation offers the issue's reversal to the capitalization", offer is not None, str(offer))
+		if offer is None:
+			return
+		cap = frappe.get_doc("Asset Capitalization", issue.asset_capitalization)
+		reason = "Backdated cancellations into a previous period are not supported; post into the current period."
+		frappe.db.savepoint("x_ae_b")
+		with mock.patch(offer.method, side_effect=frappe.ValidationError(reason)):
+			try:
+				cap.reverse()
+				refused, message = False, "reversed"
+			except frappe.ValidationError as exc:
+				refused, message = True, str(exc)
+		counter = frappe.db.get_value("Asset Capitalization", {"reversal_of_capitalization": cap.name}, "name")
+		receipts = frappe.db.count("Stock Entry", {"asset_capitalization": counter or "-", "stock_entry_type": "Material Receipt"})
+		mirrors = frappe.db.count("Journal Entry", {"user_remark": ("like", f"%Reversal of Capitalized Maintenance {cap.name}%")})
+		checks("X-AE-B a refused issue reversal refuses the capitalization's Reverse, naming the reason and the current period",
+			refused and "post into the current period" in message and "Date the reversal in the current period" in message, message[:240])
+		checks("X-AE-B ... before any Material Receipt or journal mirror is posted", receipts == 0 and mirrors == 0, f"receipts={receipts} mirrors={mirrors}")
+		frappe.db.rollback(save_point="x_ae_b")
+		checks("X-AE-B the capitalization still stands", not frappe.db.get_value("Asset Capitalization", cap.name, "reversed_by_capitalization"))
+
+
+def _routed_repair_case(fixtures, checks, item):
+	"""TSK-2026-01005 / D-105: a capitalized repair consuming a routed item -
+	its Material Issue is governed (cancelled or reversed only through the
+	repair's reversal), and the repair's reversal returns the stock as the
+	issue's Cancellation, not a Material Receipt."""
+	from qcs_platform.ledger.dispatcher import LedgerRefusal, ui_state
+	from qcs_platform.testkit import isolated
+
+	with isolated():
+		wh = f"_SMK Stores - {frappe.db.get_value('Company', fixtures.company, 'abbr')}"
+		fixtures.stock_in(item, wh)
+		asset = tc._plain_asset(fixtures.company, fixtures.cat, f"AE-PLAT Repair stock {_tag()}", 50_000)
+		asset.submit()
+		repair = frappe.get_doc({
+			"doctype": "Asset Repair", "asset": asset.name, "company": fixtures.company, "failure_date": nowdate(),
+			"repair_status": "Completed", "completion_date": nowdate(), "capitalize_repair_cost": 1,
+			"cost_center": frappe.db.get_value("Asset", asset.name, "cost_center"),
+			"stock_items": [{"item_code": item, "warehouse": wh, "consumed_quantity": 1}],
+		})
+		repair.flags.ignore_permissions = True
+		repair.insert()
+		repair.submit()
+		issue = frappe.db.get_value("Stock Entry", {"asset_repair": repair.name, "docstatus": 1, "stock_entry_type": "Material Issue"}, "name")
+		checks("X-AE-R the repair raised its Material Issue", bool(issue))
+		if not issue:
+			return
+		state = ui_state("Stock Entry", issue)
+		checks("X-AE-R the repair's issue is governed by this app beside valuation",
+			{"asset_enterprise", "periodic_valuation"} <= set(state["owners"]), str(state["owners"]))
+		try:
+			frappe.get_doc("Stock Entry", issue).cancel()
+			checks("X-AE-R native cancel of the repair's issue refused", False, "cancelled")
+		except LedgerRefusal as exc:
+			checks("X-AE-R native cancel of the repair's issue refused, no route", exc.route is None and "asset_enterprise" in exc.owners, str(exc.owners))
+		on_hand = flt(frappe.db.get_value("Bin", {"item_code": item, "warehouse": wh}, "actual_qty"))
+		repair.reload()
+		repair.reverse()
+		counter = frappe.db.get_value("Asset Repair", {"reversal_of_repair": repair.name, "docstatus": 1}, "name")
+		back = frappe.get_all("Stock Entry", filters={"cancellation_against": issue, "docstatus": 1},
+			fields=["name", "is_cancellation", "asset_repair", "stock_entry_type"])
+		checks("X-AE-R the repair's reversal raised valuation's Cancellation of its issue, tied to the Reversal Repair",
+			len(back) == 1 and back[0].is_cancellation and back[0].asset_repair == counter, str(back))
+		receipts = frappe.db.count("Stock Entry", {"asset_repair": counter or "-", "stock_entry_type": "Material Receipt"})
+		checks("X-AE-R no Material Receipt", receipts == 0, str(receipts))
+		if back:
+			events = frappe.get_all("Inventory Valuation Event", filters={"source_docname": back[0].name, "is_cancelled": 0},
+				fields=["reason_code", "reversal_of"])
+			issue_event = frappe.db.get_value("Inventory Valuation Event", {"source_docname": issue, "is_cancelled": 0}, "name")
+			checks("X-AE-R its valuation event is a cancellation of the issue's event",
+				len(events) == 1 and events[0].reason_code == "cancellation" and events[0].reversal_of == issue_event, str(events))
+		checks("X-AE-R the stock is back on hand",
+			flt(frappe.db.get_value("Bin", {"item_code": item, "warehouse": wh}, "actual_qty")) == on_hand + 1)
+
 
 def _capability_use_cases(checks):
 	"""End review 0.2 M-1 / S-1: the P8 use covers every receipt and
