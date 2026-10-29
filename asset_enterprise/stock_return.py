@@ -11,10 +11,12 @@ ledger owner's call:
   is raised and submitted inside the platform's `performing_reversal`
   (D-093), so the valuation event reads as a cancellation of the issue,
   netting what it moved (TSK-2026-00952 point 4);
-- where that owner REFUSES its reversal - a Cancellation is never
-  backdated into a previous period (DR-71) - the asset transaction's
-  reversal is refused with the owner's reason, nothing posted, so the
-  asset and stock legs always share one date (TSK-2026-01005, D-105);
+- where that owner REFUSES its reversal - its period is closed, or the
+  issue was itself carried into a later period (DR-75) - the asset
+  transaction's reversal is refused with the owner's reason, nothing
+  posted, so the asset and stock legs always share one date
+  (TSK-2026-01005, D-105). A reversal dated in the previous open month
+  posts there (DR-75, Vivek 29/10/2026);
 - where nobody offers one (stock no other owner values), a Material
   Receipt to the source warehouse at the issue's rate returns it (TC-047c).
 """
@@ -40,7 +42,7 @@ def return_consumed_stock(issue, reversal_doc, posting_date, fallback_items, lin
 				_(
 					"{0} cannot be reversed on {1}: the stock it consumed comes back only as the "
 					"reversal of its issue {2}, and that reversal is refused - {3} Date the reversal "
-					"in the current period."
+					"in an open period on or after the issue."
 				).format(reversal_doc.get(_source_field(reversal_doc)) or reversal_doc.name,
 					formatdate(posting_date), issue, refusal.rstrip(".") + "."),
 				title=_("Reversal Date Refused for the Stock"),
