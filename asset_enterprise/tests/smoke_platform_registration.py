@@ -426,7 +426,7 @@ def _routed_backdated_refusal(fixtures, checks, item):
 		receipts = frappe.db.count("Stock Entry", {"asset_capitalization": counter or "-", "stock_entry_type": "Material Receipt"})
 		mirrors = frappe.db.count("Journal Entry", {"user_remark": ("like", f"%Reversal of Capitalized Maintenance {cap.name}%")})
 		checks("X-AE-B a refused issue reversal refuses the capitalization's Reverse, naming the reason and the current period",
-			refused and "post into the current period" in message and "Date the reversal in the current period" in message, message[:240])
+			refused and "post into the current period" in message and "Date the reversal in an open period on or after the issue" in message, message[:240])
 		checks("X-AE-B ... before any Material Receipt or journal mirror is posted", receipts == 0 and mirrors == 0, f"receipts={receipts} mirrors={mirrors}")
 		frappe.db.rollback(save_point="x_ae_b")
 		checks("X-AE-B the capitalization still stands", not frappe.db.get_value("Asset Capitalization", cap.name, "reversed_by_capitalization"))

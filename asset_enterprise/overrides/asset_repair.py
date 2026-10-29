@@ -436,7 +436,7 @@ class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
 			self.asset,
 		)
 		if self.get("stock_items"):
-			note += " " + _("Consumed stock items return to their warehouse as the reversal of their Material Issue where its valuation offers one - that reversal posts only in the current period, so date this one there - else by a Material Receipt.")
+			note += " " + _("Consumed stock items return to their warehouse as the reversal of their Material Issue where its valuation offers one - on or after the issue, in an open period - else by a Material Receipt.")
 		return note
 
 	def reversal_gates(self):
