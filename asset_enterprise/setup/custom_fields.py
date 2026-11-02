@@ -576,6 +576,17 @@ CUSTOM_FIELDS = {
 			"depends_on": "eval:doc.transaction_type==='Cost Allocation Handover'",
 			"insert_after": "handover_lines",
 		},
+		# CAR-38 (GA-0002-02 v2.6): the cost allocation run that raised this
+		# handover as it posted; such an adjustment is reversed with its run
+		{
+			"fieldname": "raised_by_document",
+			"fieldtype": "Data",
+			"label": "Raised By",
+			"read_only": 1,
+			"no_copy": 1,
+			"depends_on": "raised_by_document",
+			"insert_after": "handover_source",
+		},
 		{
 			# C6 §9.1: optional free-text sub-type (e.g. a value-and-life
 			# adjustment's scenario); carried onto the Financial Treatment.

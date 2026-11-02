@@ -285,7 +285,10 @@ ACTION_PROMPT = "action_prompt"
 # D-079: the Cost Allocation Handover reads and takes pending Asset positions
 # through qcs_platform.handover (GA-0002-02 GAP-030)
 HANDOVER_SOURCE = "handover_source"
-REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, RECEIPT_REVERSAL, DEPRECIATION_LINK, GL_VOUCHER_ROW, ACTION_PROMPT, HANDOVER_SOURCE)
+# CAR-38 / D-111: a cost allocation run pushes Asset positions to this module's own handover
+HANDOVER_RECEIVER = "handover_receiver"
+REQUIRES = (PURCHASE_GL, RECEIPT_ASSETS, RECEIPT_REVERSAL, DEPRECIATION_LINK, GL_VOUCHER_ROW, ACTION_PROMPT, HANDOVER_SOURCE,
+	HANDOVER_RECEIVER)
 
 PLATFORM_TOO_OLD = (
 	"asset_enterprise is written against qcs_platform contract {0} (Build 0.2 step 4 or later: the purchase GL, "
@@ -342,6 +345,8 @@ def capability_uses():
 
 
 def get_registration():
+	from asset_enterprise.allocation_handover import AssetReceiver
+
 	try:
 		return Registration(
 			app="asset_enterprise",
@@ -351,6 +356,7 @@ def get_registration():
 			requires=REQUIRES,
 			platform_contract=PLATFORM_CONTRACT,
 			capability_uses=capability_uses(),
+			handover_receivers=(AssetReceiver(),),
 		)
 	except TypeError as exc:
 		# a platform before Build 0.2 step 4 has no capability_uses (before
