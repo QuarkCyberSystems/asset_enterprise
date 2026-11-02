@@ -179,3 +179,74 @@ def posting_context(ava):
 	if ava.get("transaction_type") == TYPE:
 		return handover.posting(ava, "take")
 	return None
+
+
+# --------------------------------------------------------- push (CAR-38)
+
+RAISED_BY_FIELD = "raised_by_document"
+
+
+class AssetReceiver:
+	"""A cost allocation run hands its Asset positions here as it posts
+	(CAR-38, bench D-111): one Cost Allocation Handover per asset, account,
+	cost centre and sign - an adjustment credits one account on one cost
+	centre and either adds value or reduces it - raised, validated and
+	submitted exactly as a hand-made one, inside the run's transaction. A
+	refusal (an asset that cannot take the value on that date) refuses the
+	run's Post with this module's words."""
+
+	app = "asset_enterprise"
+	id = "asset_enterprise.allocation_handover"
+	receiver_type = RECEIVER_TYPE
+	doctypes = ("Asset Value Adjustment",)
+
+	def raise_documents(self, company, lines, posting_date, reference):
+		groups = {}
+		for line in lines:
+			if not flt(line.amount):
+				continue
+			sign = 1 if flt(line.amount) > 0 else -1
+			groups.setdefault((line.object_name, line.account, line.cost_center, sign), []).append(line)
+		raised = []
+		for (asset, _account, _centre, _sign), group in sorted(groups.items()):
+			ava = frappe.get_doc(
+				{
+					"doctype": "Asset Value Adjustment",
+					"company": company,
+					"asset": asset,
+					"date": posting_date,
+					"transaction_type": TYPE,
+					"handover_lines": json.dumps(
+						[{"key": line.key, "amount": flt(line.amount), "bucket": line.bucket} for line in group]
+					),
+					RAISED_BY_FIELD: f"{reference[0]} {reference[1]}",
+				}
+			)
+			ava.flags.ignore_permissions = True
+			ava.insert()
+			ava.submit()
+			raised.append((ava.doctype, ava.name))
+		return raised
+
+	def reverse_document(self, doctype, name, reference):
+		"""The adjustment's own Reversal, on the adjustment's date - the run's
+		journals are reversed on their original date too."""
+		from asset_enterprise.reversal import reverse
+
+		return reverse(doctype, name, posting_date=frappe.db.get_value(doctype, name, "date"), check_permission=False)
+
+
+def raised_by_push_refusal(ava):
+	"""A handover a run raised is reversed with its run (CAR-38): the Reverse
+	action refuses it on its own, naming the run."""
+	raised_by = ava.get(RAISED_BY_FIELD)
+	if not raised_by or ava.get("transaction_type") != TYPE:
+		return None
+	from qcs_platform import handover
+
+	context = handover.raising()
+	if context and context[0] == "reverse" and f"{context[1]} {context[2]}" == raised_by:
+		return None
+	return _("{0} was raised by {1} and is reversed with it: reverse the run, or correct its cycle.").format(
+		ava.name, raised_by
+	)

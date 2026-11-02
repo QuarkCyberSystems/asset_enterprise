@@ -474,7 +474,9 @@ class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
 	def reversal_eligible(self):
 		if not self._enterprise():
 			return _("Enterprise asset features are off: this adjustment is cancelled, not reversed.")
-		return None
+		from asset_enterprise import allocation_handover
+
+		return allocation_handover.raised_by_push_refusal(self)
 
 	def reversal_note(self):
 		if not self.get("journal_entry"):
