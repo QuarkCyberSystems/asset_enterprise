@@ -229,11 +229,13 @@ class AssetReceiver:
 		return raised
 
 	def reverse_document(self, doctype, name, reference):
-		"""The adjustment's own Reversal, dated as this module dates every
-		reversal (today, unless Asset Settings lets a role choose)."""
+		"""The adjustment's own Reversal on the adjustment's date - the run's
+		journals are reversed on their own date too. The run's reversal role
+		is the gate that chose it (`date_gated`); VR-022 still holds."""
 		from asset_enterprise.reversal import reverse
 
-		return reverse(doctype, name, check_permission=False)
+		return reverse(doctype, name, posting_date=frappe.db.get_value(doctype, name, "date"), check_permission=False,
+			date_gated=True)
 
 
 def raised_by_push_refusal(ava):
