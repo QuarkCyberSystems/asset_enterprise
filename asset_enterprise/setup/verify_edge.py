@@ -2900,6 +2900,40 @@ def e47():
 	return not problems, "; ".join(problems or notes)
 
 
+@case("E-48", "TSK-2026-01060 (client 01/11, ACC-ASS-2026-00394)", "a schedule row posted by one request is not posted again by a second request that read it unposted")
+def e48():
+	"""Two clicks on Make Depreciation Entry: both requests read the row with
+	no journal, the first posts, the second waits on the row and must find it
+	posted - one journal, the schedule naming it."""
+	from asset_enterprise.depreciation import _post_one
+
+	company = _company()
+	asset = _asset(company, gross=120_000, start=get_last_day(add_months(nowdate(), -1)))
+	stale = frappe.db.sql(
+		"""select ds.name as row_name, ds.parent as schedule, ds.schedule_date,
+		          ds.depreciation_amount, ds.cost_center, ads.asset, ads.finance_book,
+		          ds.daily_rate, ds.days_in_period, ds.idx
+		   from `tabDepreciation Schedule` ds
+		   join `tabAsset Depreciation Schedule` ads on ds.parent = ads.name
+		   where ads.asset = %s and ads.status = 'Active' and ads.docstatus = 1
+		   order by ds.schedule_date limit 1""",
+		asset,
+		as_dict=True,
+	)[0]
+	first = _post_one(frappe._dict(stale), getdate(nowdate()))
+	second = _post_one(frappe._dict(stale), getdate(nowdate()))
+	journals = frappe.db.sql(
+		"""select distinct je.name from `tabJournal Entry` je
+		   join `tabJournal Entry Account` jea on jea.parent = je.name
+		   where jea.reference_type = 'Asset' and jea.reference_name = %s
+		     and je.voucher_type = 'Depreciation Entry' and je.docstatus = 1""",
+		asset,
+	)
+	linked = frappe.db.get_value("Depreciation Schedule", stale.row_name, "journal_entry")
+	ok = bool(first) and second is None and len(journals) == 1 and linked == first
+	return ok, f"first {first}, second {second}, depreciation journals {[j[0] for j in journals]}, row names {linked}"
+
+
 def run(only=None):
 	wanted = {c.strip() for c in only.split(",")} if only else None
 	switch_before = frappe.db.get_single_value(
