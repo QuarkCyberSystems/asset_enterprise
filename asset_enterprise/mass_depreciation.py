@@ -89,7 +89,13 @@ def execute_mass_depreciation(doc):
 			)
 			continue
 		try:
-			_post_one(row, getdate(doc.posting_date))
+			if not _post_one(row, getdate(doc.posting_date)):
+				je = frappe.db.get_value("Depreciation Schedule", row.row_name, "journal_entry")
+				doc.append(
+					"result_summary",
+					{"asset": row.asset, "outcome": "Skipped", "reason": _("Already posted: {0}").format(je)},
+				)
+				continue
 			je = frappe.db.get_value("Depreciation Schedule", row.row_name, "journal_entry")
 			# TC-008 (v2.16 CH-11): visible JE link per posted row.
 			doc.append(

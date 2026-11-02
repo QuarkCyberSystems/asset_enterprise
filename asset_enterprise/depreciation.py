@@ -1900,8 +1900,8 @@ def post_schedule_entries(schedule_name, date=None, sch_start_idx=None, sch_end_
 		validate_posting(frappe.get_doc("Asset", row.asset), row)
 		if final_row_requires_manual_post(row):
 			continue
-		_post_one(row, posting_date)
-		posted.append(row.row_name)
+		if _post_one(row, posting_date):
+			posted.append(row.row_name)
 	return posted
 
 
@@ -2523,6 +2523,13 @@ def _post_one(row, posting_date):
 	from asset_enterprise.accounts import get_enterprise_account
 
 	_assert_row_is_live(row)
+	# TSK-2026-01060: two requests on the same row (a second click while the
+	# first was still posting) both read it unposted and booked it twice. The
+	# row is locked and read again; the request that waited finds it posted.
+	if frappe.db.sql(
+		"select journal_entry from `tabDepreciation Schedule` where name = %s for update", row.row_name
+	)[0][0]:
+		return None  # posted meanwhile by the request that held the lock
 	asset = frappe.get_doc("Asset", row.asset)
 	from asset_enterprise.control_category import validate_posting
 	validate_posting(asset, row)
@@ -2590,3 +2597,4 @@ def _post_one(row, posting_date):
 		accum_delta=row.depreciation_amount,
 		journal_entry=je.name,
 	)
+	return je.name
