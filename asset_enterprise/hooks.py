@@ -49,6 +49,10 @@ override_whitelisted_methods = {
 	# the AVA form writes these values back onto itself; the asset dimension
 	# must answer the asset, not clear it (overrides.ava)
 	"erpnext.assets.doctype.asset_value_adjustment.asset_value_adjustment.get_value_of_accounting_dimensions": "asset_enterprise.overrides.ava.value_of_accounting_dimensions",
+	# D-089: an invoice that settled a service receipt's accrual
+	"erpnext.assets.doctype.asset_repair.asset_repair.get_unallocated_repair_cost": (
+		"asset_enterprise.consumption.get_unallocated_repair_cost"
+	),
 }
 
 # GA-0005-01 v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
