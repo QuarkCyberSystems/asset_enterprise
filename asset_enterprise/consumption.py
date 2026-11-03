@@ -457,7 +457,9 @@ def repair_cover(repair):
 	total = 0
 	for (invoice, account), amount in cost.items():
 		net = sum(flt(ln.amount) for ln in invoice_lines(invoice, account))
-		left = net - sum(consumed_elsewhere(invoice, account, exclude_parent=repair).values())
+		# the (row, cc, "receipt") shares are already inside their (row, cc) totals
+		taken = consumed_elsewhere(invoice, account, exclude_parent=repair)
+		left = net - sum(v for k, v in taken.items() if len(k) == 2)
 		total += min(amount, max(left, 0))
 	return flt(total, 2)
 
@@ -691,7 +693,7 @@ def unconsumed(purchase_invoice, account, exclude_parent=None):
 	consumers took."""
 	total = sum(flt(line.amount) for line in invoice_lines(purchase_invoice, account))
 	taken = sum(v for k, v in consumed_elsewhere(purchase_invoice, account, exclude_parent=exclude_parent).items() if len(k) == 2)
-	return max(flt(total - taken, 2), 0.0)
+	return max(_round(total - taken, frappe.db.get_value("Purchase Invoice", purchase_invoice, "company")), 0.0)
 
 
 @frappe.whitelist()
@@ -703,7 +705,8 @@ def get_unallocated_repair_cost(purchase_invoice=None, expense_account=None, exc
 	recorded lines; any other is core's answer."""
 	from erpnext.assets.doctype.asset_repair import asset_repair as core
 
+	if purchase_invoice:
+		frappe.has_permission("Purchase Invoice", "read", purchase_invoice, throw=True)
 	if not settles_receipts(purchase_invoice, expense_account):
 		return core.get_unallocated_repair_cost(purchase_invoice, expense_account, exclude_asset_repair)
-	frappe.has_permission("Purchase Invoice", "read", purchase_invoice, throw=True)
 	return unconsumed(purchase_invoice, expense_account, exclude_parent=exclude_asset_repair)

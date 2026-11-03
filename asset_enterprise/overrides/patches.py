@@ -74,6 +74,8 @@ PATCH_TARGETS = [
 	# rename surfaces at boot, not at first user click.
 	("erpnext.assets.doctype.asset.depreciation", "restore_asset", 1),
 	("erpnext.assets.doctype.asset.depreciation", "scrap_asset", 1),
+	# D-089: the repair form's available amount for an invoice that settled a service receipt
+	("erpnext.assets.doctype.asset_repair.asset_repair", "get_unallocated_repair_cost", 2),
 ]
 
 # Attributes apply_patches() actually wraps — the subset of PATCH_TARGETS
