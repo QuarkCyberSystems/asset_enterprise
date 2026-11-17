@@ -1,4 +1,4 @@
-// GA-0005-01 §4.8 — make supersession legible.
+// FA spec §4.8 — make supersession legible.
 //
 // An asset can carry several schedules: the live one plus one frozen
 // copy per value change. Core hides the status field entirely, so the

@@ -9,7 +9,7 @@ from erpnext.assets.doctype.asset_capitalization.asset_capitalization import (
 
 
 class EnterpriseAssetCapitalization(CounterDocumentReversal, AssetCapitalization):
-	"""GA-0005-01 v2.14 Asset Capitalization overrides
+	"""FA spec v2.14 Asset Capitalization overrides
 	(GAP-014 / 015 / 017 / 026 / 035).
 
 	transaction_type routing:

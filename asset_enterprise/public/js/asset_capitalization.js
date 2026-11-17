@@ -1,4 +1,4 @@
-// GA-0005-01 §9.6 — Asset Capitalization form behaviour (GAP-014).
+// FA spec §9.6 — Asset Capitalization form behaviour (GAP-014).
 //
 // Core scopes the Target Asset picker to `asset_type = "Composite Asset"`
 // AND `docstatus = 0` (draft WIP composites). That is right for Standard

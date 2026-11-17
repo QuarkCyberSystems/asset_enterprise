@@ -1,4 +1,4 @@
-"""Composite merge machinery — GA-0005-01 v2.14 GAP-014/015/017/035.
+"""Composite merge machinery — FA spec v2.14 GAP-014/015/017/035.
 
 Capitalized Maintenance (Standard Maintenance): each source Asset is
 DISPOSED INTO the composite through the Capitalization Clearing
@@ -482,8 +482,8 @@ def consume_stock_items(cap_doc):
 	the target, through a Material Issue.
 
 	Core's own capitalization consumes stock by writing Stock Ledger
-	Entries directly. That cannot be used here: Badia values stock with
-	the periodic engine (GA-0003), which routes DOCUMENTS — Stock Entry,
+	Entries directly. That cannot be used here: the target sites value stock
+	with the periodic engine (GA-0003), which routes DOCUMENTS — Stock Entry,
 	Purchase Receipt, Delivery Note and the rest — and does not route
 	Asset Capitalization. A kernel-valued item consumed that way would
 	never be valued, and would be missing from the periodic

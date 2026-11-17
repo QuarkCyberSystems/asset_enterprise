@@ -1,4 +1,4 @@
-// GA-0005-01 — Asset Value Adjustment form additions.
+// FA spec — Asset Value Adjustment form additions.
 //
 // A Reversal AVA carries the swapped values and the reversal_of_ava
 // link, but visually looked like any ordinary adjustment (client,

@@ -7,7 +7,7 @@ from erpnext.assets.doctype.asset_repair.asset_repair import AssetRepair
 
 
 class EnterpriseAssetRepair(CounterDocumentReversal, AssetRepair):
-	"""GA-0005-01 v2.14 Asset Repair overrides (GAP-033 / VR-038).
+	"""FA spec v2.14 Asset Repair overrides (GAP-033 / VR-038).
 
 	Standard Repair (forward): core posts Dr Fixed Asset / Cr expense
 	and reschedules (our supersession wrapper takes the reschedule when

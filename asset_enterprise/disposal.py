@@ -1,4 +1,4 @@
-"""Disposal engine — GA-0005-01 v2.14 GAP-018 / GAP-019 / VR-041.
+"""Disposal engine — FA spec v2.14 GAP-018 / GAP-019 / VR-041.
 
 Full scrap (replaces the whitelisted core scrap_asset when the master
 switch is on) and partial scrap (new endpoint), both routing the loss

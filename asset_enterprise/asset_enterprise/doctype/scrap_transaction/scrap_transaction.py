@@ -1,4 +1,4 @@
-"""Scrap Transaction — GA-0005-01 v2.16 CH-09 (2026-07-23 review).
+"""Scrap Transaction — FA spec v2.16 CH-09 (2026-07-23 review).
 
 "Scrapping is a transaction": every full or partial scrap is recorded
 as a first-class submittable document that posts through the existing

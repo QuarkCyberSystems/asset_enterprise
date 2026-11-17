@@ -141,7 +141,7 @@ def _run():
 		ok = ok and c
 
 		# ============ FA-011 reopened: value changes out of date order =====
-		# ACC-ASS-2026-00074 (badiauat): 100,000 in service 01/02, 240 months;
+		# ACC-ASS-2026-00074 (UAT site): 100,000 in service 01/02, 240 months;
 		# maintenance +60,000 dated 15/04 entered FIRST, then +10,000 dated
 		# 15/03, then +5,000 dated 01/06. Entered in date order the months
 		# are Feb 383.30, Mar 447.77, Apr 584.73, May 724.24 (UAT posted
@@ -180,7 +180,7 @@ def _run():
 		ok = ok and c
 
 		# ============ FA-014: an event inside a posted period catches up ====
-		# ACC-ASS-2026-00333 (badiav16): 2,000, 36 months from 01/01, January-
+		# ACC-ASS-2026-00333 (v16 site): 2,000, 36 months from 01/01, January-
 		# March posted; capitalized maintenance 2,500 dated 15/03. §4.11: the
 		# 2,500 counts from 15/03, so April carries April at the new rate plus
 		# the 15-31 March difference (client: 128.06 + 41.54 = 169.60).

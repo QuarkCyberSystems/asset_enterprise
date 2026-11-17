@@ -2,7 +2,7 @@
 
 **2026-09-22 update:** the client superseded the Control Category depreciation prohibition with full depreciation in one day. See [D-033](decision-control-category-one-day-2026-09-22.md). The project-exit decision stands. Text and results below preserve the prior decision.
 
-Date: 2026-09-21. Scope: GA-0005-01, R135 / D-027(1) and R126 / D-013(1).
+Date: 2026-09-21. Scope: FA spec, R135 / D-027(1) and R126 / D-013(1).
 Status: **Accepted by the user; implemented locally with qcsfresh regression evidence below. Existing-site deployment remains pending.**
 Authority: following the SAP comparison and proposed rules, the user stated: “ok accepting, and make a record of this decision”. This acceptance covers the two rules below; it is not sign-off of the entire v2.18 design or an assertion that the code conforms.
 
@@ -54,7 +54,7 @@ SAP's mechanisms informed this design; these are local accepted rules, not claim
 - Project-only movements preserve custody and location; Receipt retains its explicit custody-return behavior.
 - E-22 verifies the three GL expense segments for a combined project/cost-centre change. E-28 verifies Control Category enablement refusal, no residual schedule, ordinary disposal behavior, and exactly one eligible 12,000 purchase expense in project_accounting's actual source reader. E-37 covers blank retention, explicit exit, re-entry, cancellation, custody, standalone exit, contradictory inputs, amount conservation and posted GL with unchanged acquisition-project contra. E-38 refuses direct Asset validation, new schedules and legacy scheduled-row posting on a Control Category asset.
 - No project_accounting implementation changes were needed; its original-expense source reader was exercised directly.
-- Read-only badiav16 audit found **0** submitted Control Category assets with depreciation enabled or existing non-cancelled schedules. No ledger records were changed. The audit utility is `asset_enterprise.repair.audit_control_category_depreciation`.
+- Read-only existing-site audit found **0** submitted Control Category assets with depreciation enabled or existing non-cancelled schedules. No ledger records were changed. The audit utility is `asset_enterprise.repair.audit_control_category_depreciation`.
 
 The Leave Project field was installed on qcsfresh only. Other sites require the normal app migration before using it. The separate GL-keying/activation backlog, finance day-count decision and overall design-sign-off requirements remain open. This decision's implementation is not an overall conformance PASS.
 

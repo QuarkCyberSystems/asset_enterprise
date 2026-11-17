@@ -1,7 +1,7 @@
 """Phase 3 verification — run: bench --site <site> execute asset_enterprise.setup.verify_phase3.run
 
 Math checks reproduce the client's xlsx FA_Dep_Simulation figures
-(TC-015/016/017 of GA-0005-01 v2.14 §11). DB-mutating checks run in a
+(TC-015/016/017 of FA spec v2.14 §11). DB-mutating checks run in a
 savepoint and roll back.
 """
 

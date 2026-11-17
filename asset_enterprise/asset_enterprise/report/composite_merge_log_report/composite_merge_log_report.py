@@ -1,4 +1,4 @@
-"""Composite Merge Log Report — GA-0005-01 GAP-035.
+"""Composite Merge Log Report — FA spec GAP-035.
 
 Fleet-wide register of component merges with the value snapshot, for
 scrap-sizing and audit ("what physical items went into this composite,

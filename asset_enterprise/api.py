@@ -354,7 +354,7 @@ def reversible_partial_scraps(asset):
 
 
 # ---------------------------------------------------------------------------
-# C3 — reversal posting date (GA-0005-01 §3.7 / GAP-030 / GAP-033).
+# C3 — reversal posting date (FA spec §3.7 / GAP-030 / GAP-033).
 # A Standard AVA / capitalized Asset Repair cancel raises its Reversal
 # counter-document; the reversal posts on TODAY by default. The dialog
 # lets a user with the company's Reversal Date Edit Role choose another

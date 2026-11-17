@@ -1,4 +1,4 @@
-"""Rounding policy — GA-0005-01 v2.14 §4.10.
+"""Rounding policy — FA spec v2.14 §4.10.
 
 Single source of truth for every depreciation-amount rounding in the
 app. No ad-hoc round(x, 2) anywhere else.

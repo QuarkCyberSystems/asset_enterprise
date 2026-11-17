@@ -5,7 +5,7 @@ from erpnext.assets.doctype.asset_movement.asset_movement import AssetMovement
 
 
 class EnterpriseAssetMovement(AssetMovement):
-	"""GA-0005-01 v2.14 Asset Movement overrides (GAP-020/021/022/028).
+	"""FA spec v2.14 Asset Movement overrides (GAP-020/021/022/028).
 
 	GAP-022 (VR-026): one movement may update any subset of
 	{target_location, to_employee, target_cost_center} — at least one.

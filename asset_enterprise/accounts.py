@@ -1,4 +1,4 @@
-"""Account resolution for GA-0005-01 v2.14 (§3.5).
+"""Account resolution for FA spec v2.14 (§3.5).
 
 Two chains:
 

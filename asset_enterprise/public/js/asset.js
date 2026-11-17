@@ -1,4 +1,4 @@
-// GA-0005-01 v2.14 — Asset form extensions (§9.6). JS is UX-only;
+// FA spec v2.14 — Asset form extensions (§9.6). JS is UX-only;
 // every action calls a whitelisted backend that re-validates (C126).
 frappe.ui.form.on("Asset", {
 	// ERPNext decides whether Purchase Receipt / Purchase Invoice are

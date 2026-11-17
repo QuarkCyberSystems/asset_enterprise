@@ -1,4 +1,4 @@
-"""Asset Tree — GA-0005-01 GAP-009 (§9.2: "Tree doctype + report").
+"""Asset Tree — FA spec GAP-009 (§9.2: "Tree doctype + report").
 
 Native Frappe tree (NestedSet) mirroring the Asset.parent_asset
 hierarchy: one node per participating asset, browsable via the

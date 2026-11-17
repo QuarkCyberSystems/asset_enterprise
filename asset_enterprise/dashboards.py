@@ -1,4 +1,4 @@
-"""Doctype dashboards (Connections tab) — GA-0005-01.
+"""Doctype dashboards (Connections tab) — FA spec.
 
 The hard link fields carry the causal one-to-one relations (journal
 entries, reversal pair); the dashboard surfaces the one-to-many side:

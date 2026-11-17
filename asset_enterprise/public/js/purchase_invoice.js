@@ -1,4 +1,4 @@
-// GA-0005-01 GAP-012 — Asset Allocation usability.
+// FA spec GAP-012 — Asset Allocation usability.
 //
 // The allocation table disambiguates PARTIAL invoices; the server
 // auto-resolves it for ordinary full invoices. Here we (a) restrict

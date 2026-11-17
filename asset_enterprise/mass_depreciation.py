@@ -1,4 +1,4 @@
-"""Mass Asset Depreciation — GA-0005-01 v2.14 GAP-005 / VR-006 / VR-007.
+"""Mass Asset Depreciation — FA spec v2.14 GAP-005 / VR-006 / VR-007.
 
 Controlled bulk depreciation posting through the enterprise engine.
 Restricted modes (Selected Asset Category / Selected Assets) require a

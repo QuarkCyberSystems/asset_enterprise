@@ -9,7 +9,7 @@ app the same way:
     bench --site <site> execute asset_enterprise.tests.smoke_platform_registration.run
 
 The phase suites live in setup/verify_phase*.py (they are the WP's
-official verification and the GA-0005-01 runbook points at them). Each
+official verification and the FA spec runbook points at them). Each
 phase manages its own savepoint and rolls back; nothing persists.
 
 Unlike setup.verify_all, a phase that prints FAIL counts as a failure
@@ -129,7 +129,7 @@ def run_edge(only=None, raise_on_fail=True):
 
 
 def run_tc(only=None, raise_on_fail=True):
-	"""Literal GA-0005-01 §11 test-case audit (setup/verify_tc.py)."""
+	"""Literal FA spec §11 test-case audit (setup/verify_tc.py)."""
 	from asset_enterprise.setup import verify_tc
 
 	verdict = _verdict(*_capture(verify_tc.run, only=only))

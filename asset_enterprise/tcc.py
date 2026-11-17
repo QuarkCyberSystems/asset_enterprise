@@ -1,4 +1,4 @@
-"""Transaction Category Controller — GA-0005-01 v2.14 §3.
+"""Transaction Category Controller — FA spec v2.14 §3.
 
 The sole entry point for fixed-asset financial impact. Source documents
 (Asset, AVA, Asset Repair, Asset Capitalization, PR/PI hooks, Mass

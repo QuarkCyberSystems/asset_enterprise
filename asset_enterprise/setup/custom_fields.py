@@ -1,4 +1,4 @@
-"""Custom fields on erpnext doctypes — GA-0005-01 v2.14 build plan §2.4.
+"""Custom fields on erpnext doctypes — FA spec v2.14 build plan §2.4.
 
 Applied idempotently on after_install and after_migrate via
 frappe.custom.doctype.custom_field.custom_field.create_custom_fields.

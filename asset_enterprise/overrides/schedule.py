@@ -6,7 +6,7 @@ from erpnext.assets.doctype.asset_depreciation_schedule.asset_depreciation_sched
 
 
 class EnterpriseSchedule(AssetDepreciationSchedule):
-	"""GA-0005-01 v2.14 Asset Depreciation Schedule overrides.
+	"""FA spec v2.14 Asset Depreciation Schedule overrides.
 
 	GAP-031/032 (Phase 3): supersession support. Core forbids a second
 	schedule per asset+finance-book with docstatus < 2 regardless of

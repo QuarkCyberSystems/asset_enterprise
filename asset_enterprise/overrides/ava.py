@@ -9,7 +9,7 @@ from erpnext.assets.doctype.asset_value_adjustment.asset_value_adjustment import
 
 
 class EnterpriseAVA(CounterDocumentReversal, AssetValueAdjustment):
-	"""GA-0005-01 v2.14 AVA overrides (GAP-013 / GAP-030 / VR-034).
+	"""FA spec v2.14 AVA overrides (GAP-013 / GAP-030 / VR-034).
 
 	Forward: core posts the revaluation JE and reschedules (our
 	supersession wrapper takes the reschedule when enabled); we record

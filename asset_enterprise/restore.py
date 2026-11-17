@@ -1,4 +1,4 @@
-"""Two-path disposal recovery — GA-0005-01 v2.14 GAP-016 / GAP-029 / VR-033.
+"""Two-path disposal recovery — FA spec v2.14 GAP-016 / GAP-029 / VR-033.
 
 Path 1 — same-period accidental-disposal restore (per 2026-07-14
 meeting): allowed ONLY when the restore falls in the same depreciation

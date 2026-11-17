@@ -3,7 +3,7 @@ name = "asset_enterprise"
 authors = [
     { name = "QuarkCyberSystems", email = "vivek@quarkcs.com"}
 ]
-description = "Enterprise Fixed Asset Management for Al Badia Cement"
+description = "Enterprise Fixed Asset Management"
 requires-python = ">=3.14"
 readme = "README.md"
 dynamic = ["version"]

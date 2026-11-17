@@ -1,4 +1,4 @@
-"""Replacement Chain — GA-0005-01 GAP-016 two-way recovery trace."""
+"""Replacement Chain — FA spec GAP-016 two-way recovery trace."""
 
 import frappe
 

@@ -1,4 +1,4 @@
-"""Daily-rate prospective depreciation engine — GA-0005-01 v2.14 §4.
+"""Daily-rate prospective depreciation engine — FA spec v2.14 §4.
 
 Extends (never replaces) the erpnext v16 schedule model:
 

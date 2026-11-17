@@ -1,4 +1,4 @@
-"""Install / migrate sync for asset_enterprise — GA-0005-01 Phase 1.
+"""Install / migrate sync for asset_enterprise — FA spec Phase 1.
 
 Everything here is idempotent: safe to run on every after_install and
 after_migrate.

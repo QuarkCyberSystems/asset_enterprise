@@ -1,7 +1,7 @@
 app_name = "asset_enterprise"
 app_title = "Asset Enterprise"
 app_publisher = "QuarkCyberSystems"
-app_description = "Enterprise Fixed Asset Management for Al Badia Cement"
+app_description = "Enterprise Fixed Asset Management"
 app_email = "vivek@quarkcs.com"
 app_license = "mit"
 
@@ -28,7 +28,7 @@ depreciation_journal_link_policy = ["asset_enterprise.platform_sockets.skip_depr
 # D-095: a receipt's Cancellation (its return) reverses the assets it created
 receipt_reversal_assets = ["asset_enterprise.platform_sockets.reverse_original_assets"]
 
-# GA-0005-01 v2.14 — controller overrides (build plan §2.1).
+# FA spec v2.14 — controller overrides (build plan §2.1).
 # Phase 0: pass-through subclasses; behavior lands per phase.
 override_doctype_class = {
 	"Asset": "asset_enterprise.overrides.asset.EnterpriseAsset",
@@ -41,7 +41,7 @@ override_doctype_class = {
 	"Asset Category": "asset_enterprise.overrides.asset_category.EnterpriseAssetCategory",
 }
 
-# GA-0005-01 v2.14 — endpoint replacements (build plan §2.2, Phase 6).
+# FA spec v2.14 — endpoint replacements (build plan §2.2, Phase 6).
 # Wrappers delegate to core when the Asset Settings master switch is off.
 override_whitelisted_methods = {
 	"erpnext.assets.doctype.asset.depreciation.restore_asset": "asset_enterprise.restore.restore_asset",
@@ -55,7 +55,7 @@ override_whitelisted_methods = {
 	),
 }
 
-# GA-0005-01 v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
+# FA spec v2.14 — form JS (Phase 8, §9.6 — backend-authoritative).
 app_include_js = "asset_enterprise.bundle.js"
 
 doctype_js = {
@@ -101,7 +101,7 @@ doctype_list_js = {
 	"Asset Repair": "public/js/asset_repair_list.js",
 }
 
-# GA-0005-01 v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
+# FA spec v2.14 — PR/PI asset flows (Phase 7, GAP-004/GAP-012).
 doc_events = {
 	# one unit of a fixed-asset item is one asset (client, 27/09)
 	"Item": {"validate": "asset_enterprise.asset_items.validate_item"},

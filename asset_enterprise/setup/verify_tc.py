@@ -1,4 +1,4 @@
-"""Literal test-case audit — GA-0005-01 §11 (TC-001 … TC-049).
+"""Literal test-case audit — FA spec §11 (TC-001 … TC-049).
 
 Written after the GAP-012 defect, which every existing suite missed
 because the fixtures pre-filled a field the test case never told the

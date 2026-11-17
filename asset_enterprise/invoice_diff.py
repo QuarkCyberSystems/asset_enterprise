@@ -1,4 +1,4 @@
-"""PR/PI asset flows — GA-0005-01 v2.14 GAP-004 / GAP-012 (Phase 7).
+"""PR/PI asset flows — FA spec v2.14 GAP-004 / GAP-012 (Phase 7).
 
 PR side (N1, per 2026-07-14 meeting):
 - Asset creation at delivery is core behavior (buying_controller

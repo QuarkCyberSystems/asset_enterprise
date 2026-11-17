@@ -1,6 +1,6 @@
-# GA-0005-01 remediation — 2026-09-21
+# FA spec remediation — 2026-09-21
 
-Follow-up: see [pending-item remediation](ga-0005-01-pending-remediation-2026-09-21.md) for subsequent changes and current limitations. This document preserves the first-batch results.
+Follow-up: see [pending-item remediation](fa-spec-pending-remediation-2026-09-21.md) for subsequent changes and current limitations. This document preserves the first-batch results.
 
 Baseline: asset_enterprise main at `6cc43e5`. This changeset records the remediation against that baseline. The r2 report is substantially confirmed. This is an implementation and test record, not a replacement independent conformance audit or design sign-off.
 

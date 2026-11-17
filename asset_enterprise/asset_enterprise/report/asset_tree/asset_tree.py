@@ -1,4 +1,4 @@
-"""Asset Tree — GA-0005-01 GAP-009 (TC-012).
+"""Asset Tree — FA spec GAP-009 (TC-012).
 
 Collapsible parent/child hierarchy with per-asset values AND subtree
 aggregates on every parent node. Rendered as a tree grid by the

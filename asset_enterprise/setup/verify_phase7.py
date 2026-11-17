@@ -23,7 +23,7 @@ def _run():
 	frappe.db.savepoint("phase7_verify")
 	try:
 		frappe.db.set_single_value("Asset Settings", "enable_enterprise_assets", 1)
-		# Invoice Adjustment requires PI rate != PR rate — a Badia go-live
+		# Invoice Adjustment requires PI rate != PR rate — a go-live
 		# config item (imp runbook): Buying Settings maintain_same_rate off.
 		frappe.db.set_single_value("Buying Settings", "maintain_same_rate", 0)
 		frappe.db.set_single_value(

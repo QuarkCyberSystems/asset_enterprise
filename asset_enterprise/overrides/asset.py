@@ -8,7 +8,7 @@ from erpnext.assets.doctype.asset.asset import Asset
 
 
 class EnterpriseAsset(Asset):
-	"""GA-0005-01 v2.14 Asset overrides.
+	"""FA spec v2.14 Asset overrides.
 
 	- GAP-001: suspense JE on submit of an existing asset (TCC Addition,
 	  Existing-Asset Opening) — DR FA cost / CR Accum opening / CR Asset

@@ -1,4 +1,4 @@
-# GA-0005-01 pending-item remediation — 2026-09-21
+# FA spec pending-item remediation — 2026-09-21
 
 **2026-09-22 update:** [D-033](decision-control-category-one-day-2026-09-22.md) supersedes the Control Category block below with full depreciation in one day. Project-settlement source selection is still pending. Earlier implementation evidence remains historical.
 
@@ -7,7 +7,7 @@ Follow-up to `a1e3b2a` in asset_enterprise. Overall conformance is still **FAIL*
 ## Implemented
 
 - **R053/R161/R044:** added operational dimension-keyed GL calculations for posted assets, with independent fold and against-voucher diagnostics in Daily Reconciliation. Financial Treatment metadata cannot change the GL-derived monetary balance. Draft assets retain a preview. GL values require distinct cost and accumulated-depreciation accounts.
-- **C1 rollout gate:** the new calculation requires `asset_enterprise_gl_values_ready=1` in site configuration. Existing sites retain the legacy calculation until their ledger keys are reviewed/repaired. Once enabled, missing keys never trigger a per-asset fallback. Enabled only on qcsfresh for verification; badiav16 has not been activated or revalued. R053 therefore remains open for existing-site rollout.
+- **C1 rollout gate:** the new calculation requires `asset_enterprise_gl_values_ready=1` in site configuration. Existing sites retain the legacy calculation until their ledger keys are reviewed/repaired. Once enabled, missing keys never trigger a per-asset fallback. Enabled only on qcsfresh for verification; the existing v16 site has not been activated or revalued. R053 therefore remains open for existing-site rollout.
 - **R174 / D-026:** CM and AVA reversals use the native JE mirror and retain reversal identity and attribution. Multi-JE CM treatment reversals link to their respective mirrored JE. Repair reversals preserve original GL rows, post their mirror under the reversal Repair voucher, and use the chosen date for GL and stock return. The invoice-difference attribution hook also respects reversal identity.
 - **Fresh-site coverage:** E-22/E-24 create rollback-only project dimension fixtures. Control-category fixture uses separate cost/contra accounts; the Control Category business rule is unchanged. Added E-34 GL-versus-treatment independence, E-35 AVA reversal attribution/back-links, and E-36 Repair reversal date/voucher/GL preservation. E-32 now also checks native CM reversal links.
 - **Test fidelity:** phase 11 t35 posts an actual acquisition-increase JE instead of a treatment-only increase; phase 7 checks that unkeyed purchase GL is excluded until its explicit backfill. TC-047d really fully depreciates its fixture; TC-047e stocks materials at the expected cost; TC-047g verifies missing treatment metadata cannot corrupt GL values and the audit-link backfill remains safe.
@@ -23,7 +23,7 @@ Follow-up to `a1e3b2a` in asset_enterprise. Overall conformance is still **FAIL*
 
 ## Read-only existing-site preflight
 
-On badiav16.localhost, the audit examined **303 submitted assets**: **96** have comparison/keying issues and **54** have no dimension-keyed cost-account entry. It found **507** unkeyed rows on category asset accounts: 153 Journal Entry, 49 Purchase Receipt, 305 Project Settlement Run. These are review candidates; an unkeyed account row is not automatically a defect for a particular asset.
+On the existing v16 site, the audit examined **303 submitted assets**: **96** have comparison/keying issues and **54** have no dimension-keyed cost-account entry. It found **507** unkeyed rows on category asset accounts: 153 Journal Entry, 49 Purchase Receipt, 305 Project Settlement Run. These are review candidates; an unkeyed account row is not automatically a defect for a particular asset.
 
 Dry-run utilities identified:
 

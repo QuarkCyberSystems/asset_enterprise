@@ -36,10 +36,13 @@ def value_mode(mode):
 
 
 def pick_company():
-	"""Deterministic company for smoke/UAT runs: prefer Badia Cement
-	(multi-company sites carry unrelated test companies)."""
+	"""Deterministic company for smoke/UAT runs (multi-company sites carry
+	unrelated test companies): the site config key
+	asset_enterprise_test_company, then the global default company, then
+	any company."""
 	return (
-		frappe.db.get_value("Company", {"company_name": ("like", "%Badia%")}, "name")
+		frappe.conf.get("asset_enterprise_test_company")
+		or frappe.defaults.get_global_default("company")
 		or frappe.db.get_value("Company", {}, "name")
 	)
 
